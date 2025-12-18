@@ -1452,58 +1452,195 @@ function transformScriptData(scriptData, language, topic, duration) {
 }
 
 /**
+ * Simple, fast reels script prompt (optimized for 600 tokens)
+ * Returns strict JSON: { hook, scenes[], cta, caption, hashtags[] }
+ */
+function createReelsScriptPrompt(topic, duration, tone, audience, language) {
+  // Calculate scene count based on duration
+  const durationSeconds = parseInt(duration) || 15;
+  const sceneCount = durationSeconds <= 15 ? 4 : durationSeconds <= 30 ? 6 : 8;
+  
+  const languageRule = language === 'Hindi' 
+    ? 'Write EVERYTHING in pure Hindi (Devanagari). No English.'
+    : language === 'Hinglish'
+    ? 'Mix Hindi and English naturally (e.g., "Kya baat hai! This is amazing").'
+    : 'Write EVERYTHING in pure English.';
+  
+  const toneStyle = {
+    'Funny': 'Playful, humorous, light jokes 😄',
+    'Motivational': 'Inspiring, action-driven, empowering 🚀',
+    'Attitude': 'Bold, confident, short punchlines 💪',
+    'Emotional': 'Heartfelt, feeling-based, intimate ❤️',
+    'Aesthetic': 'Calm, poetic, minimal, dreamy ✨'
+  }[tone] || 'Engaging and professional';
+  
+  return `Create an Instagram Reels script for topic: "${topic}".
+
+Duration: ${duration} (${sceneCount} scenes)
+Tone: ${tone} → ${toneStyle}
+Audience: ${audience}
+Language: ${languageRule}
+
+REQUIREMENTS:
+- Hook (0-3s): One scroll-stopping hook line
+- Scenes: Exactly ${sceneCount} scenes, each with duration, voiceover, on_screen_text
+- CTA: One call-to-action line
+- Caption: Short caption under 150 chars
+- Hashtags: Exactly 10 relevant hashtags
+
+OUTPUT FORMAT (STRICT JSON only):
+{
+  "hook": "Scroll-stopping hook line",
+  "scenes": [
+    {
+      "duration": "0-3s",
+      "voiceover": "Voiceover text",
+      "on_screen_text": "On-screen text"
+    }
+  ],
+  "cta": "Call to action",
+  "caption": "Short caption",
+  "hashtags": ["#tag1", "#tag2", ...]
+}
+
+Return ONLY valid JSON, no markdown, no extra text.`;
+}
+
+/**
+ * Generate fallback reels script (always available)
+ */
+function getSimpleFallbackScript(language, topic, duration) {
+  const durationSeconds = parseInt(duration) || 15;
+  const sceneCount = durationSeconds <= 15 ? 4 : durationSeconds <= 30 ? 6 : 8;
+  
+  const scenes = [];
+  for (let i = 0; i < sceneCount; i++) {
+    const startTime = i * Math.floor(durationSeconds / sceneCount);
+    const endTime = (i + 1) * Math.floor(durationSeconds / sceneCount);
+    
+    scenes.push({
+      duration: `${startTime}-${endTime}s`,
+      voiceover: language === 'Hindi' ? 'यह महत्वपूर्ण है' : 
+                language === 'Hinglish' ? 'Yeh important hai' : 
+                'This is important',
+      on_screen_text: language === 'Hindi' ? 'देखें' : 
+                     language === 'Hinglish' ? 'Dekho' : 
+                     'Watch this'
+    });
+  }
+  
+  return {
+    hook: language === 'Hindi' ? 'क्या आप जानते हैं?' : 
+          language === 'Hinglish' ? 'Kya aap jaante hain?' : 
+          'Did you know this?',
+    scenes: scenes,
+    cta: language === 'Hindi' ? 'सेव करें' : 
+         language === 'Hinglish' ? 'Save karein' : 
+         'Save this post',
+    caption: language === 'Hindi' ? 'यह बदलाव आपकी जिंदगी बदल देगा' : 
+            language === 'Hinglish' ? 'Yeh change aapki life badal dega' : 
+            'This change will transform your life',
+    hashtags: language === 'Hindi' 
+      ? ['#reels', '#viral', '#hindi', '#growth', '#success', '#motivation', '#trending', '#fyp', '#explore', '#instagram']
+      : language === 'Hinglish'
+      ? ['#reels', '#viral', '#hinglish', '#growth', '#success', '#motivation', '#trending', '#fyp', '#explore', '#instagram']
+      : ['#reels', '#viral', '#instagram', '#growth', '#success', '#motivation', '#trending', '#fyp', '#explore', '#content']
+  };
+}
+
+/**
  * POST /ai/reels-script
- * Non-blocking endpoint - returns jobId immediately, processes in background
+ * Simple, synchronous endpoint - returns script data directly
+ * Never blocks longer than 25 seconds, always returns fallback on failure
  */
 async function generateReelsScript(req, res) {
-  const { topic, duration = '15s', tone = 'Motivational', audience = 'Creator', language = 'English', regenerate = false } = req.body || {};
+  const { topic, duration = '15s', tone = 'Motivational', audience = 'Creator', language = 'English' } = req.body || {};
   
   // Validate required parameters
   if (!topic || topic.trim() === '') {
     return res.status(400).json({ success: false, error: 'Topic is required', data: {} });
   }
   
-  // Validate duration
+  // Validate duration (15s, 30s, 60s only)
   const validDurations = ['15s', '30s', '60s'];
   const finalDuration = validDurations.includes(duration) ? duration : '15s';
   
-  // Generate unique job ID
-  const jobId = generateJobId('REELS');
+  console.log(`[generateReelsScript] Request: topic="${topic}", duration=${finalDuration}, tone=${tone}, language=${language}`);
   
-  // Create job with pending status
-  createJob(jobId, {
-    type: 'reels-script',
-    topic: topic.trim(),
-    duration: finalDuration,
-    tone: tone.trim(),
-    audience: audience.trim(),
-    language: language.trim(),
-    regenerate,
+  // Create timeout promise (25 seconds max - CRITICAL)
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('TIMEOUT_25S'));
+    }, 25000);
   });
   
-  console.log(`[generateReelsScript] ===== NEW ASYNC REQUEST =====`);
-  console.log(`[generateReelsScript] Job ID: ${jobId}`);
-  console.log(`[generateReelsScript] Topic: ${topic}, Duration: ${finalDuration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
-  
-  // Start background processing (non-blocking)
-  processReelsScript(jobId, topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim(), regenerate)
-    .catch((error) => {
-      console.error(`[generateReelsScript] Background processing failed for job ${jobId}:`, error);
-      // On failure, store fallback result instead of error (per requirements)
-      const fallbackScript = getFallbackReelsScript(language, topic, finalDuration);
-      const transformedFallback = transformScriptData(fallbackScript, language, topic, finalDuration);
-      updateJob(jobId, 'done', { 
-        data: transformedFallback,
-        error: error.message || 'AI generation failed'
+  // Create Gemini API promise with 600 token limit
+  const geminiPromise = (async () => {
+    try {
+      const prompt = createReelsScriptPrompt(topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim());
+      
+      const output = await runGemini(prompt, {
+        maxTokens: 600, // CRITICAL: Limit to 600 tokens for speed
+        temperature: 0.8,
+        topP: 0.95
       });
-    });
+      
+      // Try to parse JSON from response
+      let scriptData = null;
+      if (output && output.trim().length > 0) {
+        scriptData = extractJsonFromText(output);
+      }
+      
+      // Validate structure
+      if (scriptData && 
+          typeof scriptData === 'object' &&
+          scriptData.hook &&
+          Array.isArray(scriptData.scenes) &&
+          scriptData.scenes.length > 0 &&
+          scriptData.cta &&
+          scriptData.caption &&
+          Array.isArray(scriptData.hashtags)) {
+        
+        // Ensure exactly 10 hashtags
+        if (scriptData.hashtags.length !== 10) {
+          const defaultTags = ['#reels', '#viral', '#instagram', '#growth', '#success', '#motivation', '#trending', '#fyp', '#explore', '#content'];
+          scriptData.hashtags = [...scriptData.hashtags, ...defaultTags].slice(0, 10);
+        }
+        
+        console.log(`[generateReelsScript] ✅ Success: ${scriptData.scenes.length} scenes`);
+        return scriptData;
+      }
+      
+      // If parsing failed, use fallback
+      throw new Error('Invalid JSON structure from Gemini');
+    } catch (error) {
+      console.error('[generateReelsScript] Gemini error:', error.message);
+      throw error;
+    }
+  })();
   
-  // Return immediately with jobId (NON-BLOCKING)
-  console.log(`[generateReelsScript] ✅ Returning jobId immediately: ${jobId}`);
-  res.json({ 
-    success: true, 
-    jobId: jobId
-  });
+  // Race between Gemini and timeout
+  try {
+    const scriptData = await Promise.race([geminiPromise, timeoutPromise]);
+    
+    // Success - return script data
+    console.log(`[generateReelsScript] ✅ Returning script data`);
+    return res.json({
+      success: true,
+      data: scriptData
+    });
+  } catch (error) {
+    // Timeout or Gemini failure - return fallback
+    console.warn(`[generateReelsScript] ⚠️ Using fallback script (reason: ${error.message})`);
+    
+    const fallbackScript = getSimpleFallbackScript(language, topic, finalDuration);
+    
+    // Always return success with fallback data (never error)
+    return res.json({
+      success: true,
+      data: fallbackScript
+    });
+  }
 }
 
 /**
