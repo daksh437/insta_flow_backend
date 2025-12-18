@@ -1467,6 +1467,12 @@ function transformScriptData(scriptData, language, topic, duration) {
  * POST /ai/reels-script
  * Non-blocking async endpoint - returns jobId immediately, processes in background
  * NEVER blocks the request, always returns jobId within 2 seconds
+ * 
+ * Input: { topic, duration, tone, audience, language, regenerate }
+ * Output: { success: true, jobId: string }
+ * 
+ * Job processing happens in background via processReelsScript()
+ * Frontend polls GET /ai/job-status/:jobId for completion
  */
 async function generateReelsScript(req, res) {
   const { topic, duration = '15s', tone = 'Motivational', audience = 'Creator', language = 'English', regenerate = false } = req.body || {};
@@ -1485,7 +1491,7 @@ async function generateReelsScript(req, res) {
   
   console.log(`[generateReelsScript] Creating job ${jobId}: topic="${topic}", duration=${finalDuration}, tone=${tone}, audience=${audience}, language=${language}, regenerate=${regenerate}`);
   
-  // Create job with pending status
+  // Create job with pending status in jobStore
   createJob(jobId, {
     type: 'reels-script',
     status: 'pending',
@@ -1497,14 +1503,15 @@ async function generateReelsScript(req, res) {
     regenerate: regenerate
   });
   
-  // Start background processing (non-blocking)
+  // Start background processing (non-blocking - does NOT await)
+  // Gemini API call happens asynchronously, job status updated when complete
   processReelsScript(jobId, topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim(), regenerate)
     .catch(error => {
       console.error(`[generateReelsScript] Background processing error for job ${jobId}:`, error);
-      // Error handling is done inside processReelsScript
+      // Error handling is done inside processReelsScript - job status set to 'error' with fallback data
     });
   
-  // Immediately return jobId (non-blocking)
+  // Immediately return jobId (non-blocking - request completes here)
   return res.json({
     success: true,
     jobId: jobId
