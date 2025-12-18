@@ -541,236 +541,334 @@ Return STRICT JSON only:
 }`;
 }
 
-async function generateCaptions(req, res) {
-  const { topic, tone, audience, language, regenerate, requestId } = req.body || {};
-  
-  // Validate required parameters - throw error if missing
-  if (!topic || topic.trim() === '') {
-    return res.status(400).json({
-      success: false,
-      error: 'Topic is required',
-      data: []
-    });
-  }
-  if (!tone || tone.trim() === '') {
-    return res.status(400).json({
-      success: false,
-      error: 'Mood/Tone is required',
-      data: []
-    });
-  }
-  if (!audience || audience.trim() === '') {
-    return res.status(400).json({
-      success: false,
-      error: 'Audience is required',
-      data: []
-    });
-  }
-  if (!language || language.trim() === '') {
-    return res.status(400).json({
-      success: false,
-      error: 'Language is required',
-      data: []
-    });
-  }
-  
-  // Generate UNIQUE generationId for EVERY request (especially for regenerate)
-  // Use requestId from frontend if provided, otherwise generate new one
-  const finalRequestId = requestId || `BACKEND-${Date.now()}-${Math.random()}-${topic.trim().substring(0, 10)}-${regenerate ? 'REGEN' : 'NEW'}`;
-  const generationId = `${Date.now()}-${Math.random()}-${regenerate ? 'REGEN' : 'NEW'}-${Math.random().toString(36).substring(2, 15)}`;
-  
-  // Generate UNIQUE creative seed using UUID + timestamp + random + requestId for maximum uniqueness
-  // This ensures every request, even with same inputs, produces COMPLETELY different output (ChatGPT-like)
-  const creativeSeed = `${uuidv4()}-${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 10)}-${finalRequestId.substring(0, 20)}`;
-  
-  console.log(`[generateCaptions] ===== NEW REQUEST (ChatGPT-like uniqueness enforced) =====`);
-  console.log(`[generateCaptions] Topic: ${topic}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
-  console.log(`[generateCaptions] Regenerate: ${regenerate ? 'YES - MUST produce COMPLETELY DIFFERENT captions' : 'NO - First generation'}`);
-  console.log(`[generateCaptions] Generation ID: ${generationId}`);
-  console.log(`[generateCaptions] Request ID from client: ${finalRequestId}`);
-  console.log(`[generateCaptions] Creative Seed: ${creativeSeed}`);
-  console.log(`[generateCaptions] ==========================================================`);
+/**
+ * Background processing function for captions generation
+ * Runs Gemini API call asynchronously and updates job status
+ */
+async function processCaptions(jobId, topic, tone, audience, language, regenerate, requestId) {
+  console.log(`[processCaptions] Starting background processing for job: ${jobId}`);
   
   try {
-    console.log('[generateCaptions] Using ChatGPT-style role-based prompting with MAXIMUM uniqueness enforcement...');
+    // Generate UNIQUE generationId for EVERY request
+    const finalRequestId = requestId || `BACKEND-${Date.now()}-${Math.random()}-${topic.trim().substring(0, 10)}-${regenerate ? 'REGEN' : 'NEW'}`;
+    const generationId = `${Date.now()}-${Math.random()}-${regenerate ? 'REGEN' : 'NEW'}-${Math.random().toString(36).substring(2, 15)}`;
+    const creativeSeed = `${uuidv4()}-${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 10)}-${finalRequestId.substring(0, 20)}`;
     
-    // Get system prompt (fixed instructions with strict uniqueness rules)
     const systemPrompt = getSystemPrompt();
-    
-    // Get user prompt (user inputs + unique creative seed + requestId + regenerate flag)
     const userPrompt = getUserPrompt(topic.trim(), tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, finalRequestId, regenerate);
     
-    // Call Gemini with role-based prompting - ENFORCE MAXIMUM temperature and topP for uniqueness
-    // Temperature >= 0.9 and topP >= 0.95 as required for ChatGPT-like behavior
-    // Using MAXIMUM values (0.95+ and 0.98+) for maximum creativity and variation
-    // CRITICAL: Pass userPrompt as first argument (not empty string) to ensure Gemini always receives valid prompt
-    // Wrap in try/catch to ensure we ALWAYS return JSON response
-    let output;
+    let output = '';
     try {
-      // CRITICAL FIX: Pass userPrompt as first argument instead of empty string
-      // This ensures Gemini always receives a valid prompt, even if role-based prompting is used
-      // The prompt parameter is used as fallback if systemPrompt/userPrompt are not provided
       output = await runGemini(userPrompt, { 
         systemPrompt: systemPrompt,
         userPrompt: userPrompt,
-        maxTokens: 1500, // Increased for 5-7 captions with full details
-        temperature: 0.95, // >= 0.9 as required - MAXIMUM creativity (ChatGPT-like, prevents repetition)
-        topP: 0.98 // >= 0.95 as required - MAXIMUM variation (prevents repetition, ensures uniqueness)
+        maxTokens: 1500,
+        temperature: 0.95,
+        topP: 0.98
       });
     } catch (geminiError) {
-      console.error('[generateCaptions] Gemini API call failed:', geminiError.message);
-      // CRITICAL: If timeout or any error, immediately skip to fallback (do NOT wait)
-      // This ensures request never exceeds 25 seconds total (20s timeout + 5s processing)
-      if (geminiError.message === 'GEMINI_TIMEOUT' || geminiError.message.includes('GEMINI_TIMEOUT')) {
-        console.warn('[generateCaptions] ⚠️ GEMINI_TIMEOUT - Immediately returning fallback captions (no waiting)');
-      }
-      // Set output to empty so fallback logic will trigger immediately
+      console.error('[processCaptions] Gemini API call failed:', geminiError.message);
       output = '';
-      console.log('[generateCaptions] Continuing with fallback captions due to Gemini error (immediate, no delay)');
     }
-    
-    console.log('[generateCaptions] Gemini response received, length:', output?.length || 0);
-    
-    // CRITICAL: Log raw Gemini output for debugging
-    console.log('[generateCaptions] ===== RAW GEMINI OUTPUT START =====');
-    console.log(output || '(empty)');
-    console.log('[generateCaptions] ===== RAW GEMINI OUTPUT END =====');
-    
-    // CRITICAL: Treat Gemini output as PLAIN TEXT ONLY - NEVER expect JSON
-    // Stop expecting JSON or result.captions - treat as raw text
-    let captions = [];
     
     // Extract captions from plain text
+    let captions = [];
     if (output && typeof output === 'string' && output.trim().length > 0) {
-      console.log('[generateCaptions] Extracting captions from plain text...');
       const textCaptions = extractCaptionsFromText(output, language);
-      
       if (textCaptions && textCaptions.length > 0) {
-        console.log('[generateCaptions] Extracted', textCaptions.length, 'captions from plain text');
-        // Convert plain text captions to object format
         captions = textCaptions.map((text, index) => ({
           style: ['story', 'question', 'bold', 'emotional', 'action', 'aesthetic', 'punchline'][index % 7] || 'general',
-          text: text.trim(),
-          hashtags: [] // Hashtags will be generated separately if needed
+          text: text,
+          hashtags: []
         }));
-      } else {
-        console.log('[generateCaptions] No captions extracted from text, will use fallback');
       }
-    } else {
-      console.log('[generateCaptions] Output is empty or invalid, will use fallback captions');
     }
     
-    // CRITICAL: If still empty, use fallback captions (NEVER return empty array)
-    if (!Array.isArray(captions) || captions.length === 0) {
-      console.warn('[generateCaptions] WARNING: No captions extracted, using fallback captions');
+    // Use fallback if empty
+    if (captions.length === 0) {
       captions = getFallbackCaptions(language);
     }
     
-    // CRITICAL: Final validation - ensure we NEVER return empty array
-    if (!Array.isArray(captions) || captions.length === 0) {
-      console.error('[generateCaptions] CRITICAL ERROR: Even fallback captions are empty!');
-      // Last resort: hardcoded English captions
-      captions = [
-        { style: 'motivational', text: 'Progress over perfection.', hashtags: ['#motivation'] },
-        { style: 'fitness', text: 'Fitness is a lifestyle, not a phase.', hashtags: ['#fitness'] },
-        { style: 'mindset', text: 'Strong body, stronger mindset.', hashtags: ['#mindset'] },
-        { style: 'inspirational', text: 'Every day is a fresh start.', hashtags: ['#inspiration'] },
-        { style: 'aesthetic', text: 'Beauty is in the details.', hashtags: ['#aesthetic'] },
-      ];
+    // Update job with completed status
+    updateJob(jobId, 'done', { data: captions });
+    console.log(`[processCaptions] ✅ Job ${jobId} completed successfully`);
+  } catch (error) {
+    console.error(`[processCaptions] Error processing job ${jobId}:`, error);
+    // Store fallback result instead of error
+    const fallbackCaptions = getFallbackCaptions(language);
+    updateJob(jobId, 'done', { data: fallbackCaptions, error: error.message });
+  }
+}
+
+/**
+ * POST /ai/captions
+ * Non-blocking endpoint - returns jobId immediately, processes in background
+ */
+
+/**
+ * POST /ai/captions
+ * Non-blocking endpoint - returns jobId immediately, processes in background
+ */
+async function generateCaptions(req, res) {
+  const { topic, tone, audience, language, regenerate, requestId } = req.body || {};
+  
+  // Validate required parameters
+  if (!topic || topic.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Topic is required', data: [] });
+  }
+  if (!tone || tone.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Mood/Tone is required', data: [] });
+  }
+  if (!audience || audience.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Audience is required', data: [] });
+  }
+  if (!language || language.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Language is required', data: [] });
+  }
+  
+  // Generate unique job ID
+  const jobId = generateJobId('CAPTIONS');
+  
+  // Create job with pending status
+  createJob(jobId, {
+    type: 'captions',
+    topic: topic.trim(),
+    tone: tone.trim(),
+    audience: audience.trim(),
+    language: language.trim(),
+    regenerate,
+  });
+  
+  console.log(`[generateCaptions] ===== NEW ASYNC REQUEST =====`);
+  console.log(`[generateCaptions] Job ID: ${jobId}`);
+  console.log(`[generateCaptions] Topic: ${topic}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
+  
+  // Start background processing (non-blocking)
+  processCaptions(jobId, topic, tone, audience, language, regenerate, requestId)
+    .catch((error) => {
+      console.error(`[generateCaptions] Background processing failed for job ${jobId}:`, error);
+      // On failure, store fallback result instead of error (per requirements)
+      const fallbackCaptions = getFallbackCaptions(language);
+      updateJob(jobId, 'done', { 
+        data: fallbackCaptions,
+        error: error.message || 'AI generation failed'
+      });
+    });
+  
+  // Return immediately with jobId (NON-BLOCKING)
+  console.log(`[generateCaptions] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing function for calendar generation
+ * Runs Gemini API call asynchronously and updates job status
+ */
+async function processCalendar(jobId, topic, days) {
+  console.log(`[processCalendar] Starting background processing for job: ${jobId}`);
+  
+  try {
+    console.log('[processCalendar] Calling Gemini API...');
+    const output = await runGemini(calendarPrompt(topic, days), { maxTokens: 4096, temperature: 0.7 });
+    console.log('[processCalendar] Gemini response received');
+    
+    let data = tryParseJson(output, []);
+    
+    // Ensure data is always an array (fallback if empty)
+    if (!Array.isArray(data) || data.length === 0) {
+      console.warn('[processCalendar] WARNING: No calendar data extracted, using empty array fallback');
+      data = [];
     }
     
-    console.log('[generateCaptions] Final captions array length:', captions.length);
-    console.log('[generateCaptions] First caption sample:', captions[0]?.text?.substring(0, 50) || 'N/A');
-    
-    // CRITICAL: Always return success with captions - NEVER return 500 or empty array
-    // Response shape: { success: true, data: captions }
-    console.log('[generateCaptions] ✅ Sending response with', captions.length, 'captions');
-    res.json({ 
-      success: true, 
-      data: captions 
-    });
+    // Update job with completed status
+    updateJob(jobId, 'done', { data });
+    console.log(`[processCalendar] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
-    console.error('[generateCaptions] ERROR:', error.message);
-    console.error('[generateCaptions] ERROR Stack:', error.stack);
-    
-    // CRITICAL: Even on error, return fallback captions instead of empty array
-    // This ensures frontend always gets captions and loading state is cleared
-    const language = req.body?.language || 'English';
-    const fallbackCaptions = getFallbackCaptions(language);
-    console.log('[generateCaptions] Using fallback captions due to error:', error.message);
-    
-    // Return success with fallback captions (better UX than error)
-    res.json({ 
-      success: true, 
-      data: fallbackCaptions 
-    });
+    console.error(`[processCalendar] Error processing job ${jobId}:`, error);
+    // Store fallback result instead of error (empty array)
+    updateJob(jobId, 'done', { data: [], error: error.message || 'AI generation failed' });
   }
 }
 
+/**
+ * POST /ai/calendar
+ * Non-blocking endpoint - returns jobId immediately, processes in background
+ */
 async function generateCalendar(req, res) {
   const { topic = 'instagram growth', days = 7 } = req.body || {};
-  console.log(`[generateCalendar] Request received - topic: ${topic}, days: ${days}`);
-  try {
-    console.log('[generateCalendar] Calling Gemini API...');
-    const output = await runGemini(calendarPrompt(topic, days), { maxTokens: 4096, temperature: 0.7 });
-    console.log('[generateCalendar] Gemini response received');
-    const data = tryParseJson(output, []);
-    console.log('[generateCalendar] Sending response');
-    res.json({ success: true, data });
-  } catch (error) {
-    console.error('[generateCalendar] ERROR:', error.message);
-    console.error('[generateCalendar] ERROR Stack:', error.stack);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to generate calendar', 
-      details: error.message,
-      data: []
+  
+  // Generate unique job ID
+  const jobId = generateJobId('CALENDAR');
+  
+  // Create job with pending status
+  createJob(jobId, {
+    type: 'calendar',
+    topic: topic.trim(),
+    days,
+  });
+  
+  console.log(`[generateCalendar] ===== NEW ASYNC REQUEST =====`);
+  console.log(`[generateCalendar] Job ID: ${jobId}`);
+  console.log(`[generateCalendar] Topic: ${topic}, Days: ${days}`);
+  
+  // Start background processing (non-blocking)
+  processCalendar(jobId, topic.trim(), days)
+    .catch((error) => {
+      console.error(`[generateCalendar] Background processing failed for job ${jobId}:`, error);
+      // On failure, store fallback result
+      updateJob(jobId, 'done', { 
+        data: [],
+        error: error.message || 'AI generation failed'
+      });
     });
+  
+  // Return immediately with jobId (NON-BLOCKING)
+  console.log(`[generateCalendar] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing function for strategy generation
+ * Runs Gemini API call asynchronously and updates job status
+ */
+async function processStrategy(jobId, niche) {
+  console.log(`[processStrategy] Starting background processing for job: ${jobId}`);
+  
+  try {
+    console.log('[processStrategy] Calling Gemini API...');
+    const output = await runGemini(strategyPrompt(niche), { maxTokens: 4096, temperature: 0.7 });
+    console.log('[processStrategy] Gemini response received');
+    
+    let data = tryParseJson(output, {});
+    
+    // Ensure data is always an object (fallback if empty)
+    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+      console.warn('[processStrategy] WARNING: No strategy data extracted, using empty object fallback');
+      data = {};
+    }
+    
+    // Update job with completed status
+    updateJob(jobId, 'done', { data });
+    console.log(`[processStrategy] ✅ Job ${jobId} completed successfully`);
+  } catch (error) {
+    console.error(`[processStrategy] Error processing job ${jobId}:`, error);
+    // Store fallback result instead of error (empty object)
+    updateJob(jobId, 'done', { data: {}, error: error.message || 'AI generation failed' });
   }
 }
 
+/**
+ * POST /ai/strategy
+ * Non-blocking endpoint - returns jobId immediately, processes in background
+ */
 async function generateStrategy(req, res) {
   const { niche = 'instagram growth' } = req.body || {};
-  console.log(`[generateStrategy] Request received - niche: ${niche}`);
-  try {
-    console.log('[generateStrategy] Calling Gemini API...');
-    const output = await runGemini(strategyPrompt(niche), { maxTokens: 4096, temperature: 0.7 });
-    console.log('[generateStrategy] Gemini response received');
-    const data = tryParseJson(output, {});
-    console.log('[generateStrategy] Sending response');
-    res.json({ success: true, data });
-  } catch (error) {
-    console.error('[generateStrategy] ERROR:', error.message);
-    console.error('[generateStrategy] ERROR Stack:', error.stack);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to generate strategy', 
-      details: error.message,
-      data: {}
+  
+  // Generate unique job ID
+  const jobId = generateJobId('STRATEGY');
+  
+  // Create job with pending status
+  createJob(jobId, {
+    type: 'strategy',
+    niche: niche.trim(),
+  });
+  
+  console.log(`[generateStrategy] ===== NEW ASYNC REQUEST =====`);
+  console.log(`[generateStrategy] Job ID: ${jobId}`);
+  console.log(`[generateStrategy] Niche: ${niche}`);
+  
+  // Start background processing (non-blocking)
+  processStrategy(jobId, niche.trim())
+    .catch((error) => {
+      console.error(`[generateStrategy] Background processing failed for job ${jobId}:`, error);
+      // On failure, store fallback result
+      updateJob(jobId, 'done', { 
+        data: {},
+        error: error.message || 'AI generation failed'
+      });
     });
+  
+  // Return immediately with jobId (NON-BLOCKING)
+  console.log(`[generateStrategy] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing function for niche analysis
+ * Runs Gemini API call asynchronously and updates job status
+ */
+async function processNicheAnalysis(jobId, topic) {
+  console.log(`[processNicheAnalysis] Starting background processing for job: ${jobId}`);
+  
+  try {
+    console.log('[processNicheAnalysis] Calling Gemini API...');
+    const output = await runGemini(nicheAnalysisPrompt(topic), { maxTokens: 4096, temperature: 0.7 });
+    console.log('[processNicheAnalysis] Gemini response received');
+    
+    let data = tryParseJson(output, {});
+    
+    // Ensure data is always an object (fallback if empty)
+    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+      console.warn('[processNicheAnalysis] WARNING: No analysis data extracted, using empty object fallback');
+      data = {};
+    }
+    
+    // Update job with done status
+    updateJob(jobId, 'done', { data });
+    console.log(`[processNicheAnalysis] ✅ Job ${jobId} completed successfully`);
+  } catch (error) {
+    console.error(`[processNicheAnalysis] Error processing job ${jobId}:`, error);
+    // Store fallback result instead of error (empty object)
+    updateJob(jobId, 'done', { data: {}, error: error.message || 'AI generation failed' });
   }
 }
 
+/**
+ * POST /ai/analyze
+ * Non-blocking endpoint - returns jobId immediately, processes in background
+ */
 async function analyzeNiche(req, res) {
   const { topic = 'instagram growth' } = req.body || {};
-  console.log(`[analyzeNiche] Request received - topic: ${topic}`);
-  try {
-    console.log('[analyzeNiche] Calling Gemini API...');
-    const output = await runGemini(nicheAnalysisPrompt(topic), { maxTokens: 4096, temperature: 0.7 });
-    console.log('[analyzeNiche] Gemini response received');
-    const data = tryParseJson(output, {});
-    console.log('[analyzeNiche] Sending response');
-    res.json({ success: true, data });
-  } catch (error) {
-    console.error('[analyzeNiche] ERROR:', error.message);
-    console.error('[analyzeNiche] ERROR Stack:', error.stack);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to analyze niche', 
-      details: error.message,
-      data: {}
+  
+  // Generate unique job ID
+  const jobId = generateJobId('ANALYZE');
+  
+  // Create job with pending status
+  createJob(jobId, {
+    type: 'analyze',
+    topic: topic.trim(),
+  });
+  
+  console.log(`[analyzeNiche] ===== NEW ASYNC REQUEST =====`);
+  console.log(`[analyzeNiche] Job ID: ${jobId}`);
+  console.log(`[analyzeNiche] Topic: ${topic}`);
+  
+  // Start background processing (non-blocking)
+  processNicheAnalysis(jobId, topic.trim())
+    .catch((error) => {
+      console.error(`[analyzeNiche] Background processing failed for job ${jobId}:`, error);
+      // On failure, store fallback result
+      updateJob(jobId, 'done', { 
+        data: {},
+        error: error.message || 'AI generation failed'
+      });
     });
-  }
+  
+  // Return immediately with jobId (NON-BLOCKING)
+  console.log(`[analyzeNiche] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
 }
 
 async function generateImageCaptions(req, res) {
@@ -1197,89 +1295,105 @@ CRITICAL:
 - Return STRICT JSON only (no markdown, no extra text)`;
 }
 
+
 /**
- * Background processing function for reels script generation
- * Runs Gemini API call asynchronously and updates job status
+ * Background processing function for reels script (handles errors with fallback)
+ * Wraps the main processing logic to ensure fallback on any error
  */
 async function processReelsScript(jobId, topic, duration, tone, audience, language, regenerate) {
-  console.log(`[processReelsScript] Starting background processing for job: ${jobId}`);
-  
-  // Generate UNIQUE generationId for EVERY request (especially for regenerate)
-  const finalRequestId = `REELS-${Date.now()}-${Math.random()}-${topic.trim().substring(0, Math.min(topic.trim().length, 10))}-${regenerate ? 'REGEN' : 'NEW'}`;
-  const generationId = `${Date.now()}-${Math.random()}-${regenerate ? 'REGEN' : 'NEW'}-${Math.random().toString(36).substring(2, 15)}`;
-  
-  // Generate UNIQUE creative seed
-  const creativeSeed = `${uuidv4()}-${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 10)}-${finalRequestId.substring(0, Math.min(finalRequestId.length, 20))}`;
-  
-  console.log(`[processReelsScript] Topic: ${topic}, Duration: ${duration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
-  console.log(`[processReelsScript] Regenerate: ${regenerate ? 'YES' : 'NO'}`);
-  
-  let output = '';
   try {
-    console.log('[processReelsScript] Calling Gemini API...');
-    const prompt = reelsScriptPrompt(topic.trim(), duration, tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, regenerate);
+    // Main processing logic (moved inline to avoid duplicate function)
+    console.log(`[processReelsScript] Starting background processing for job: ${jobId}`);
     
-    output = await runGemini(prompt, {
-      maxTokens: 2048,
-      temperature: 0.9,
-      topP: 0.95
-    });
-  } catch (geminiError) {
-    console.error('[processReelsScript] Gemini API call failed:', geminiError.message);
-    // On error, use fallback script
-    output = '';
-  }
-  
-  console.log('[processReelsScript] Gemini response received, length:', output?.length || 0);
-  
-  // CRITICAL: Treat Gemini output as PLAIN TEXT ONLY - NEVER expect JSON
-  let scriptData = null;
-  
-  // Step 1: Try JSON parsing first (in case Gemini returns JSON)
-  if (output && output.length > 0) {
-    scriptData = extractJsonFromText(output);
-  }
-  
-  // Step 2: If JSON parsing failed, extract from plain text
-  if (!scriptData || typeof scriptData !== 'object' || !scriptData.hooks || !scriptData.script) {
-    console.log('[processReelsScript] JSON parsing failed or incomplete, extracting from plain text...');
-    const textScript = extractReelsScriptFromText(output, language);
+    // Generate UNIQUE generationId for EVERY request (especially for regenerate)
+    const finalRequestId = `REELS-${Date.now()}-${Math.random()}-${topic.trim().substring(0, Math.min(topic.trim().length, 10))}-${regenerate ? 'REGEN' : 'NEW'}`;
+    const generationId = `${Date.now()}-${Math.random()}-${regenerate ? 'REGEN' : 'NEW'}-${Math.random().toString(36).substring(2, 15)}`;
     
-    if (textScript && textScript.hooks && textScript.script) {
-      console.log('[processReelsScript] Extracted script from plain text');
-      scriptData = textScript;
+    // Generate UNIQUE creative seed
+    const creativeSeed = `${uuidv4()}-${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 10)}-${finalRequestId.substring(0, Math.min(finalRequestId.length, 20))}`;
+    
+    console.log(`[processReelsScript] Topic: ${topic}, Duration: ${duration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
+    console.log(`[processReelsScript] Regenerate: ${regenerate ? 'YES' : 'NO'}`);
+    
+    let output = '';
+    try {
+      console.log('[processReelsScript] Calling Gemini API...');
+      const prompt = reelsScriptPrompt(topic.trim(), duration, tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, regenerate);
+      
+      output = await runGemini(prompt, {
+        maxTokens: 2048,
+        temperature: 0.9,
+        topP: 0.95
+      });
+    } catch (geminiError) {
+      console.error('[processReelsScript] Gemini API call failed:', geminiError.message);
+      // On error, use fallback script
+      output = '';
     }
+    
+    console.log('[processReelsScript] Gemini response received, length:', output?.length || 0);
+    
+    // CRITICAL: Treat Gemini output as PLAIN TEXT ONLY - NEVER expect JSON
+    let scriptData = null;
+    
+    // Step 1: Try JSON parsing first (in case Gemini returns JSON)
+    if (output && output.length > 0) {
+      scriptData = extractJsonFromText(output);
+    }
+    
+    // Step 2: If JSON parsing failed, extract from plain text
+    if (!scriptData || typeof scriptData !== 'object' || !scriptData.hooks || !scriptData.script) {
+      console.log('[processReelsScript] JSON parsing failed or incomplete, extracting from plain text...');
+      const textScript = extractReelsScriptFromText(output, language);
+      
+      if (textScript && textScript.hooks && textScript.script) {
+        console.log('[processReelsScript] Extracted script from plain text');
+        scriptData = textScript;
+      }
+    }
+    
+    // Step 3: If still empty, use fallback script (NEVER return empty data)
+    if (!scriptData || !scriptData.hooks || !scriptData.script || !Array.isArray(scriptData.hooks) || !Array.isArray(scriptData.script)) {
+      console.warn('[processReelsScript] WARNING: No script extracted, using fallback script');
+      scriptData = getFallbackReelsScript(language, topic, duration);
+    }
+    
+    // CRITICAL: Final validation - ensure we NEVER return empty data
+    if (!scriptData || !scriptData.hooks || !scriptData.script || scriptData.hooks.length === 0 || scriptData.script.length === 0) {
+      console.error('[processReelsScript] CRITICAL ERROR: Even fallback script is empty!');
+      scriptData = getFallbackReelsScript('English', topic, duration);
+    }
+    
+    // Ensure hooks array has at least 3 items
+    if (!Array.isArray(scriptData.hooks) || scriptData.hooks.length < 3) {
+      const fallbackHooks = getFallbackReelsScript(language, topic, duration).hooks;
+      scriptData.hooks = [...(scriptData.hooks || []), ...fallbackHooks].slice(0, 3);
+    }
+    
+    // Ensure script array has at least 4 items
+    if (!Array.isArray(scriptData.script) || scriptData.script.length < 4) {
+      const fallbackScript = getFallbackReelsScript(language, topic, duration).script;
+      scriptData.script = [...(scriptData.script || []), ...fallbackScript].slice(0, 6);
+    }
+    
+    console.log('[processReelsScript] Final script - hooks:', scriptData.hooks?.length || 0, 'scenes:', scriptData.script?.length || 0);
+    
+    // Transform to required format
+    const transformedData = transformScriptData(scriptData, language, topic, duration);
+    
+    // Update job with done status and data
+    updateJob(jobId, 'done', { data: transformedData });
+    console.log(`[processReelsScript] ✅ Job ${jobId} completed successfully`);
+  } catch (error) {
+    console.error(`[processReelsScript] Error processing job ${jobId}:`, error);
+    // Store fallback result instead of error (per requirements)
+    const fallbackScript = getFallbackReelsScript(language, topic, duration);
+    const transformedFallback = transformScriptData(fallbackScript, language, topic, duration);
+    updateJob(jobId, 'done', { 
+      data: transformedFallback,
+      error: error.message || 'AI generation failed'
+    });
   }
-  
-  // Step 3: If still empty, use fallback script (NEVER return empty data)
-  if (!scriptData || !scriptData.hooks || !scriptData.script || !Array.isArray(scriptData.hooks) || !Array.isArray(scriptData.script)) {
-    console.warn('[processReelsScript] WARNING: No script extracted, using fallback script');
-    scriptData = getFallbackReelsScript(language, topic, duration);
-  }
-  
-  // CRITICAL: Final validation - ensure we NEVER return empty data
-  if (!scriptData || !scriptData.hooks || !scriptData.script || scriptData.hooks.length === 0 || scriptData.script.length === 0) {
-    console.error('[processReelsScript] CRITICAL ERROR: Even fallback script is empty!');
-    scriptData = getFallbackReelsScript('English', topic, duration);
-  }
-  
-  // Ensure hooks array has at least 3 items
-  if (!Array.isArray(scriptData.hooks) || scriptData.hooks.length < 3) {
-    const fallbackHooks = getFallbackReelsScript(language, topic, duration).hooks;
-    scriptData.hooks = [...(scriptData.hooks || []), ...fallbackHooks].slice(0, 3);
-  }
-  
-  // Ensure script array has at least 4 items
-  if (!Array.isArray(scriptData.script) || scriptData.script.length < 4) {
-    const fallbackScript = getFallbackReelsScript(language, topic, duration).script;
-    scriptData.script = [...(scriptData.script || []), ...fallbackScript].slice(0, 6);
-  }
-  
-  console.log('[processReelsScript] Final script - hooks:', scriptData.hooks?.length || 0, 'scenes:', scriptData.script?.length || 0);
-  
-  // Update job with completed status and data
-  updateJob(jobId, 'completed', { data: scriptData });
-  console.log(`[processReelsScript] ✅ Job ${jobId} completed successfully`);
 }
 
 /**
@@ -1339,7 +1453,7 @@ function transformScriptData(scriptData, language, topic, duration) {
 
 /**
  * POST /ai/reels-script
- * Synchronous endpoint - generates and returns script data immediately
+ * Non-blocking endpoint - returns jobId immediately, processes in background
  */
 async function generateReelsScript(req, res) {
   const { topic, duration = '15s', tone = 'Motivational', audience = 'Creator', language = 'English', regenerate = false } = req.body || {};
@@ -1353,97 +1467,52 @@ async function generateReelsScript(req, res) {
   const validDurations = ['15s', '30s', '60s'];
   const finalDuration = validDurations.includes(duration) ? duration : '15s';
   
-  console.log(`[generateReelsScript] ===== NEW REQUEST =====`);
+  // Generate unique job ID
+  const jobId = generateJobId('REELS');
+  
+  // Create job with pending status
+  createJob(jobId, {
+    type: 'reels-script',
+    topic: topic.trim(),
+    duration: finalDuration,
+    tone: tone.trim(),
+    audience: audience.trim(),
+    language: language.trim(),
+    regenerate,
+  });
+  
+  console.log(`[generateReelsScript] ===== NEW ASYNC REQUEST =====`);
+  console.log(`[generateReelsScript] Job ID: ${jobId}`);
   console.log(`[generateReelsScript] Topic: ${topic}, Duration: ${finalDuration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
-  console.log(`[generateReelsScript] Regenerate: ${regenerate ? 'YES' : 'NO'}`);
   
-  // Generate UNIQUE generationId for EVERY request
-  const finalRequestId = `REELS-${Date.now()}-${Math.random()}-${topic.trim().substring(0, Math.min(topic.trim().length, 10))}-${regenerate ? 'REGEN' : 'NEW'}`;
-  const generationId = `${Date.now()}-${Math.random()}-${regenerate ? 'REGEN' : 'NEW'}-${Math.random().toString(36).substring(2, 15)}`;
-  
-  // Generate UNIQUE creative seed
-  const creativeSeed = `${uuidv4()}-${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 10)}-${finalRequestId.substring(0, Math.min(finalRequestId.length, 20))}`;
-  
-  let output = '';
-  try {
-    console.log('[generateReelsScript] Calling Gemini API...');
-    const prompt = reelsScriptPrompt(topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, regenerate);
-    
-    output = await runGemini(prompt, {
-      maxTokens: 2048,
-      temperature: 0.9,
-      topP: 0.95
+  // Start background processing (non-blocking)
+  processReelsScript(jobId, topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim(), regenerate)
+    .catch((error) => {
+      console.error(`[generateReelsScript] Background processing failed for job ${jobId}:`, error);
+      // On failure, store fallback result instead of error (per requirements)
+      const fallbackScript = getFallbackReelsScript(language, topic, finalDuration);
+      const transformedFallback = transformScriptData(fallbackScript, language, topic, finalDuration);
+      updateJob(jobId, 'done', { 
+        data: transformedFallback,
+        error: error.message || 'AI generation failed'
+      });
     });
-  } catch (geminiError) {
-    console.error('[generateReelsScript] Gemini API call failed:', geminiError.message);
-    // On error, use fallback script
-    output = '';
-  }
   
-  console.log('[generateReelsScript] Gemini response received, length:', output?.length || 0);
-  
-  // CRITICAL: Treat Gemini output as PLAIN TEXT ONLY - NEVER expect JSON
-  let scriptData = null;
-  
-  // Step 1: Try JSON parsing first (in case Gemini returns JSON)
-  if (output && output.length > 0) {
-    scriptData = extractJsonFromText(output);
-  }
-  
-  // Step 2: If JSON parsing failed, extract from plain text
-  if (!scriptData || typeof scriptData !== 'object' || !scriptData.hooks || !scriptData.script) {
-    console.log('[generateReelsScript] JSON parsing failed or incomplete, extracting from plain text...');
-    const textScript = extractReelsScriptFromText(output, language);
-    
-    if (textScript && textScript.hooks && textScript.script) {
-      console.log('[generateReelsScript] Extracted script from plain text');
-      scriptData = textScript;
-    }
-  }
-  
-  // Step 3: If still empty, use fallback script (NEVER return empty data)
-  if (!scriptData || !scriptData.hooks || !scriptData.script || !Array.isArray(scriptData.hooks) || !Array.isArray(scriptData.script)) {
-    console.warn('[generateReelsScript] WARNING: No script extracted, using fallback script');
-    scriptData = getFallbackReelsScript(language, topic, finalDuration);
-  }
-  
-  // CRITICAL: Final validation - ensure we NEVER return empty data
-  if (!scriptData || !scriptData.hooks || !scriptData.script || scriptData.hooks.length === 0 || scriptData.script.length === 0) {
-    console.error('[generateReelsScript] CRITICAL ERROR: Even fallback script is empty!');
-    scriptData = getFallbackReelsScript('English', topic, finalDuration);
-  }
-  
-  // Ensure hooks array has at least 1 item
-  if (!Array.isArray(scriptData.hooks) || scriptData.hooks.length === 0) {
-    const fallbackHooks = getFallbackReelsScript(language, topic, finalDuration).hooks;
-    scriptData.hooks = fallbackHooks;
-  }
-  
-  // Ensure script array has at least 1 scene
-  if (!Array.isArray(scriptData.script) || scriptData.script.length === 0) {
-    const fallbackScript = getFallbackReelsScript(language, topic, finalDuration).script;
-    scriptData.script = fallbackScript;
-  }
-  
-  // Transform to required format
-  const transformedData = transformScriptData(scriptData, language, topic, finalDuration);
-  
-  console.log('[generateReelsScript] Final script - hook: present, scenes:', transformedData.scenes.length, 'hashtags:', transformedData.hashtags.length);
-  
-  // Ensure response is ALWAYS JSON (never HTML)
-  console.log('[generateReelsScript] ✅ Sending JSON response');
+  // Return immediately with jobId (NON-BLOCKING)
+  console.log(`[generateReelsScript] ✅ Returning jobId immediately: ${jobId}`);
   res.json({ 
     success: true, 
-    data: transformedData
+    jobId: jobId
   });
 }
 
 /**
- * GET /ai/reels-script/status?jobId=xxx
- * Check status of async reels script generation
+ * GET /ai/job-status/:jobId
+ * Unified endpoint to check status of any async AI job
+ * Returns: { success: true, status: 'pending' | 'done' | 'error', data?: {...}, error?: string }
  */
-function getReelsScriptStatus(req, res) {
-  const { jobId } = req.query;
+function getJobStatus(req, res) {
+  const { jobId } = req.params;
   
   if (!jobId) {
     return res.status(400).json({ 
@@ -1452,7 +1521,7 @@ function getReelsScriptStatus(req, res) {
     });
   }
   
-  const job = require('../utils/jobStore').getJob(jobId);
+  const job = getJob(jobId);
   
   if (!job) {
     return res.status(404).json({ 
@@ -1462,26 +1531,51 @@ function getReelsScriptStatus(req, res) {
     });
   }
   
-  // Return job status and data (if completed or failed)
+  // Return job status and data (if done or error)
   const response = {
     success: true,
-    status: job.status,
+    status: job.status, // 'pending' | 'done' | 'error'
     jobId: job.jobId,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
   };
   
-  // Include data if job is completed or failed (with fallback)
-  if (job.status === 'completed' || job.status === 'failed') {
-    response.data = job.data || getFallbackReelsScript(job.language || 'English', job.topic || 'motivation', job.duration || '15s');
+  // Include data if job is done or error (always return data, even if fallback)
+  if (job.status === 'done' || job.status === 'error') {
+    response.data = job.data;
+    
+    // If no data, provide fallback based on job type
+    if (!response.data) {
+      switch (job.type) {
+        case 'captions':
+          response.data = getFallbackCaptions(job.language || 'English');
+          break;
+        case 'calendar':
+          response.data = [];
+          break;
+        case 'strategy':
+          response.data = {};
+          break;
+        case 'reels-script':
+          response.data = transformScriptData(
+            getFallbackReelsScript(job.language || 'English', job.topic || 'motivation', job.duration || '15s'),
+            job.language || 'English',
+            job.topic || 'motivation',
+            job.duration || '15s'
+          );
+          break;
+        default:
+          response.data = {};
+      }
+    }
   }
   
-  // Include error message if failed
-  if (job.status === 'failed' && job.error) {
+  // Include error message if error status
+  if (job.status === 'error' && job.error) {
     response.error = job.error;
   }
   
-  console.log(`[getReelsScriptStatus] Job ${jobId} status: ${job.status}`);
+  console.log(`[getJobStatus] Job ${jobId} (type: ${job.type}) status: ${job.status}`);
   res.json(response);
 }
 
@@ -1493,6 +1587,7 @@ module.exports = {
   generateStrategy,
   analyzeNiche,
   generateReelsScript,
-  getReelsScriptStatus,
+  getReelsScriptStatus, // Legacy endpoint (kept for backward compatibility)
+  getJobStatus, // Unified job status endpoint for all AI jobs
 };
 

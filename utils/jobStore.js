@@ -14,13 +14,13 @@ const jobs = new Map();
 function createJob(jobId, initialData = {}) {
   const job = {
     jobId,
-    status: 'processing',
+    status: 'pending', // Standard statuses: pending | done | error
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...initialData,
   };
   jobs.set(jobId, job);
-  console.log(`[JobStore] Created job: ${jobId}, status: processing`);
+  console.log(`[JobStore] Created job: ${jobId}, status: pending, type: ${initialData.type || 'unknown'}`);
   return job;
 }
 
@@ -36,7 +36,7 @@ function getJob(jobId) {
 /**
  * Update job status and data
  * @param {string} jobId - Job identifier
- * @param {string} status - New status ('processing' | 'completed' | 'failed')
+ * @param {string} status - New status ('pending' | 'done' | 'error')
  * @param {object} data - Additional data to store
  */
 function updateJob(jobId, status, data = {}) {
@@ -46,12 +46,17 @@ function updateJob(jobId, status, data = {}) {
     return null;
   }
   
-  job.status = status;
+  // Standardize status values: pending | done | error
+  const standardizedStatus = status === 'completed' ? 'done' : 
+                              status === 'failed' ? 'error' : 
+                              status;
+  
+  job.status = standardizedStatus;
   job.updatedAt = new Date().toISOString();
   Object.assign(job, data);
   
   jobs.set(jobId, job);
-  console.log(`[JobStore] Updated job: ${jobId}, status: ${status}`);
+  console.log(`[JobStore] Updated job: ${jobId}, status: ${standardizedStatus}`);
   return job;
 }
 
@@ -90,10 +95,11 @@ setInterval(cleanupOldJobs, 30 * 60 * 1000);
 
 /**
  * Generate unique job ID
+ * @param {string} prefix - Optional prefix (default: 'JOB')
  * @returns {string} Unique job identifier
  */
-function generateJobId() {
-  return `REELS-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+function generateJobId(prefix = 'JOB') {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
 }
 
 module.exports = {
