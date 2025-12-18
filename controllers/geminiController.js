@@ -1452,8 +1452,8 @@ function transformScriptData(scriptData, language, topic, duration) {
 }
 
 /**
- * Simple, fast reels script prompt (optimized for 600 tokens)
- * Returns strict JSON: { hook, scenes[], cta, caption, hashtags[] }
+ * Reels script prompt optimized for Gemini 1.5 Flash
+ * Returns strict JSON: { hook, scene_by_scene: [{ time, visual, dialogue }], cta, caption, hashtags[] }
  */
 function createReelsScriptPrompt(topic, duration, tone, audience, language) {
   // Calculate scene count based on duration
@@ -1482,8 +1482,8 @@ Audience: ${audience}
 Language: ${languageRule}
 
 REQUIREMENTS:
-- Hook (0-3s): One scroll-stopping hook line
-- Scenes: Exactly ${sceneCount} scenes, each with duration, voiceover, on_screen_text
+- Hook: One scroll-stopping hook line (short, punchy)
+- Scene-by-scene: Exactly ${sceneCount} scenes with time, visual description, and dialogue
 - CTA: One call-to-action line
 - Caption: Short caption under 150 chars
 - Hashtags: Exactly 10 relevant hashtags
@@ -1491,11 +1491,11 @@ REQUIREMENTS:
 OUTPUT FORMAT (STRICT JSON only):
 {
   "hook": "Scroll-stopping hook line",
-  "scenes": [
+  "scene_by_scene": [
     {
-      "duration": "0-3s",
-      "voiceover": "Voiceover text",
-      "on_screen_text": "On-screen text"
+      "time": "0-3s",
+      "visual": "What viewer sees (shot description)",
+      "dialogue": "What is said (voiceover/text)"
     }
   ],
   "cta": "Call to action",
@@ -1508,24 +1508,25 @@ Return ONLY valid JSON, no markdown, no extra text.`;
 
 /**
  * Generate fallback reels script (always available)
+ * Format: { hook, scene_by_scene: [{ time, visual, dialogue }], cta, caption, hashtags[] }
  */
 function getSimpleFallbackScript(language, topic, duration) {
   const durationSeconds = parseInt(duration) || 15;
   const sceneCount = durationSeconds <= 15 ? 4 : durationSeconds <= 30 ? 6 : 8;
   
-  const scenes = [];
+  const sceneByScene = [];
   for (let i = 0; i < sceneCount; i++) {
     const startTime = i * Math.floor(durationSeconds / sceneCount);
     const endTime = (i + 1) * Math.floor(durationSeconds / sceneCount);
     
-    scenes.push({
-      duration: `${startTime}-${endTime}s`,
-      voiceover: language === 'Hindi' ? 'यह महत्वपूर्ण है' : 
+    sceneByScene.push({
+      time: `${startTime}-${endTime}s`,
+      visual: language === 'Hindi' ? 'कैमरा शॉट' : 
+             language === 'Hinglish' ? 'Camera shot' : 
+             'Medium shot',
+      dialogue: language === 'Hindi' ? 'यह महत्वपूर्ण है' : 
                 language === 'Hinglish' ? 'Yeh important hai' : 
-                'This is important',
-      on_screen_text: language === 'Hindi' ? 'देखें' : 
-                     language === 'Hinglish' ? 'Dekho' : 
-                     'Watch this'
+                'This is important'
     });
   }
   
@@ -1533,7 +1534,7 @@ function getSimpleFallbackScript(language, topic, duration) {
     hook: language === 'Hindi' ? 'क्या आप जानते हैं?' : 
           language === 'Hinglish' ? 'Kya aap jaante hain?' : 
           'Did you know this?',
-    scenes: scenes,
+    scene_by_scene: sceneByScene,
     cta: language === 'Hindi' ? 'सेव करें' : 
          language === 'Hinglish' ? 'Save karein' : 
          'Save this post',
@@ -1550,8 +1551,8 @@ function getSimpleFallbackScript(language, topic, duration) {
 
 /**
  * POST /ai/reels-script
- * Simple, synchronous endpoint - returns script data directly
- * Never blocks longer than 25 seconds, always returns fallback on failure
+ * Stable synchronous endpoint - one request = one response
+ * Timeout <= 25 seconds, never returns 500, always returns fallback on failure
  */
 async function generateReelsScript(req, res) {
   const { topic, duration = '15s', tone = 'Motivational', audience = 'Creator', language = 'English' } = req.body || {};
@@ -1565,7 +1566,7 @@ async function generateReelsScript(req, res) {
   const validDurations = ['15s', '30s', '60s'];
   const finalDuration = validDurations.includes(duration) ? duration : '15s';
   
-  console.log(`[generateReelsScript] Request: topic="${topic}", duration=${finalDuration}, tone=${tone}, language=${language}`);
+  console.log(`[generateReelsScript] Request: topic="${topic}", duration=${finalDuration}, tone=${tone}, audience=${audience}, language=${language}`);
   
   // Create timeout promise (25 seconds max - CRITICAL)
   const timeoutPromise = new Promise((_, reject) => {
@@ -1574,13 +1575,13 @@ async function generateReelsScript(req, res) {
     }, 25000);
   });
   
-  // Create Gemini API promise with 600 token limit
+  // Create Gemini API promise
   const geminiPromise = (async () => {
     try {
       const prompt = createReelsScriptPrompt(topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim());
       
       const output = await runGemini(prompt, {
-        maxTokens: 600, // CRITICAL: Limit to 600 tokens for speed
+        maxTokens: 600, // Optimized for speed
         temperature: 0.8,
         topP: 0.95
       });
@@ -1591,27 +1592,34 @@ async function generateReelsScript(req, res) {
         scriptData = extractJsonFromText(output);
       }
       
-      // Validate structure
+      // Validate structure matches required format
       if (scriptData && 
           typeof scriptData === 'object' &&
           scriptData.hook &&
-          Array.isArray(scriptData.scenes) &&
-          scriptData.scenes.length > 0 &&
+          Array.isArray(scriptData.scene_by_scene) &&
+          scriptData.scene_by_scene.length > 0 &&
           scriptData.cta &&
           scriptData.caption &&
           Array.isArray(scriptData.hashtags)) {
         
-        // Ensure exactly 10 hashtags
-        if (scriptData.hashtags.length !== 10) {
-          const defaultTags = ['#reels', '#viral', '#instagram', '#growth', '#success', '#motivation', '#trending', '#fyp', '#explore', '#content'];
-          scriptData.hashtags = [...scriptData.hashtags, ...defaultTags].slice(0, 10);
-        }
+        // Validate scene structure
+        const validScenes = scriptData.scene_by_scene.every(scene => 
+          scene.time && scene.visual && scene.dialogue
+        );
         
-        console.log(`[generateReelsScript] ✅ Success: ${scriptData.scenes.length} scenes`);
-        return scriptData;
+        if (validScenes) {
+          // Ensure exactly 10 hashtags
+          if (scriptData.hashtags.length !== 10) {
+            const defaultTags = ['#reels', '#viral', '#instagram', '#growth', '#success', '#motivation', '#trending', '#fyp', '#explore', '#content'];
+            scriptData.hashtags = [...scriptData.hashtags, ...defaultTags].slice(0, 10);
+          }
+          
+          console.log(`[generateReelsScript] ✅ Success: ${scriptData.scene_by_scene.length} scenes`);
+          return scriptData;
+        }
       }
       
-      // If parsing failed, use fallback
+      // If parsing or validation failed, use fallback
       throw new Error('Invalid JSON structure from Gemini');
     } catch (error) {
       console.error('[generateReelsScript] Gemini error:', error.message);
@@ -1630,12 +1638,12 @@ async function generateReelsScript(req, res) {
       data: scriptData
     });
   } catch (error) {
-    // Timeout or Gemini failure - return fallback
+    // Timeout or Gemini failure - return fallback (NEVER return 500)
     console.warn(`[generateReelsScript] ⚠️ Using fallback script (reason: ${error.message})`);
     
     const fallbackScript = getSimpleFallbackScript(language, topic, finalDuration);
     
-    // Always return success with fallback data (never error)
+    // Always return success with fallback data (never 500 error)
     return res.json({
       success: true,
       data: fallbackScript
@@ -1723,8 +1731,7 @@ module.exports = {
   generateCalendar,
   generateStrategy,
   analyzeNiche,
-  generateReelsScript,
-  getReelsScriptStatus, // Legacy endpoint (kept for backward compatibility)
+  generateReelsScript, // Legacy endpoint (kept for backward compatibility)
   getJobStatus, // Unified job status endpoint for all AI jobs
 };
 
