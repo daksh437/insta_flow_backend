@@ -309,14 +309,28 @@ async function runGemini(prompt, opts = {}) {
   }
   
   try {
+    // CRITICAL: Validate prompt is not empty
+    if (!prompt || (typeof prompt === 'string' && prompt.trim().length === 0)) {
+      // If prompt is empty but we have userPrompt in opts, use that
+      if (opts.userPrompt && opts.userPrompt.trim().length > 0) {
+        console.log('[runGemini] Prompt is empty, using userPrompt from opts');
+        prompt = opts.userPrompt;
+      } else {
+        console.warn('[runGemini] WARNING: Prompt is empty and no userPrompt provided');
+        throw new Error('Prompt cannot be empty');
+      }
+    }
+    
     console.log('[runGemini] Calling Gemini API with prompt length:', prompt.length);
     
-    // Add timeout wrapper for Gemini API call
+    // CRITICAL: Hard timeout wrapper for Gemini API call - 20 seconds
+    // This prevents backend from hanging if Gemini API is slow or unresponsive
+    const timeoutMs = 20000; // 20 seconds hard timeout
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => {
-        console.log('[runGemini] Timeout reached (10 seconds)');
-        reject(new Error('Gemini API timeout after 10 seconds'));
-      }, 10000);
+        console.log(`[runGemini] ⚠️ HARD TIMEOUT reached after ${timeoutMs}ms`);
+        reject(new Error('GEMINI_TIMEOUT'));
+      }, timeoutMs);
     });
 
     console.log('[runGemini] Creating API promise...');
@@ -399,17 +413,26 @@ async function runGemini(prompt, opts = {}) {
       }
     });
 
-    console.log('[runGemini] Waiting for API response or timeout...');
+    console.log('[runGemini] Waiting for API response or timeout (20s max)...');
+    
+    // CRITICAL: Use Promise.race to enforce hard timeout
+    // If Gemini takes longer than 20 seconds, timeout wins and throws GEMINI_TIMEOUT
     const response = await Promise.race([apiPromise, timeoutPromise]);
+    
     console.log('[runGemini] Response received, length:', response?.length || 0);
     return response;
   } catch (error) {
-    console.error('[runGemini] Error:', error.message);
-    console.log('[runGemini] Falling back to mock data');
-    // Fallback to mock on API error or timeout
-    const mockResponse = getMockResponse(prompt);
-    console.log('[runGemini] Mock response generated');
-    return mockResponse;
+    console.error('[runGemini] ERROR:', error.message);
+    console.error('[runGemini] ERROR Stack:', error.stack);
+    
+    // CRITICAL: If timeout occurred, throw clear GEMINI_TIMEOUT error
+    if (error.message === 'GEMINI_TIMEOUT' || error.message.includes('GEMINI_TIMEOUT')) {
+      console.error('[runGemini] ⚠️ GEMINI_TIMEOUT - API call exceeded 20 seconds');
+      throw new Error('GEMINI_TIMEOUT');
+    }
+    
+    // DO NOT fallback to mock - throw error so controller can return proper error JSON
+    throw new Error(`Gemini API failed: ${error.message}`);
   }
 }
 

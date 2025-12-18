@@ -21,6 +21,14 @@ app.use(
   })
 );
 
+// Disable caching for all responses - ensure fresh AI responses every time
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
+
 // Body parsing - increased limit for image uploads
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
