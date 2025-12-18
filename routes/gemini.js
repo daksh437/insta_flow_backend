@@ -7,30 +7,23 @@ const {
   analyzeNiche,
   generateImageCaptions,
   generateCaptionFromMedia,
-  generateReelsScript
+  generateReelsScript,
+  getJobStatus
 } = require('../controllers/geminiController');
 
 const router = express.Router();
 
-/**
- * AI Generation Endpoints
- * NOTE: All endpoints are synchronous (no job/status system)
- */
-
-// Captions
+// AI Generation Endpoints (all return jobId immediately, non-blocking)
 router.post('/captions', generateCaptions);
-
-// Image based captions
 router.post('/image-captions', generateImageCaptions);
 router.post('/caption-from-media', generateCaptionFromMedia);
-
-// Calendar & Strategy
 router.post('/calendar', generateCalendar);
 router.post('/strategy', generateStrategy);
 router.post('/analyze', analyzeNiche);
-
-// 🎬 Reels Script (MAIN FEATURE)
 router.post('/reels-script', generateReelsScript);
+
+// Unified Job Status Endpoint (for all AI jobs)
+router.get('/job-status/:jobId', getJobStatus);
 
 module.exports = router;
 
