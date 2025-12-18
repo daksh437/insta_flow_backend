@@ -13,14 +13,17 @@ const jobs = new Map();
  */
 function createJob(jobId, initialData = {}) {
   const job = {
+    id: jobId,
     jobId,
-    status: 'pending', // Standard statuses: pending | done | error
+    status: initialData.status || 'queued', // queued | processing | completed | failed
+    result: null,
+    error: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...initialData,
   };
   jobs.set(jobId, job);
-  console.log(`[JobStore] Created job: ${jobId}, status: pending, type: ${initialData.type || 'unknown'}`);
+  console.log(`[JobStore] Created job: ${jobId}, status: ${job.status}, type: ${initialData.type || 'unknown'}`);
   return job;
 }
 
@@ -46,13 +49,23 @@ function updateJob(jobId, status, data = {}) {
     return null;
   }
   
-  // Standardize status values: pending | done | error
-  const standardizedStatus = status === 'completed' ? 'done' : 
-                              status === 'failed' ? 'error' : 
+  // Standardize status values: queued | processing | completed | failed
+  const standardizedStatus = status === 'done' ? 'completed' : 
+                              status === 'error' ? 'failed' : 
+                              status === 'pending' ? 'queued' :
                               status;
   
   job.status = standardizedStatus;
   job.updatedAt = new Date().toISOString();
+  
+  // Update result and error fields
+  if (data.data !== undefined) {
+    job.result = data.data;
+  }
+  if (data.error !== undefined) {
+    job.error = data.error;
+  }
+  
   Object.assign(job, data);
   
   jobs.set(jobId, job);

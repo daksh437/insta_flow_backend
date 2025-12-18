@@ -8,7 +8,7 @@ const geminiRoutes = require('./routes/gemini');
 const calendarRoutes = require('./routes/calendar');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // CORS for Flutter/web - Enable for all origins in production
 const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').filter(Boolean);
@@ -69,17 +69,17 @@ app.use((err, req, res, next) => {
 });
 
 // Listen on all network interfaces (0.0.0.0) for cloud deployment
-app.listen(port, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', () => {
   const env = process.env.NODE_ENV || 'development';
-  console.log(`🚀 InstaFlow backend running on port ${port}`);
+  console.log(`🚀 InstaFlow backend running on port ${PORT}`);
   console.log(`🌍 Environment: ${env}`);
   console.log(`✅ Server ready for requests!`);
-  console.log(`📊 Health check: http://0.0.0.0:${port}/health`);
+  console.log(`📊 Health check: http://0.0.0.0:${PORT}/health`);
   
   if (env === 'production') {
     console.log(`☁️  Production mode: Server accessible from all network interfaces`);
   } else {
-    console.log(`💻 Development mode: http://localhost:${port}`);
+    console.log(`💻 Development mode: http://localhost:${PORT}`);
   }
 });
 

@@ -1,7 +1,7 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const apiKey = process.env.GEMINI_API_KEY;
-const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+const modelName = process.env.GEMINI_MODEL || 'models/gemini-1.5-pro';
 
 let model = null;
 if (apiKey && apiKey !== 'YOUR_GEMINI_API_KEY') {
@@ -358,6 +358,25 @@ async function runGemini(prompt, opts = {}) {
         maxOutputTokens: opts.maxTokens ?? 1024,
         topP: opts.topP ?? 0.95,
       },
+    }).catch(apiError => {
+      // Handle Gemini API errors (404, model not found, etc.)
+      console.error('[runGemini] Gemini API error:', apiError.message);
+      console.error('[runGemini] Error code:', apiError.code);
+      console.error('[runGemini] Error status:', apiError.status);
+      
+      // Check for specific error types
+      if (apiError.status === 404 || apiError.message?.includes('not found') || apiError.message?.includes('404')) {
+        throw new Error('GEMINI_MODEL_NOT_FOUND: The specified model is not available. Please check your model name.');
+      }
+      if (apiError.message?.includes('quota') || apiError.message?.includes('rate limit')) {
+        throw new Error('GEMINI_QUOTA_EXCEEDED: API quota exceeded. Please try again later.');
+      }
+      if (apiError.message?.includes('permission') || apiError.message?.includes('403')) {
+        throw new Error('GEMINI_PERMISSION_DENIED: API key does not have permission to access this model.');
+      }
+      
+      // Generic API error
+      throw new Error(`GEMINI_API_ERROR: ${apiError.message || 'Unknown API error'}`);
     }).then(result => {
       console.log('[runGemini] API response received');
       
@@ -429,6 +448,11 @@ async function runGemini(prompt, opts = {}) {
     if (error.message === 'GEMINI_TIMEOUT' || error.message.includes('GEMINI_TIMEOUT')) {
       console.error('[runGemini] ⚠️ GEMINI_TIMEOUT - API call exceeded 20 seconds');
       throw new Error('GEMINI_TIMEOUT');
+    }
+    
+    // Re-throw specific Gemini errors (model not found, quota, etc.)
+    if (error.message.startsWith('GEMINI_')) {
+      throw error;
     }
     
     // DO NOT fallback to mock - throw error so controller can return proper error JSON

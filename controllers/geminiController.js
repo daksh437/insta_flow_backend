@@ -1327,7 +1327,19 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
       });
     } catch (geminiError) {
       console.error('[processReelsScript] Gemini API call failed:', geminiError.message);
-      // On error, use fallback script
+      
+      // Handle specific Gemini errors
+      if (geminiError.message.includes('GEMINI_MODEL_NOT_FOUND')) {
+        console.error('[processReelsScript] Model not found - using fallback script');
+      } else if (geminiError.message.includes('GEMINI_QUOTA_EXCEEDED')) {
+        console.error('[processReelsScript] API quota exceeded - using fallback script');
+      } else if (geminiError.message.includes('GEMINI_PERMISSION_DENIED')) {
+        console.error('[processReelsScript] Permission denied - using fallback script');
+      } else if (geminiError.message.includes('GEMINI_TIMEOUT')) {
+        console.error('[processReelsScript] API timeout - using fallback script');
+      }
+      
+      // On any error, use fallback script
       output = '';
     }
     
@@ -1381,15 +1393,15 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
     // Transform to required format
     const transformedData = transformScriptData(scriptData, language, topic, duration);
     
-    // Update job with done status and data
-    updateJob(jobId, 'done', { data: transformedData });
+    // Update job with completed status and data
+    updateJob(jobId, 'completed', { data: transformedData });
     console.log(`[processReelsScript] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
     console.error(`[processReelsScript] Error processing job ${jobId}:`, error);
-    // Store fallback result with error status (per requirements: status = 'failed' with fallback script)
+    // Store fallback result with failed status (per requirements: status = 'failed' with fallback script)
     const fallbackScript = getFallbackReelsScript(language, topic, duration);
     const transformedFallback = transformScriptData(fallbackScript, language, topic, duration);
-    updateJob(jobId, 'error', { 
+    updateJob(jobId, 'failed', { 
       data: transformedFallback,
       error: error.message || 'AI generation failed'
     });
@@ -1491,10 +1503,10 @@ async function generateReelsScript(req, res) {
   
   console.log(`[generateReelsScript] Creating job ${jobId}: topic="${topic}", duration=${finalDuration}, tone=${tone}, audience=${audience}, language=${language}, regenerate=${regenerate}`);
   
-  // Create job with pending status in jobStore
+  // Create job with queued status in jobStore
   createJob(jobId, {
     type: 'reels-script',
-    status: 'pending',
+    status: 'queued',
     topic: topic.trim(),
     duration: finalDuration,
     tone: tone.trim(),
@@ -1503,18 +1515,24 @@ async function generateReelsScript(req, res) {
     regenerate: regenerate
   });
   
-  // Start background processing (non-blocking - does NOT await)
-  // Gemini API call happens asynchronously, job status updated when complete
-  processReelsScript(jobId, topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim(), regenerate)
-    .catch(error => {
-      console.error(`[generateReelsScript] Background processing error for job ${jobId}:`, error);
-      // Error handling is done inside processReelsScript - job status set to 'error' with fallback data
-    });
-  
   // Immediately return jobId (non-blocking - request completes here)
-  return res.json({
+  res.json({
     success: true,
     jobId: jobId
+  });
+  
+  // Start background processing (non-blocking - does NOT await)
+  // Use setImmediate to ensure request response is sent first
+  setImmediate(() => {
+    // Update status to processing immediately
+    updateJob(jobId, 'processing');
+    
+    // Gemini API call happens asynchronously, job status updated when complete
+    processReelsScript(jobId, topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim(), regenerate)
+      .catch(error => {
+        console.error(`[generateReelsScript] Background processing error for job ${jobId}:`, error);
+        // Error handling is done inside processReelsScript - job status set to 'failed' with fallback data
+      });
   });
 }
 
@@ -1543,11 +1561,15 @@ function getJobStatus(req, res) {
     });
   }
   
-  // Map jobStore status ('done' | 'error') to API status ('completed' | 'failed')
+  // Map jobStore status to API status
   let apiStatus = job.status;
-  if (job.status === 'done') {
+  if (job.status === 'queued') {
+    apiStatus = 'pending';
+  } else if (job.status === 'processing') {
+    apiStatus = 'pending';
+  } else if (job.status === 'completed') {
     apiStatus = 'completed';
-  } else if (job.status === 'error') {
+  } else if (job.status === 'failed') {
     apiStatus = 'failed';
   }
   
@@ -1555,14 +1577,14 @@ function getJobStatus(req, res) {
   const response = {
     success: true,
     status: apiStatus, // 'pending' | 'completed' | 'failed'
-    jobId: job.jobId,
+    jobId: job.jobId || job.id,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
   };
   
   // Include data if job is completed or failed (always return data, even if fallback)
-  if (job.status === 'done' || job.status === 'error') {
-    response.data = job.data || null;
+  if (job.status === 'completed' || job.status === 'failed') {
+    response.data = job.data || job.result || null;
     
     // If no data, provide fallback based on job type
     if (!response.data) {
@@ -1592,7 +1614,7 @@ function getJobStatus(req, res) {
   }
   
   // Include error message if failed status
-  if (job.status === 'error' && job.error) {
+  if (job.status === 'failed' && job.error) {
     response.error = job.error;
   }
   
