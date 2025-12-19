@@ -1,7 +1,7 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const apiKey = process.env.GEMINI_API_KEY;
-const modelName = process.env.GEMINI_MODEL || 'models/gemini-1.5-pro';
+const modelName = process.env.GEMINI_MODEL || 'gemini-1.0-pro';
 
 let model = null;
 if (apiKey && apiKey !== 'YOUR_GEMINI_API_KEY') {
