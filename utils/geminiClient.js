@@ -1,10 +1,10 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const apiKey = process.env.GEMINI_API_KEY;
-// Use models that work with latest GoogleGenerativeAI SDK
-// Try gemini-1.5-flash-latest first (most reliable), fallback to gemini-1.5-pro-latest
-const PRIMARY_MODEL = 'gemini-1.5-flash-latest';
-const FALLBACK_MODEL = 'gemini-1.5-pro-latest';
+// Use models that work with GoogleGenerativeAI SDK v0.21+
+// Try gemini-1.5-flash first (works with v1 API), fallback to gemini-1.5-pro
+const PRIMARY_MODEL = 'gemini-1.5-flash';
+const FALLBACK_MODEL = 'gemini-1.5-pro';
 const envModel = process.env.GEMINI_MODEL;
 
 let genAI = null;
@@ -510,8 +510,27 @@ async function runGemini(prompt, opts = {}) {
     }
     
     // Use the initialized model (already validated at startup)
-    const response = await callGeminiWithModel(model, finalModelName, contents, opts);
-    return response;
+    let response;
+    try {
+      response = await callGeminiWithModel(model, finalModelName, contents, opts);
+      return response;
+    } catch (modelError) {
+      // If model not found and we have a fallback model, try it
+      if (modelError.message === 'GEMINI_MODEL_NOT_FOUND' && finalModelName !== FALLBACK_MODEL) {
+        console.warn(`[runGemini] ⚠️ Primary model "${finalModelName}" failed, trying fallback: ${FALLBACK_MODEL}`);
+        try {
+          // Try fallback model dynamically
+          const fallbackModelInstance = genAI.getGenerativeModel({ model: FALLBACK_MODEL });
+          response = await callGeminiWithModel(fallbackModelInstance, FALLBACK_MODEL, contents, opts);
+          console.log(`[runGemini] ✅ Fallback model "${FALLBACK_MODEL}" succeeded`);
+          return response;
+        } catch (fallbackError) {
+          console.error(`[runGemini] ❌ Fallback model "${FALLBACK_MODEL}" also failed:`, fallbackError.message);
+          throw modelError; // Throw original error
+        }
+      }
+      throw modelError; // Re-throw if not a model not found error or no fallback available
+    }
   } catch (error) {
     console.error('[runGemini] ERROR:', error.message);
     console.error('[runGemini] ERROR Stack:', error.stack);
