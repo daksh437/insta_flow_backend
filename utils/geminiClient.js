@@ -1,8 +1,8 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const apiKey = process.env.GEMINI_API_KEY;
-// Use models that work with GoogleGenerativeAI SDK v0.21+
-// Try gemini-1.5-flash first (works with v1 API), fallback to gemini-1.5-pro
+// Use models that work with GoogleGenerativeAI SDK v0.24.1 (v1 API)
+// Try gemini-1.5-flash first (fast, works with v1 API), fallback to gemini-1.5-pro
 const PRIMARY_MODEL = 'gemini-1.5-flash';
 const FALLBACK_MODEL = 'gemini-1.5-pro';
 const envModel = process.env.GEMINI_MODEL;
