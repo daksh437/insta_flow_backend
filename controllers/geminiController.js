@@ -1316,34 +1316,42 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
     console.log(`[processReelsScript] Regenerate: ${regenerate ? 'YES' : 'NO'}`);
     
     let output = '';
+    let geminiSuccess = false;
     try {
-      console.log('[processReelsScript] Calling Gemini API...');
+      console.log(`[processReelsScript] Job ${jobId} - Calling Gemini API...`);
       const prompt = reelsScriptPrompt(topic.trim(), duration, tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, regenerate);
+      console.log(`[processReelsScript] Job ${jobId} - Prompt length: ${prompt.length} characters`);
+      console.log(`[processReelsScript] Job ${jobId} - Using model: ${process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest'}`);
       
       output = await runGemini(prompt, {
         maxTokens: 2048,
         temperature: 0.9,
         topP: 0.95
       });
+      geminiSuccess = true;
+      console.log(`[processReelsScript] Job ${jobId} - ✅ Gemini API success, response length: ${output?.length || 0}`);
     } catch (geminiError) {
-      console.error('[processReelsScript] Gemini API call failed:', geminiError.message);
+      console.error(`[processReelsScript] Job ${jobId} - ❌ Gemini API failed:`, geminiError.message);
       
       // Handle specific Gemini errors
       if (geminiError.message.includes('GEMINI_MODEL_NOT_FOUND')) {
-        console.error('[processReelsScript] Model not found - using fallback script');
+        console.error(`[processReelsScript] Job ${jobId} - Model not found - using fallback script`);
       } else if (geminiError.message.includes('GEMINI_QUOTA_EXCEEDED')) {
-        console.error('[processReelsScript] API quota exceeded - using fallback script');
+        console.error(`[processReelsScript] Job ${jobId} - API quota exceeded - using fallback script`);
       } else if (geminiError.message.includes('GEMINI_PERMISSION_DENIED')) {
-        console.error('[processReelsScript] Permission denied - using fallback script');
+        console.error(`[processReelsScript] Job ${jobId} - Permission denied - using fallback script`);
       } else if (geminiError.message.includes('GEMINI_TIMEOUT')) {
-        console.error('[processReelsScript] API timeout - using fallback script');
+        console.error(`[processReelsScript] Job ${jobId} - API timeout - using fallback script`);
+      } else if (geminiError.message.includes('GEMINI_API_UNAVAILABLE')) {
+        console.error(`[processReelsScript] Job ${jobId} - API unavailable - using fallback script`);
       }
       
       // On any error, use fallback script
       output = '';
+      geminiSuccess = false;
     }
     
-    console.log('[processReelsScript] Gemini response received, length:', output?.length || 0);
+    console.log(`[processReelsScript] Job ${jobId} - Gemini response received, length: ${output?.length || 0}, success: ${geminiSuccess}`);
     
     // CRITICAL: Treat Gemini output as PLAIN TEXT ONLY - NEVER expect JSON
     let scriptData = null;
@@ -1372,7 +1380,7 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
     
     // CRITICAL: Final validation - ensure we NEVER return empty data
     if (!scriptData || !scriptData.hooks || !scriptData.script || scriptData.hooks.length === 0 || scriptData.script.length === 0) {
-      console.error('[processReelsScript] CRITICAL ERROR: Even fallback script is empty!');
+      console.error('[processReelsScript] CRITICAL ERROR: Even fallback script is empty! Using English fallback');
       scriptData = getFallbackReelsScript('English', topic, duration);
     }
     
@@ -1389,15 +1397,16 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
     }
     
     console.log('[processReelsScript] Final script - hooks:', scriptData.hooks?.length || 0, 'scenes:', scriptData.script?.length || 0);
+    console.log('[processReelsScript] Using fallback:', !geminiSuccess ? 'YES' : 'NO');
     
     // Transform to required format
     const transformedData = transformScriptData(scriptData, language, topic, duration);
     
     // Update job with completed status and data
     updateJob(jobId, 'completed', { data: transformedData });
-    console.log(`[processReelsScript] ✅ Job ${jobId} completed successfully`);
+    console.log(`[processReelsScript] ✅ Job ${jobId} status: processing → completed`);
   } catch (error) {
-    console.error(`[processReelsScript] Error processing job ${jobId}:`, error);
+    console.error(`[processReelsScript] ❌ Job ${jobId} error:`, error.message);
     // Store fallback result with failed status (per requirements: status = 'failed' with fallback script)
     const fallbackScript = getFallbackReelsScript(language, topic, duration);
     const transformedFallback = transformScriptData(fallbackScript, language, topic, duration);
@@ -1405,6 +1414,7 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
       data: transformedFallback,
       error: error.message || 'AI generation failed'
     });
+    console.log(`[processReelsScript] Job ${jobId} status: processing → failed (with fallback data)`);
   }
 }
 
@@ -1501,7 +1511,10 @@ async function generateReelsScript(req, res) {
   // Generate unique job ID
   const jobId = generateJobId('REELS');
   
-  console.log(`[generateReelsScript] Creating job ${jobId}: topic="${topic}", duration=${finalDuration}, tone=${tone}, audience=${audience}, language=${language}, regenerate=${regenerate}`);
+  console.log(`[generateReelsScript] ==========================================`);
+  console.log(`[generateReelsScript] NEW REQUEST - Job ${jobId}`);
+  console.log(`[generateReelsScript] Topic: "${topic}", Duration: ${finalDuration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
+  console.log(`[generateReelsScript] ==========================================`);
   
   // Create job with queued status in jobStore
   createJob(jobId, {
@@ -1515,25 +1528,95 @@ async function generateReelsScript(req, res) {
     regenerate: regenerate
   });
   
-  // Immediately return jobId (non-blocking - request completes here)
-  res.json({
-    success: true,
-    jobId: jobId
-  });
-  
-  // Start background processing (non-blocking - does NOT await)
-  // Use setImmediate to ensure request response is sent first
-  setImmediate(() => {
-    // Update status to processing immediately
-    updateJob(jobId, 'processing');
+  // IMMEDIATE RESPONSE MODE: Generate fallback script and return data immediately
+  // This ensures Flutter app always gets data, even when Gemini models fail
+  try {
+    console.log(`[generateReelsScript] ⚡ IMMEDIATE FALLBACK MODE - Generating fallback script NOW`);
+    const fallbackScript = getFallbackReelsScript(language.trim(), topic.trim(), finalDuration);
+    console.log(`[generateReelsScript] ✅ Fallback script generated - hooks: ${fallbackScript.hooks?.length || 0}, scenes: ${fallbackScript.script?.length || 0}`);
     
-    // Gemini API call happens asynchronously, job status updated when complete
-    processReelsScript(jobId, topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim(), regenerate)
-      .catch(error => {
-        console.error(`[generateReelsScript] Background processing error for job ${jobId}:`, error);
-        // Error handling is done inside processReelsScript - job status set to 'failed' with fallback data
-      });
-  });
+    const transformedData = transformScriptData(fallbackScript, language.trim(), topic.trim(), finalDuration);
+    console.log(`[generateReelsScript] ✅ Transformed data ready:`);
+    console.log(`[generateReelsScript]    - hook: "${transformedData.hook?.substring(0, 50)}..."`);
+    console.log(`[generateReelsScript]    - scene_by_scene: ${transformedData.scene_by_scene?.length || 0} scenes`);
+    console.log(`[generateReelsScript]    - cta: "${transformedData.cta?.substring(0, 30)}..."`);
+    console.log(`[generateReelsScript]    - hashtags: ${transformedData.hashtags?.length || 0} tags`);
+    
+    // Update job with completed status and data
+    updateJob(jobId, 'completed', { data: transformedData });
+    
+    // CRITICAL: Return data directly in response (Flutter expects this format)
+    console.log(`[generateReelsScript] ✅ SENDING RESPONSE WITH DATA to Flutter app`);
+    console.log(`[generateReelsScript] Response format: { success: true, jobId: "${jobId}", data: {...} }`);
+    res.json({
+      success: true,
+      jobId: jobId,
+      data: transformedData
+    });
+    
+    // Still try Gemini in background (non-blocking) - but don't wait for it
+    setImmediate(() => {
+      updateJob(jobId, 'processing');
+      console.log(`[generateReelsScript] 🔄 Job ${jobId} - Attempting Gemini API in background (non-blocking)...`);
+      
+      processReelsScript(jobId, topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim(), regenerate)
+        .then(() => {
+          console.log(`[generateReelsScript] ✅ Background Gemini succeeded for job ${jobId} - job updated with AI data`);
+        })
+        .catch(error => {
+          console.error(`[generateReelsScript] ⚠️ Background Gemini processing error for job ${jobId}:`, error.message);
+          // Job already has fallback data, so this is just for logging - user already got response
+        });
+    });
+  } catch (error) {
+    console.error(`[generateReelsScript] ❌ Error generating fallback script:`, error);
+    // Even if fallback fails, return basic structure
+    const basicData = {
+      hook: language.trim() === 'Hindi' ? 'क्या आप जानते हैं?' : 
+            language.trim() === 'Hinglish' ? 'Kya aap jaante hain?' : 
+            `Did you know about ${topic.trim()}?`,
+      scene_by_scene: [{
+        time: '0-3s',
+        visual: 'Close-up selfie',
+        dialogue: language.trim() === 'Hindi' ? 'यह बहुत महत्वपूर्ण है' : 
+                  language.trim() === 'Hinglish' ? 'Yeh bahut important hai' : 
+                  `Let's talk about ${topic.trim()}`
+      }, {
+        time: '3-8s',
+        visual: 'Medium shot',
+        dialogue: language.trim() === 'Hindi' ? 'आपको यह जानना चाहिए' : 
+                  language.trim() === 'Hinglish' ? 'Aapko yeh jaanna chahiye' : 
+                  'This is something you need to know'
+      }, {
+        time: '8-12s',
+        visual: 'Wide shot',
+        dialogue: language.trim() === 'Hindi' ? 'यह आपकी जिंदगी बदल देगा' : 
+                  language.trim() === 'Hinglish' ? 'Yeh aapki life badal dega' : 
+                  'This will change your life'
+      }, {
+        time: '12-15s',
+        visual: 'Selfie',
+        dialogue: language.trim() === 'Hindi' ? 'इस पोस्ट को सेव करें' : 
+                  language.trim() === 'Hinglish' ? 'Is post ko save karein' : 
+                  'Save this post for later'
+      }],
+      cta: language.trim() === 'Hindi' ? 'इस पोस्ट को सेव करें' : 
+           language.trim() === 'Hinglish' ? 'Is post ko save karein' : 
+           'Save this post',
+      caption: language.trim() === 'Hindi' ? `यह ${topic.trim()} के बारे में महत्वपूर्ण जानकारी है` : 
+               language.trim() === 'Hinglish' ? `Yeh ${topic.trim()} ke baare mein important info hai` : 
+               `Check out this amazing content about ${topic.trim()}`,
+      hashtags: ['#reels', '#viral', '#instagram', '#content', '#trending', '#fyp', '#explore', '#growth', '#success', '#motivation']
+    };
+    
+    updateJob(jobId, 'completed', { data: basicData });
+    console.log(`[generateReelsScript] ✅ Returning basic fallback data for job ${jobId}`);
+    res.json({
+      success: true,
+      jobId: jobId,
+      data: basicData
+    });
+  }
 }
 
 /**

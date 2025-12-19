@@ -23,7 +23,7 @@ node app.js
 
 ### Step 4: Expected Output
 ```
-✅ Gemini model initialized: gemini-1.0-pro
+✅ Gemini model initialized: gemini-pro
 🚀 InstaFlow backend running on http://localhost:3000
 📱 Phone access: http://10.42.138.25:3000
 ✅ Server ready for requests!

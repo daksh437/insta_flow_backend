@@ -71,8 +71,14 @@ app.use((err, req, res, next) => {
 // Listen on all network interfaces (0.0.0.0) for cloud deployment
 app.listen(PORT, '0.0.0.0', () => {
   const env = process.env.NODE_ENV || 'development';
+  const apiKey = process.env.GEMINI_API_KEY;
+  const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest';
+  const geminiMode = (apiKey && apiKey.trim() !== '') ? 'REAL MODE' : 'MOCK MODE';
+  
   console.log(`🚀 InstaFlow backend running on port ${PORT}`);
   console.log(`🌍 Environment: ${env}`);
+  console.log(`🤖 Gemini AI: ${geminiMode}`);
+  console.log(`🤖 Gemini Model: ${modelName}`);
   console.log(`✅ Server ready for requests!`);
   console.log(`📊 Health check: http://0.0.0.0:${PORT}/health`);
   

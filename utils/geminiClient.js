@@ -1,20 +1,84 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const apiKey = process.env.GEMINI_API_KEY;
-const modelName = process.env.GEMINI_MODEL || 'gemini-1.0-pro';
+// Use models that work with latest GoogleGenerativeAI SDK
+// Try gemini-1.5-flash-latest first (most reliable), fallback to gemini-1.5-pro-latest
+const PRIMARY_MODEL = 'gemini-1.5-flash-latest';
+const FALLBACK_MODEL = 'gemini-1.5-pro-latest';
+const envModel = process.env.GEMINI_MODEL;
 
+let genAI = null;
 let model = null;
-if (apiKey && apiKey !== 'YOUR_GEMINI_API_KEY') {
-  try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    model = genAI.getGenerativeModel({ model: modelName });
-    console.log(`✅ Gemini model initialized: ${modelName}`);
-  } catch (error) {
-    console.error('⚠️ Failed to initialize Gemini model:', error.message);
-    model = null;
-  }
+let isApiActive = false;
+let finalModelName = PRIMARY_MODEL; // Track the final model being used
+
+// Validate API key
+if (!apiKey || apiKey.trim() === '') {
+  console.warn('[GeminiClient] ⚠️ MOCK MODE - GEMINI_API_KEY not set');
+  console.warn('[GeminiClient] ⚠️ API calls will fail. Set GEMINI_API_KEY environment variable for production.');
+  console.warn('[GeminiClient] 💡 To fix: Add GEMINI_API_KEY to your .env file or Render environment variables');
 } else {
-  console.warn('⚠️ GEMINI_API_KEY is missing. AI calls will use mock data.');
+  // Validate API key format (should start with AIza...)
+  const apiKeyPrefix = apiKey.trim().substring(0, 4);
+  const apiKeyLength = apiKey.trim().length;
+  
+  if (apiKeyPrefix !== 'AIza' || apiKeyLength < 35) {
+    console.warn(`[GeminiClient] ⚠️ WARNING: API key format looks invalid (starts with "${apiKeyPrefix}", length: ${apiKeyLength})`);
+    console.warn('[GeminiClient] ⚠️ Expected format: AIza... (39+ characters)');
+    console.warn('[GeminiClient] 💡 Get your API key from: https://aistudio.google.com/app/apikey');
+  } else {
+    console.log(`[GeminiClient] ✅ API key found (length: ${apiKeyLength}, starts with: ${apiKeyPrefix}...)`);
+  }
+  
+  try {
+    genAI = new GoogleGenerativeAI(apiKey.trim());
+    console.log('[GeminiClient] ✅ GoogleGenerativeAI SDK initialized');
+    
+    // Try to use env model if provided, otherwise use primary model
+    let modelToUse = envModel && envModel.trim() !== '' ? envModel.trim() : PRIMARY_MODEL;
+    
+    try {
+      model = genAI.getGenerativeModel({ model: modelToUse });
+      isApiActive = true;
+      finalModelName = modelToUse;
+      console.log(`🤖 Gemini Model: ${finalModelName}`);
+      console.log(`[GeminiClient] ✅ REAL MODE - Model initialized: ${finalModelName}`);
+      console.log(`[GeminiClient] Model source: ${envModel ? `GEMINI_MODEL env var ("${envModel}")` : `hardcoded primary model ("${PRIMARY_MODEL}")`}`);
+    } catch (modelError) {
+      // If primary model fails, try fallback model
+      console.error(`[GeminiClient] ❌ Model "${modelToUse}" initialization failed:`, modelError.message);
+      if (modelToUse !== FALLBACK_MODEL) {
+        console.warn(`[GeminiClient] ⚠️ Trying fallback model: ${FALLBACK_MODEL}`);
+        try {
+          model = genAI.getGenerativeModel({ model: FALLBACK_MODEL });
+          isApiActive = true;
+          finalModelName = FALLBACK_MODEL;
+          console.log(`[GeminiClient] ✅ Fallback successful - Using model: ${finalModelName}`);
+        } catch (fallbackError) {
+          console.error('[GeminiClient] ❌ Fallback model also failed:', fallbackError.message);
+          console.error('[GeminiClient] 💡 This might be an API key permission issue. Check:');
+          console.error('[GeminiClient]    1. API key is valid and active');
+          console.error('[GeminiClient]    2. API key has Gemini API enabled');
+          console.error('[GeminiClient]    3. Get new key from: https://aistudio.google.com/app/apikey');
+          model = null;
+          isApiActive = false;
+          console.warn('[GeminiClient] ⚠️ MOCK MODE - All models failed, using fallback scripts');
+        }
+      } else {
+        console.error('[GeminiClient] ❌ Primary model failed:', modelError.message);
+        console.error('[GeminiClient] 💡 Check API key permissions at: https://aistudio.google.com/app/apikey');
+        model = null;
+        isApiActive = false;
+        console.warn('[GeminiClient] ⚠️ MOCK MODE - Model initialization failed, using fallback scripts');
+      }
+    }
+  } catch (error) {
+    console.error('[GeminiClient] ❌ Failed to initialize GoogleGenerativeAI:', error.message);
+    console.error('[GeminiClient] 💡 Verify GEMINI_API_KEY is correct in environment variables');
+    model = null;
+    isApiActive = false;
+    console.warn('[GeminiClient] ⚠️ MOCK MODE - API initialization failed');
+  }
 }
 
 // Mock data generator for testing without API key
@@ -296,16 +360,122 @@ function getMockResponse(prompt) {
   return JSON.stringify({ message: 'Mock response - add GEMINI_API_KEY for real AI' });
 }
 
+/**
+ * Internal function to call Gemini API with a specific model
+ */
+async function callGeminiWithModel(modelInstance, modelName, contents, opts) {
+  const timeoutMs = 20000; // 20 seconds hard timeout
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      console.log(`[runGemini] ⚠️ HARD TIMEOUT reached after ${timeoutMs}ms`);
+      reject(new Error('GEMINI_TIMEOUT'));
+    }, timeoutMs);
+  });
+
+  const apiPromise = modelInstance.generateContent({
+    contents: contents,
+    generationConfig: {
+      temperature: opts.temperature ?? 0.7,
+      maxOutputTokens: opts.maxTokens ?? 1024,
+      topP: opts.topP ?? 0.95,
+    },
+  }).catch(apiError => {
+    // Handle Gemini API errors (403 permission denied, 404 model not found, etc.)
+    console.error(`[runGemini] Gemini API error (${modelName}):`, apiError.message);
+    console.error(`[runGemini] Error code:`, apiError.code);
+    console.error(`[runGemini] Error status:`, apiError.status);
+    
+    // Check for specific error types - 403 PERMISSION_DENIED is most critical
+    if (apiError.status === 403 || apiError.message?.includes('PERMISSION_DENIED') || apiError.message?.includes('403') || apiError.message?.includes('unregistered callers')) {
+      console.error('[runGemini] ❌ API KEY PERMISSION ERROR');
+      console.error('[runGemini] 💡 Fix steps:');
+      console.error('[runGemini]    1. Verify GEMINI_API_KEY is set in environment variables');
+      console.error('[runGemini]    2. Check API key is valid at: https://aistudio.google.com/app/apikey');
+      console.error('[runGemini]    3. Ensure API key has Gemini API enabled');
+      console.error('[runGemini]    4. Regenerate API key if needed');
+      throw new Error('GEMINI_PERMISSION_DENIED: API key is invalid or does not have permission. Please check your GEMINI_API_KEY environment variable.');
+    }
+    if (apiError.status === 404 || apiError.message?.includes('not found') || apiError.message?.includes('404')) {
+      throw new Error('GEMINI_MODEL_NOT_FOUND');
+    }
+    if (apiError.message?.includes('quota') || apiError.message?.includes('rate limit')) {
+      throw new Error('GEMINI_QUOTA_EXCEEDED: API quota exceeded. Please try again later.');
+    }
+    
+    // Generic API error
+    throw new Error(`GEMINI_API_ERROR: ${apiError.message || 'Unknown API error'}`);
+  }).then(result => {
+    console.log(`[runGemini] API response received from ${modelName}`);
+    
+    // CRITICAL: Safely extract text by concatenating ALL content.parts[].text
+    try {
+      const response = result.response;
+      
+      // Method 1: PRIORITY - Safely iterate over candidates[0].content.parts and concatenate ALL text
+      if (response && response.candidates && response.candidates.length > 0) {
+        const candidate = response.candidates[0];
+        if (candidate && candidate.content && candidate.content.parts) {
+          let fullText = '';
+          for (const part of candidate.content.parts) {
+            if (part && part.text && typeof part.text === 'string') {
+              fullText += part.text;
+            }
+          }
+          if (fullText && fullText.trim().length > 0) {
+            console.log('[runGemini] Extracted text via candidates[0].content.parts (concatenated), length:', fullText.length);
+            return fullText;
+          }
+        }
+      }
+      
+      // Method 2: Try response.text() as fallback
+      if (response && typeof response.text === 'function') {
+        const text = response.text();
+        if (text && typeof text === 'string' && text.trim().length > 0) {
+          console.log('[runGemini] Extracted text via response.text(), length:', text.length);
+          return text;
+        }
+      }
+      
+      // Method 3: Try direct property access
+      if (response && response.text) {
+        const text = typeof response.text === 'function' ? response.text() : response.text;
+        if (text && typeof text === 'string' && text.trim().length > 0) {
+          console.log('[runGemini] Extracted text via response.text property, length:', text.length);
+          return text;
+        }
+      }
+      
+      console.warn('[runGemini] Could not extract text from response');
+      console.warn('[runGemini] Response structure:', JSON.stringify({
+        hasResponse: !!response,
+        hasCandidates: !!(response && response.candidates),
+        candidatesLength: response && response.candidates ? response.candidates.length : 0
+      }, null, 2));
+      throw new Error('Unable to extract text from Gemini response');
+    } catch (extractError) {
+      console.error('[runGemini] Error extracting text:', extractError.message);
+      throw extractError;
+    }
+  });
+
+  console.log(`[runGemini] Waiting for API response from ${modelName} or timeout (20s max)...`);
+  
+  // CRITICAL: Use Promise.race to enforce hard timeout
+  // If Gemini takes longer than 20 seconds, timeout wins and throws GEMINI_TIMEOUT
+  const response = await Promise.race([apiPromise, timeoutPromise]);
+  
+  console.log(`[runGemini] ✅ Gemini API success (${modelName}) - Response length: ${response?.length || 0}`);
+  return response;
+}
+
 async function runGemini(prompt, opts = {}) {
   console.log('[runGemini] Starting...');
   
-  // If no API key, return mock data
-  if (!model) {
-    console.log('⚠️ Using mock data (GEMINI_API_KEY not set)');
-    await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API delay
-    const mockResponse = getMockResponse(prompt);
-    console.log('[runGemini] Mock response generated, length:', mockResponse.length);
-    return mockResponse;
+  // If no API key or genAI not initialized, throw error (no silent fallback)
+  if (!genAI || !isApiActive) {
+    console.error('[runGemini] ERROR: Gemini API is not available');
+    throw new Error('GEMINI_API_UNAVAILABLE: Gemini API key is missing or model initialization failed. Please set GEMINI_API_KEY environment variable.');
   }
   
   try {
@@ -321,19 +491,7 @@ async function runGemini(prompt, opts = {}) {
       }
     }
     
-    console.log('[runGemini] Calling Gemini API with prompt length:', prompt.length);
-    
-    // CRITICAL: Hard timeout wrapper for Gemini API call - 20 seconds
-    // This prevents backend from hanging if Gemini API is slow or unresponsive
-    const timeoutMs = 20000; // 20 seconds hard timeout
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => {
-        console.log(`[runGemini] ⚠️ HARD TIMEOUT reached after ${timeoutMs}ms`);
-        reject(new Error('GEMINI_TIMEOUT'));
-      }, timeoutMs);
-    });
-
-    console.log('[runGemini] Creating API promise...');
+    console.log(`[runGemini] Calling Gemini API - Model: ${finalModelName}, Prompt length: ${prompt.length}`);
     
     // Support role-based prompting (system + user) or single prompt
     let contents;
@@ -351,94 +509,8 @@ async function runGemini(prompt, opts = {}) {
       console.log('[runGemini] Using single prompt');
     }
     
-    const apiPromise = model.generateContent({
-      contents: contents,
-      generationConfig: {
-        temperature: opts.temperature ?? 0.7,
-        maxOutputTokens: opts.maxTokens ?? 1024,
-        topP: opts.topP ?? 0.95,
-      },
-    }).catch(apiError => {
-      // Handle Gemini API errors (404, model not found, etc.)
-      console.error('[runGemini] Gemini API error:', apiError.message);
-      console.error('[runGemini] Error code:', apiError.code);
-      console.error('[runGemini] Error status:', apiError.status);
-      
-      // Check for specific error types
-      if (apiError.status === 404 || apiError.message?.includes('not found') || apiError.message?.includes('404')) {
-        throw new Error('GEMINI_MODEL_NOT_FOUND: The specified model is not available. Please check your model name.');
-      }
-      if (apiError.message?.includes('quota') || apiError.message?.includes('rate limit')) {
-        throw new Error('GEMINI_QUOTA_EXCEEDED: API quota exceeded. Please try again later.');
-      }
-      if (apiError.message?.includes('permission') || apiError.message?.includes('403')) {
-        throw new Error('GEMINI_PERMISSION_DENIED: API key does not have permission to access this model.');
-      }
-      
-      // Generic API error
-      throw new Error(`GEMINI_API_ERROR: ${apiError.message || 'Unknown API error'}`);
-    }).then(result => {
-      console.log('[runGemini] API response received');
-      
-      // CRITICAL: Safely extract text by concatenating ALL content.parts[].text
-      try {
-        const response = result.response;
-        
-        // Method 1: PRIORITY - Safely iterate over candidates[0].content.parts and concatenate ALL text
-        if (response && response.candidates && response.candidates.length > 0) {
-          const candidate = response.candidates[0];
-          if (candidate && candidate.content && candidate.content.parts) {
-            let fullText = '';
-            for (const part of candidate.content.parts) {
-              if (part && part.text && typeof part.text === 'string') {
-                fullText += part.text;
-              }
-            }
-            if (fullText && fullText.trim().length > 0) {
-              console.log('[runGemini] Extracted text via candidates[0].content.parts (concatenated), length:', fullText.length);
-              return fullText;
-            }
-          }
-        }
-        
-        // Method 2: Try response.text() as fallback
-        if (response && typeof response.text === 'function') {
-          const text = response.text();
-          if (text && typeof text === 'string' && text.trim().length > 0) {
-            console.log('[runGemini] Extracted text via response.text(), length:', text.length);
-            return text;
-          }
-        }
-        
-        // Method 3: Try direct property access
-        if (response && response.text) {
-          const text = typeof response.text === 'function' ? response.text() : response.text;
-          if (text && typeof text === 'string' && text.trim().length > 0) {
-            console.log('[runGemini] Extracted text via response.text property, length:', text.length);
-            return text;
-          }
-        }
-        
-        console.warn('[runGemini] Could not extract text from response');
-        console.warn('[runGemini] Response structure:', JSON.stringify({
-          hasResponse: !!response,
-          hasCandidates: !!(response && response.candidates),
-          candidatesLength: response && response.candidates ? response.candidates.length : 0
-        }, null, 2));
-        throw new Error('Unable to extract text from Gemini response');
-      } catch (extractError) {
-        console.error('[runGemini] Error extracting text:', extractError.message);
-        throw extractError;
-      }
-    });
-
-    console.log('[runGemini] Waiting for API response or timeout (20s max)...');
-    
-    // CRITICAL: Use Promise.race to enforce hard timeout
-    // If Gemini takes longer than 20 seconds, timeout wins and throws GEMINI_TIMEOUT
-    const response = await Promise.race([apiPromise, timeoutPromise]);
-    
-    console.log('[runGemini] Response received, length:', response?.length || 0);
+    // Use the initialized model (already validated at startup)
+    const response = await callGeminiWithModel(model, finalModelName, contents, opts);
     return response;
   } catch (error) {
     console.error('[runGemini] ERROR:', error.message);
@@ -464,46 +536,16 @@ async function runGemini(prompt, opts = {}) {
 async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jpeg', opts = {}) {
   console.log('[runGeminiWithImage] Starting with image...');
   
-  // If no API key, return mock data
-  if (!model) {
-    console.log('⚠️ Using mock data (GEMINI_API_KEY not set)');
-    await new Promise(resolve => setTimeout(resolve, 500));
-    // Return mock image analysis response
-    return JSON.stringify({
-      analysis: {
-        mood: 'Energetic and vibrant',
-        style: 'Modern lifestyle aesthetic',
-        scene: 'A beautiful scene with engaging elements'
-      },
-      captions: [
-        {
-          text: 'Living my best life! ✨ Who else can relate? Save this!',
-          hashtags: ['#lifestyle', '#vibes', '#instagood', '#happy', '#life', '#trending', '#viral', '#motivation', '#inspiration', '#selfcare', '#photography', '#aesthetic', '#beautiful', '#moments', '#captured']
-        },
-        {
-          text: 'Good vibes only! 🌟 What\'s your vibe today? Share with a friend!',
-          hashtags: ['#goodvibes', '#positive', '#energy', '#mood', '#happy', '#trending', '#viral', '#motivation', '#inspiration', '#selfcare', '#photography', '#aesthetic', '#beautiful', '#moments', '#captured']
-        },
-        {
-          text: 'Making memories one day at a time 📸',
-          hashtags: ['#memories', '#photography', '#moments', '#life', '#captured', '#trending', '#viral', '#motivation', '#inspiration', '#selfcare', '#aesthetic', '#beautiful', '#lifestyle', '#vibes', '#instagood']
-        },
-        {
-          text: 'Sunshine and good times ☀️ Save this for later!',
-          hashtags: ['#sunshine', '#goodtimes', '#summer', '#bright', '#happy', '#trending', '#viral', '#motivation', '#inspiration', '#selfcare', '#photography', '#aesthetic', '#beautiful', '#moments', '#captured']
-        },
-        {
-          text: 'Just another day in paradise 🌴',
-          hashtags: ['#paradise', '#travel', '#adventure', '#explore', '#wanderlust', '#trending', '#viral', '#motivation', '#inspiration', '#selfcare', '#photography', '#aesthetic', '#beautiful', '#moments', '#captured']
-        }
-      ]
-    });
+  // If no API key or genAI not initialized, throw error (no silent fallback)
+  if (!genAI || !isApiActive) {
+    console.error('[runGeminiWithImage] ERROR: Gemini API is not available');
+    throw new Error('GEMINI_API_UNAVAILABLE: Gemini API key is missing or model initialization failed. Please set GEMINI_API_KEY environment variable.');
   }
   
   try {
     console.log('[runGeminiWithImage] Calling Gemini Vision API...');
-    console.log('[runGeminiWithImage] Image size: ${imageBase64.length} bytes, MIME type: ${imageMimeType}');
-    console.log('[runGeminiWithImage] Prompt length: ${prompt.length} characters');
+    console.log(`[runGeminiWithImage] Model: ${finalModelName}, Image size: ${imageBase64.length} bytes, MIME type: ${imageMimeType}`);
+    console.log(`[runGeminiWithImage] Prompt length: ${prompt.length} characters`);
     
     // Prepare image part
     const imagePart = {
@@ -518,6 +560,11 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
       text: prompt
     };
     
+    const contents = [{ 
+      role: 'user', 
+      parts: [imagePart, textPart]
+    }];
+    
     // Add timeout wrapper - 60 seconds for Gemini API
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => {
@@ -527,17 +574,33 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
     });
 
     const apiPromise = model.generateContent({
-      contents: [{ 
-        role: 'user', 
-        parts: [imagePart, textPart]
-      }],
+      contents: contents,
       generationConfig: {
         temperature: opts.temperature ?? 0.7,
         maxOutputTokens: opts.maxTokens ?? 2048,
         topP: opts.topP ?? 0.95,
       },
+    }).catch(apiError => {
+      // Handle Gemini API errors
+      console.error(`[runGeminiWithImage] Gemini API error (${finalModelName}):`, apiError.message);
+      console.error('[runGeminiWithImage] Error code:', apiError.code);
+      console.error('[runGeminiWithImage] Error status:', apiError.status);
+      
+      if (apiError.status === 403 || apiError.message?.includes('PERMISSION_DENIED') || apiError.message?.includes('403') || apiError.message?.includes('unregistered callers')) {
+        console.error('[runGeminiWithImage] ❌ API KEY PERMISSION ERROR');
+        console.error('[runGeminiWithImage] 💡 Fix: Check GEMINI_API_KEY in environment variables');
+        throw new Error('GEMINI_PERMISSION_DENIED: API key is invalid or does not have permission. Please check your GEMINI_API_KEY environment variable.');
+      }
+      if (apiError.status === 404 || apiError.message?.includes('not found') || apiError.message?.includes('404')) {
+        throw new Error('GEMINI_MODEL_NOT_FOUND: The specified model is not available. Please check your model name.');
+      }
+      if (apiError.message?.includes('quota') || apiError.message?.includes('rate limit')) {
+        throw new Error('GEMINI_QUOTA_EXCEEDED: API quota exceeded. Please try again later.');
+      }
+      
+      throw new Error(`GEMINI_API_ERROR: ${apiError.message || 'Unknown API error'}`);
     }).then(result => {
-      console.log('[runGeminiWithImage] API response received');
+      console.log(`[runGeminiWithImage] API response received from ${finalModelName}`);
       return result.response.text();
     });
 
@@ -547,49 +610,18 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
   } catch (error) {
     console.error('[runGeminiWithImage] Error:', error.message);
     
-    // If timeout, throw error (don't return fallback)
+    // Re-throw specific Gemini errors
+    if (error.message.startsWith('GEMINI_')) {
+      throw error;
+    }
+    
+    // Re-throw timeout errors
     if (error.message && error.message.includes('timeout')) {
       throw error;
     }
     
-    console.log('[runGeminiWithImage] Falling back to graceful fallback captions');
-    // Return graceful fallback captions if vision analysis fails (non-timeout errors)
-    return JSON.stringify({
-      analysis: {
-        scene: 'Unable to analyze - vision service unavailable',
-        setting: 'Unable to analyze - vision service unavailable',
-        mood: 'Unable to analyze - vision service unavailable',
-        time: 'Unable to analyze - vision service unavailable',
-        occasion: 'Unable to analyze - vision service unavailable'
-      },
-      captions: [
-        {
-          angle: 'Aesthetic / Visual',
-          text: 'Capturing moments that matter 📸',
-          hashtags: ['#photography', '#moments', '#instagood', '#photooftheday', '#visual', '#aesthetic', '#capture', '#life', '#beautiful', '#art', '#photographer', '#photo', '#picoftheday', '#instadaily', '#photography']
-        },
-        {
-          angle: 'Confidence / Attitude',
-          text: 'Living life on my own terms ✨',
-          hashtags: ['#confidence', '#lifestyle', '#selflove', '#motivation', '#inspiration', '#attitude', '#mindset', '#growth', '#success', '#positive', '#energy', '#vibes', '#goals', '#mindfulness', '#wellness']
-        },
-        {
-          angle: 'Story-based',
-          text: 'Every picture tells a story 📖',
-          hashtags: ['#story', '#narrative', '#life', '#journey', '#experience', '#memories', '#moments', '#adventure', '#explore', '#discover', '#travel', '#lifestyle', '#culture', '#heritage', '#tradition']
-        },
-        {
-          angle: 'Short punchline',
-          text: 'Frame it, save it, remember it 🎯',
-          hashtags: ['#punchline', '#quote', '#wisdom', '#thoughts', '#reflection', '#mindset', '#perspective', '#life', '#truth', '#reality', '#philosophy', '#insight', '#awareness', '#consciousness', '#enlightenment']
-        },
-        {
-          angle: 'Cultural / Traditional',
-          text: 'Celebrating traditions and culture 🎊',
-          hashtags: ['#culture', '#tradition', '#heritage', '#celebration', '#festival', '#customs', '#values', '#roots', '#identity', '#community', '#family', '#history', '#legacy', '#pride', '#respect']
-        }
-      ]
-    });
+    // For other errors, throw with context
+    throw new Error(`Gemini Vision API failed: ${error.message}`);
   }
 }
 
