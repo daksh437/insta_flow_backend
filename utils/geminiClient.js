@@ -5,6 +5,7 @@ const apiKey = process.env.GEMINI_API_KEY;
 // Use latest Gemini models with v1 API
 // Primary: gemini-1.5-flash (fast, latest)
 // Fallback: gemini-1.5-pro (more capable)
+// Note: SDK may use v1beta internally, REST API uses v1
 const PRIMARY_MODEL = 'gemini-1.5-flash';
 const FALLBACK_MODEL = 'gemini-1.5-pro';
 const envModel = process.env.GEMINI_MODEL;
@@ -376,39 +377,91 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   // API key as query parameter: ?key={API_KEY}
   const baseUrl = 'https://generativelanguage.googleapis.com';
   const apiVersion = 'v1';
+  
+  // Validate model name
+  if (!modelName || typeof modelName !== 'string') {
+    throw new Error('Invalid model name');
+  }
+  
+  // Ensure model name is correct format (gemini-1.5-flash, gemini-1.5-pro, etc.)
+  const validModelNames = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro'];
+  if (!validModelNames.includes(modelName)) {
+    console.warn(`[runGemini] ⚠️ Model name "${modelName}" may not be valid. Valid models: ${validModelNames.join(', ')}`);
+  }
+  
   const apiPath = `/${apiVersion}/models/${modelName}:generateContent`;
   const url = `${baseUrl}${apiPath}?key=${apiKey}`;
   
-  // Validate URL structure to prevent incorrect URLs
+  // CRITICAL: Validate URL structure to prevent incorrect URLs
   if (!url.includes('generativelanguage.googleapis.com')) {
-    throw new Error('Invalid API base URL');
+    console.error(`[runGemini] ❌ INVALID BASE URL DETECTED: ${url}`);
+    throw new Error('Invalid API base URL - must use generativelanguage.googleapis.com');
   }
   if (!url.includes(`/${apiVersion}/models/`)) {
+    console.error(`[runGemini] ❌ INVALID API VERSION: ${url}`);
     throw new Error(`Invalid API version - must use ${apiVersion}`);
   }
   if (!apiKey || apiKey.trim() === '') {
     throw new Error('GEMINI_API_KEY is missing');
   }
+  if (!apiKey.startsWith('AIza')) {
+    console.warn(`[runGemini] ⚠️ API key format may be invalid (should start with AIza)`);
+  }
   
+  // Validate and format request body according to Gemini API spec
   const requestBody = {
-    contents: contents,
+    contents: Array.isArray(contents) ? contents : [contents],
     generationConfig: {
       temperature: opts.temperature ?? 0.7,
       maxOutputTokens: opts.maxTokens ?? 1024,
       topP: opts.topP ?? 0.95,
     },
   };
+  
+  // Validate contents structure
+  if (!requestBody.contents || requestBody.contents.length === 0) {
+    throw new Error('Contents array is empty');
+  }
 
   try {
+    console.log(`[runGemini] ==========================================`);
     console.log(`[runGemini] Calling REST API (${apiVersion}) for model: ${modelName}`);
-    console.log(`[runGemini] REST API URL: ${baseUrl}${apiPath}?key=***`);
+    console.log(`[runGemini] Base URL: ${baseUrl}`);
+    console.log(`[runGemini] API Path: ${apiPath}`);
+    console.log(`[runGemini] Full URL: ${baseUrl}${apiPath}?key=${apiKey.substring(0, 10)}...`);
+    console.log(`[runGemini] Request Body Keys: ${Object.keys(requestBody).join(', ')}`);
+    console.log(`[runGemini] Contents Count: ${requestBody.contents.length}`);
+    console.log(`[runGemini] ==========================================`);
+    
     const response = await Promise.race([
       axios.post(url, requestBody, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         timeout: timeoutMs,
+        validateStatus: (status) => {
+          // Don't throw on 4xx errors - we'll handle them manually
+          return status < 500;
+        },
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('GEMINI_TIMEOUT')), timeoutMs)),
     ]);
+
+    // Check for HTTP errors (4xx status codes)
+    if (response.status >= 400 && response.status < 500) {
+      const errorData = response.data?.error || {};
+      const message = errorData.message || `HTTP ${response.status} error`;
+      console.error(`[runGemini] HTTP ${response.status} error: ${message}`);
+      throw {
+        response: {
+          status: response.status,
+          data: { error: errorData },
+        },
+        config: response.config,
+        message: message,
+      };
+    }
 
     if (response.data && response.data.candidates && response.data.candidates[0]) {
       const candidate = response.data.candidates[0];
@@ -427,10 +480,26 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
     }
     throw new Error('Empty response from REST API');
   } catch (error) {
+    // Enhanced error logging with full details
+    console.error(`[runGemini] ==========================================`);
+    console.error(`[runGemini] REST API ERROR for model: ${modelName}`);
+    
     if (error.response) {
       const status = error.response.status;
       const message = error.response.data?.error?.message || error.message;
-      console.error(`[runGemini] REST API error - Status: ${status}, Message: ${message}`);
+      const errorData = error.response.data?.error || {};
+      
+      console.error(`[runGemini] HTTP Status: ${status}`);
+      console.error(`[runGemini] Error Message: ${message}`);
+      console.error(`[runGemini] Error Code: ${errorData.code || 'N/A'}`);
+      console.error(`[runGemini] Error Status: ${errorData.status || 'N/A'}`);
+      if (error.config) {
+        console.error(`[runGemini] Request URL: ${error.config.url || 'N/A'}`);
+        console.error(`[runGemini] Request Method: ${error.config.method || 'N/A'}`);
+        console.error(`[runGemini] Request Base URL: ${error.config.baseURL || 'N/A'}`);
+      }
+      console.error(`[runGemini] ==========================================`);
+      
       if (status === 404) {
         // If primary model fails, try fallback model
         if (modelName === PRIMARY_MODEL && PRIMARY_MODEL !== FALLBACK_MODEL) {
