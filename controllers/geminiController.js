@@ -1321,7 +1321,7 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
       console.log(`[processReelsScript] Job ${jobId} - Calling Gemini API...`);
       const prompt = reelsScriptPrompt(topic.trim(), duration, tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, regenerate);
       console.log(`[processReelsScript] Job ${jobId} - Prompt length: ${prompt.length} characters`);
-      console.log(`[processReelsScript] Job ${jobId} - Using model: ${process.env.GEMINI_MODEL || 'gemini-pro'}`);
+      console.log(`[processReelsScript] Job ${jobId} - Using model: ${process.env.GEMINI_MODEL || 'gemini-1.5-flash'}`);
       
       output = await runGemini(prompt, {
         maxTokens: 2048,

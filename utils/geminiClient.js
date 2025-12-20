@@ -2,10 +2,11 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const axios = require('axios');
 
 const apiKey = process.env.GEMINI_API_KEY;
-// Use models that work with GoogleGenerativeAI SDK (v1beta API)
-// gemini-pro is the original model that works with both v1 and v1beta
-const PRIMARY_MODEL = 'gemini-pro';
-const FALLBACK_MODEL = 'gemini-1.0-pro';
+// Use latest Gemini models with v1 API
+// Primary: gemini-1.5-flash (fast, latest)
+// Fallback: gemini-1.5-pro (more capable)
+const PRIMARY_MODEL = 'gemini-1.5-flash';
+const FALLBACK_MODEL = 'gemini-1.5-pro';
 const envModel = process.env.GEMINI_MODEL;
 
 let genAI = null;
@@ -367,7 +368,27 @@ function getMockResponse(prompt) {
  */
 async function callGeminiViaRestAPI(modelName, contents, opts) {
   const timeoutMs = 20000; // 20 seconds
-  const url = `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${apiKey}`;
+  
+  // CRITICAL: Use correct v1 API endpoint
+  // Base URL: https://generativelanguage.googleapis.com
+  // API Version: v1 (not v1beta)
+  // Endpoint: /v1/models/{MODEL_NAME}:generateContent
+  // API key as query parameter: ?key={API_KEY}
+  const baseUrl = 'https://generativelanguage.googleapis.com';
+  const apiVersion = 'v1';
+  const apiPath = `/${apiVersion}/models/${modelName}:generateContent`;
+  const url = `${baseUrl}${apiPath}?key=${apiKey}`;
+  
+  // Validate URL structure to prevent incorrect URLs
+  if (!url.includes('generativelanguage.googleapis.com')) {
+    throw new Error('Invalid API base URL');
+  }
+  if (!url.includes(`/${apiVersion}/models/`)) {
+    throw new Error(`Invalid API version - must use ${apiVersion}`);
+  }
+  if (!apiKey || apiKey.trim() === '') {
+    throw new Error('GEMINI_API_KEY is missing');
+  }
   
   const requestBody = {
     contents: contents,
@@ -379,7 +400,8 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   };
 
   try {
-    console.log(`[runGemini] Calling REST API (v1) for model: ${modelName}`);
+    console.log(`[runGemini] Calling REST API (${apiVersion}) for model: ${modelName}`);
+    console.log(`[runGemini] REST API URL: ${baseUrl}${apiPath}?key=***`);
     const response = await Promise.race([
       axios.post(url, requestBody, {
         headers: { 'Content-Type': 'application/json' },
@@ -408,7 +430,18 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
     if (error.response) {
       const status = error.response.status;
       const message = error.response.data?.error?.message || error.message;
+      console.error(`[runGemini] REST API error - Status: ${status}, Message: ${message}`);
       if (status === 404) {
+        // If primary model fails, try fallback model
+        if (modelName === PRIMARY_MODEL && PRIMARY_MODEL !== FALLBACK_MODEL) {
+          console.warn(`[runGemini] ⚠️ ${PRIMARY_MODEL} failed in REST API, trying ${FALLBACK_MODEL}...`);
+          try {
+            return await callGeminiViaRestAPI(FALLBACK_MODEL, contents, opts);
+          } catch (lastError) {
+            console.error(`[runGemini] ❌ Fallback model ${FALLBACK_MODEL} also failed:`, lastError.message);
+            throw new Error('GEMINI_MODEL_NOT_FOUND');
+          }
+        }
         throw new Error('GEMINI_MODEL_NOT_FOUND');
       }
       if (status === 403) {
@@ -589,11 +622,11 @@ async function runGemini(prompt, opts = {}) {
           return response;
         } catch (fallbackError) {
           console.error(`[runGemini] ❌ Fallback model "${FALLBACK_MODEL}" also failed:`, fallbackError.message);
-          // If both SDK models fail, try REST API directly with v1 endpoint
+          // If both SDK models fail, try REST API directly with v1 endpoint using gemini-pro
           if (fallbackError.message === 'GEMINI_MODEL_NOT_FOUND') {
-            console.warn(`[runGemini] ⚠️ Both SDK models failed, trying REST API with v1 endpoint...`);
+            console.warn(`[runGemini] ⚠️ Both SDK models failed, trying REST API with v1 endpoint (gemini-pro)...`);
             try {
-              return await callGeminiViaRestAPI('gemini-1.5-flash', contents, opts);
+              return await callGeminiViaRestAPI('gemini-pro', contents, opts);
             } catch (restError) {
               console.error(`[runGemini] ❌ REST API also failed:`, restError.message);
               throw modelError; // Throw original error
@@ -602,11 +635,11 @@ async function runGemini(prompt, opts = {}) {
           throw modelError; // Throw original error
         }
       }
-      // If primary model fails with GEMINI_MODEL_NOT_FOUND, try REST API
+      // If primary model fails with GEMINI_MODEL_NOT_FOUND, try REST API with v1 endpoint
       if (modelError.message === 'GEMINI_MODEL_NOT_FOUND') {
-        console.warn(`[runGemini] ⚠️ SDK model failed, trying REST API with v1 endpoint...`);
+        console.warn(`[runGemini] ⚠️ SDK model failed, trying REST API with v1 endpoint (${PRIMARY_MODEL})...`);
         try {
-          return await callGeminiViaRestAPI('gemini-1.5-flash', contents, opts);
+          return await callGeminiViaRestAPI(PRIMARY_MODEL, contents, opts);
         } catch (restError) {
           console.error(`[runGemini] ❌ REST API failed:`, restError.message);
           throw modelError; // Re-throw original error
