@@ -2,11 +2,11 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const axios = require('axios');
 
 const apiKey = process.env.GEMINI_API_KEY;
-// Use latest Gemini models with v1 API ONLY
-// Use these exact model names with REST API
-const PRIMARY_MODEL = 'gemini-1.5-flash-latest';
-const FALLBACK_MODEL = 'gemini-1.5-pro-latest';
-const LEGACY_MODEL = 'gemini-pro'; // Only for fallback
+// Use correct Gemini model names for v1 API
+// These are the exact model names available in v1 API
+const PRIMARY_MODEL = 'gemini-1.5-flash';
+const FALLBACK_MODEL = 'gemini-1.5-pro';
+const LEGACY_MODEL = 'gemini-1.0-pro'; // Legacy fallback
 const envModel = process.env.GEMINI_MODEL;
 
 let genAI = null;
@@ -64,20 +64,30 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   const baseUrl = 'https://generativelanguage.googleapis.com';
   const apiVersion = 'v1'; // ALWAYS USE v1
   
-  // Model name validation and mapping
+  // Model name validation - use exact model names for v1 API
   let actualModelName = modelName;
   
-  // Map model names to correct v1 model names
+  // Remove "-latest" suffix if present (v1 API doesn't support it)
+  if (modelName.endsWith('-latest')) {
+    actualModelName = modelName.replace(/-latest$/, '');
+    console.log(`[runGemini] 🔄 Removing "-latest" suffix: "${modelName}" → "${actualModelName}"`);
+  }
+  
+  // Map legacy model names to correct v1 model names
   const modelMap = {
-    'gemini-1.5-flash': 'gemini-1.5-flash-latest',
-    'gemini-1.5-pro': 'gemini-1.5-pro-latest',
-    'gemini-pro': 'gemini-1.0-pro-latest', // Legacy model
-    'gemini-1.0-pro': 'gemini-1.0-pro-latest'
+    'gemini-pro': 'gemini-1.0-pro', // Legacy model mapping
   };
   
-  if (modelMap[modelName]) {
-    actualModelName = modelMap[modelName];
-    console.log(`[runGemini] 🔄 Mapping model "${modelName}" → "${actualModelName}" for v1 API`);
+  if (modelMap[actualModelName]) {
+    actualModelName = modelMap[actualModelName];
+    console.log(`[runGemini] 🔄 Mapping legacy model "${modelName}" → "${actualModelName}" for v1 API`);
+  }
+  
+  // Validate model name is one of the supported models
+  const supportedModels = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro'];
+  if (!supportedModels.includes(actualModelName)) {
+    console.warn(`[runGemini] ⚠️ Model "${actualModelName}" may not be available in v1 API`);
+    console.warn(`[runGemini] ⚠️ Supported models: ${supportedModels.join(', ')}`);
   }
   
   const apiPath = `/${apiVersion}/models/${actualModelName}:generateContent`;
@@ -281,9 +291,9 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
       if (response.status === 404) {
         console.error(`[runGemini] 💡 Model "${actualModelName}" not found in v1 API`);
         console.error(`[runGemini] 💡 Available models in v1:`);
-        console.error(`[runGemini]     • gemini-1.5-flash-latest`);
-        console.error(`[runGemini]     • gemini-1.5-pro-latest`);
-        console.error(`[runGemini]     • gemini-1.0-pro-latest`);
+        console.error(`[runGemini]     • gemini-1.5-flash`);
+        console.error(`[runGemini]     • gemini-1.5-pro`);
+        console.error(`[runGemini]     • gemini-1.0-pro`);
         throw new Error('GEMINI_MODEL_NOT_FOUND');
       }
       if (response.status === 403) {
@@ -378,10 +388,10 @@ async function runGemini(prompt, opts = {}) {
     
     if (error.message === 'GEMINI_MODEL_NOT_FOUND') {
       console.error('[runGemini] 💡 Available models in v1:');
-      console.error('[runGemini]     • gemini-1.5-flash-latest');
-      console.error('[runGemini]     • gemini-1.5-pro-latest');
-      console.error('[runGemini]     • gemini-1.0-pro-latest');
-      console.error('[runGemini] 💡 Update PRIMARY_MODEL in geminiClient.js');
+      console.error('[runGemini]     • gemini-1.5-flash');
+      console.error('[runGemini]     • gemini-1.5-pro');
+      console.error('[runGemini]     • gemini-1.0-pro');
+      console.error('[runGemini] 💡 Current PRIMARY_MODEL:', PRIMARY_MODEL);
     }
     
     throw error;
@@ -398,7 +408,7 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
   
   const baseUrl = 'https://generativelanguage.googleapis.com';
   const apiVersion = 'v1';
-  const modelName = 'gemini-1.5-pro-latest'; // Vision needs pro model
+  const modelName = 'gemini-1.5-pro'; // Vision needs pro model
   
   const apiPath = `/${apiVersion}/models/${modelName}:generateContent`;
   const url = `${baseUrl}${apiPath}?key=${apiKey}`;
