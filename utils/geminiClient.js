@@ -60,11 +60,10 @@ if (!apiKey || apiKey.trim() === '') {
 async function callGeminiViaRestAPI(modelName, contents, opts) {
   const timeoutMs = 20000;
   
-  // CRITICAL FIX: Use v1beta for Gemini 1.5 models, v1 for 1.0 models
+  // CRITICAL FIX: Use v1beta for ALL Gemini models (1.5 and 1.0 both need v1beta)
   const baseUrl = 'https://generativelanguage.googleapis.com';
-  // Gemini 1.5 models require v1beta API
-  const isGemini15 = modelName.includes('1.5');
-  const apiVersion = isGemini15 ? 'v1beta' : 'v1';
+  // ALL Gemini models require v1beta API (v1 API doesn't support most models)
+  const apiVersion = 'v1beta';
   
   // Model name validation - use exact model names for v1 API
   let actualModelName = modelName;
@@ -96,7 +95,7 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   const url = `${baseUrl}${apiPath}?key=${apiKey}`;
   
   console.log(`[runGemini] ==========================================`);
-  console.log(`[runGemini] 🔥 Using REST API ${apiVersion} (${isGemini15 ? 'Gemini 1.5' : 'Gemini 1.0'})`);
+  console.log(`[runGemini] 🔥 Using REST API ${apiVersion} for ${actualModelName}`);
   console.log(`[runGemini] Model: ${actualModelName} (mapped from: ${modelName})`);
   console.log(`[runGemini] API Version: ${apiVersion}`);
   console.log(`[runGemini] URL: ${baseUrl}${apiPath}?key=${apiKey.substring(0, 10)}...`);
@@ -294,16 +293,28 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
         console.error(`[runGemini] 💡 Model "${actualModelName}" not found in ${apiVersion} API`);
         console.error(`[runGemini] 💡 Trying fallback model...`);
         
-        // Try fallback model
+        // Try fallback models in order
         if (actualModelName === 'gemini-1.5-flash') {
-          console.log(`[runGemini] 🔄 Retrying with gemini-1.0-pro...`);
-          return await callGeminiViaRestAPI('gemini-1.0-pro', contents, opts);
+          console.log(`[runGemini] 🔄 Retrying with gemini-1.5-pro (v1beta)...`);
+          try {
+            return await callGeminiViaRestAPI('gemini-1.5-pro', contents, opts);
+          } catch (fallbackError) {
+            console.error(`[runGemini] ❌ Fallback gemini-1.5-pro also failed: ${fallbackError.message}`);
+            // Don't throw here, let it fall through to final error
+          }
+        } else if (actualModelName === 'gemini-1.5-pro') {
+          console.log(`[runGemini] 🔄 Retrying with gemini-1.5-flash (v1beta)...`);
+          try {
+            return await callGeminiViaRestAPI('gemini-1.5-flash', contents, opts);
+          } catch (fallbackError) {
+            console.error(`[runGemini] ❌ Fallback gemini-1.5-flash also failed: ${fallbackError.message}`);
+          }
         }
         
         console.error(`[runGemini] 💡 Available models:`);
         console.error(`[runGemini]     • gemini-1.5-flash (v1beta)`);
         console.error(`[runGemini]     • gemini-1.5-pro (v1beta)`);
-        console.error(`[runGemini]     • gemini-1.0-pro (v1)`);
+        console.error(`[runGemini]     • gemini-1.0-pro (v1beta)`);
         throw new Error('GEMINI_MODEL_NOT_FOUND');
       }
       if (response.status === 403) {
