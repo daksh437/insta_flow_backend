@@ -368,29 +368,10 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
     }
     throw new Error('Empty response');
   } catch (error) {
-    if (error.response) {
-      const status = error.response.status;
-      const message = error.response.data?.error?.message || error.message;
-      
-      if (status === 404) {
-        // Try fallback model
-        if (modelName === PRIMARY_MODEL && PRIMARY_MODEL !== FALLBACK_MODEL) {
-          console.warn(`[runGemini] ⚠️ Trying fallback: ${FALLBACK_MODEL}`);
-          try {
-            return await callGeminiViaRestAPI(FALLBACK_MODEL, contents, opts);
-          } catch (e) {
-            console.error(`[runGemini] ❌ Fallback failed: ${e.message}`);
-          }
-        }
-        // Last resort: try legacy model
-        console.warn(`[runGemini] ⚠️ Trying legacy model: ${LEGACY_MODEL}`);
-        try {
-          return await callGeminiViaRestAPI(LEGACY_MODEL, contents, opts);
-        } catch (e) {
-          throw new Error('GEMINI_MODEL_NOT_FOUND');
-        }
-      }
-      throw error;
+    // Error handling - don't recursively call callGeminiViaRestAPI
+    // All fallback logic is already handled in the 404 response handler above
+    if (error.message === 'GEMINI_MODEL_NOT_FOUND' || error.message === 'GEMINI_TIMEOUT') {
+      throw error; // Re-throw to let upper level handle
     }
     throw error;
   }
