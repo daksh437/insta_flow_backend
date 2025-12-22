@@ -22,15 +22,15 @@ if (!apiKey || apiKey.trim() === '') {
     genAI = new GoogleGenerativeAI(apiKey.trim());
     console.log('[GeminiClient] ✅ GoogleGenerativeAI SDK initialized');
     
-    // IMPORTANT: SDK uses v1beta by default which doesn't support Gemini 1.5
-    // We'll skip SDK initialization for Gemini 1.5 models and use REST API directly
+    // IMPORTANT: SDK may have compatibility issues with Gemini 1.5 models
+    // We'll use REST API v1beta directly for all models (more reliable)
     const modelToUse = envModel && envModel.trim() !== '' ? envModel.trim() : PRIMARY_MODEL;
     
-    // Check if model is Gemini 1.5 - if yes, don't use SDK
+    // Check if model is Gemini 1.5 - if yes, use REST API v1beta directly
     if (modelToUse.includes('1.5')) {
-      console.log(`[GeminiClient] ⚠️ Gemini 1.5 model detected: ${modelToUse}`);
-      console.log('[GeminiClient] ⚠️ SDK may use v1beta, switching to REST API v1 directly');
-      isApiActive = true; // We'll use REST API
+      console.log(`[GeminiClient] ✅ Gemini 1.5 model detected: ${modelToUse}`);
+      console.log('[GeminiClient] ✅ Using REST API v1beta directly (more reliable)');
+      isApiActive = true; // We'll use REST API v1beta
       finalModelName = modelToUse;
     } else {
       // For legacy models (gemini-pro), use SDK
@@ -55,7 +55,7 @@ if (!apiKey || apiKey.trim() === '') {
 // Keep your existing mock response function here...
 
 /**
- * Main function to call Gemini API - ALWAYS use REST API v1 for Gemini 1.5
+ * Main function to call Gemini API - ALWAYS use REST API v1beta for all Gemini models
  */
 async function callGeminiViaRestAPI(modelName, contents, opts) {
   const timeoutMs = 20000;
