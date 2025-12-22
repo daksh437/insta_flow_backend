@@ -60,10 +60,16 @@ if (!apiKey || apiKey.trim() === '') {
 async function callGeminiViaRestAPI(modelName, contents, opts) {
   const timeoutMs = 20000;
   
-  // CRITICAL FIX: Use v1beta for ALL Gemini models (1.5 and 1.0 both need v1beta)
+  // CRITICAL FIX: Try v1beta first, fallback to v1 if needed
   const baseUrl = 'https://generativelanguage.googleapis.com';
-  // ALL Gemini models require v1beta API (v1 API doesn't support most models)
-  const apiVersion = 'v1beta';
+  // Try v1beta first (for Gemini 1.5 models), fallback to v1 (for legacy models)
+  let apiVersion = 'v1beta';
+  
+  // For legacy models, use v1 API
+  if (modelName.includes('1.0') || modelName === 'gemini-pro') {
+    apiVersion = 'v1';
+    console.log(`[runGemini] Using v1 API for legacy model: ${modelName}`);
+  }
   
   // Model name validation - use exact model names for v1 API
   let actualModelName = modelName;
@@ -291,37 +297,44 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
       
       if (response.status === 404) {
         console.error(`[runGemini] 💡 Model "${actualModelName}" not found in ${apiVersion} API`);
-        console.error(`[runGemini] 💡 Trying fallback models...`);
         
-        // Try fallback models in order (all use v1beta)
-        const fallbackModels = ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro'];
-        
-        for (const fallbackModel of fallbackModels) {
-          if (fallbackModel === actualModelName) {
-            console.log(`[runGemini] ⏭️ Skipping ${fallbackModel} (already tried)`);
-            continue; // Skip if already tried
-          }
-          
-          console.log(`[runGemini] 🔄 Retrying with ${fallbackModel} (v1beta)...`);
+        // If v1beta failed, try v1 API with gemini-1.0-pro (legacy model)
+        if (apiVersion === 'v1beta') {
+          console.error(`[runGemini] 💡 v1beta failed, trying v1 API with gemini-1.0-pro...`);
           try {
-            const fallbackResult = await callGeminiViaRestAPI(fallbackModel, contents, opts);
-            console.log(`[runGemini] ✅ Fallback ${fallbackModel} succeeded!`);
-            return fallbackResult;
-          } catch (fallbackError) {
-            console.error(`[runGemini] ❌ Fallback ${fallbackModel} failed: ${fallbackError.message}`);
-            // Continue to next fallback
-            if (fallbackError.message === 'GEMINI_MODEL_NOT_FOUND') {
-              continue; // Try next model
+            // Use v1 API for legacy model
+            const v1Url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.0-pro:generateContent?key=${apiKey}`;
+            const v1Response = await Promise.race([
+              axios.post(v1Url, requestBody, {
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json',
+                },
+                timeout: timeoutMs,
+                validateStatus: (status) => status < 500,
+              }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('GEMINI_TIMEOUT')), timeoutMs)),
+            ]);
+            
+            if (v1Response.status >= 200 && v1Response.status < 300) {
+              // Extract response text
+              if (v1Response.data?.candidates?.[0]?.content?.parts) {
+                let fullText = '';
+                for (const part of v1Response.data.candidates[0].content.parts) {
+                  if (part?.text) fullText += part.text;
+                }
+                if (fullText.trim()) {
+                  console.log(`[runGemini] ✅ v1 API success with gemini-1.0-pro! Response length: ${fullText.length}`);
+                  return fullText;
+                }
+              }
             }
-            // For other errors, still try next model
-            continue;
+          } catch (v1Error) {
+            console.error(`[runGemini] ❌ v1 API also failed: ${v1Error.message}`);
           }
         }
         
-        console.error(`[runGemini] 💡 All models failed. Available models in v1beta:`);
-        console.error(`[runGemini]     • gemini-1.5-flash`);
-        console.error(`[runGemini]     • gemini-1.5-pro`);
-        console.error(`[runGemini]     • gemini-1.0-pro`);
+        console.error(`[runGemini] 💡 All API versions failed for model: ${actualModelName}`);
         throw new Error('GEMINI_MODEL_NOT_FOUND');
       }
       if (response.status === 403) {
