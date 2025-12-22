@@ -60,15 +60,21 @@ if (!apiKey || apiKey.trim() === '') {
 async function callGeminiViaRestAPI(modelName, contents, opts) {
   const timeoutMs = 20000;
   
-  // CRITICAL FIX: Try v1beta first, fallback to v1 if needed
+  // CRITICAL FIX: Use v1beta for 1.5 models, v1 for 1.0 models
   const baseUrl = 'https://generativelanguage.googleapis.com';
-  // Try v1beta first (for Gemini 1.5 models), fallback to v1 (for legacy models)
+  // Determine API version based on model name
   let apiVersion = 'v1beta';
   
-  // For legacy models, use v1 API
+  // For legacy models (1.0), use v1 API
   if (modelName.includes('1.0') || modelName === 'gemini-pro') {
     apiVersion = 'v1';
     console.log(`[runGemini] Using v1 API for legacy model: ${modelName}`);
+  }
+  
+  // If v1 was already tried and failed, don't try again
+  if (opts._v1Tried && apiVersion === 'v1beta') {
+    console.error(`[runGemini] ⚠️ v1 already tried, skipping v1beta retry`);
+    throw new Error('GEMINI_MODEL_NOT_FOUND');
   }
   
   // Model name validation - use exact model names for v1 API
@@ -298,8 +304,8 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
       if (response.status === 404) {
         console.error(`[runGemini] 💡 Model "${actualModelName}" not found in ${apiVersion} API`);
         
-        // If v1beta failed, try v1 API with gemini-1.0-pro (legacy model)
-        if (apiVersion === 'v1beta') {
+        // If v1beta failed, try v1 API with gemini-1.0-pro (legacy model) - ONLY ONCE
+        if (apiVersion === 'v1beta' && !opts._v1Tried) {
           console.error(`[runGemini] 💡 v1beta failed, trying v1 API with gemini-1.0-pro...`);
           try {
             // Use v1 API for legacy model
