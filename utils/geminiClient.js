@@ -305,10 +305,11 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
         console.error(`[runGemini] 💡 Model "${actualModelName}" not found in ${apiVersion} API`);
         
         // If v1beta failed, try v1 API with gemini-1.0-pro (legacy model) - ONLY ONCE
+        // CRITICAL: Don't recursively call callGeminiViaRestAPI - directly call v1 API
         if (apiVersion === 'v1beta' && !opts._v1Tried) {
           console.error(`[runGemini] 💡 v1beta failed, trying v1 API with gemini-1.0-pro...`);
           try {
-            // Use v1 API for legacy model
+            // Use v1 API for legacy model - DIRECT API CALL (no recursion)
             const v1Url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.0-pro:generateContent?key=${apiKey}`;
             const v1Response = await Promise.race([
               axios.post(v1Url, requestBody, {
@@ -334,12 +335,15 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
                   return fullText;
                 }
               }
+            } else {
+              console.error(`[runGemini] ❌ v1 API returned status ${v1Response.status}`);
             }
           } catch (v1Error) {
             console.error(`[runGemini] ❌ v1 API also failed: ${v1Error.message}`);
           }
         }
         
+        // If we get here, all attempts failed
         console.error(`[runGemini] 💡 All API versions failed for model: ${actualModelName}`);
         throw new Error('GEMINI_MODEL_NOT_FOUND');
       }
