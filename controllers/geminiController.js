@@ -671,9 +671,16 @@ async function processCalendar(jobId, topic, days) {
   console.log(`[processCalendar] Starting background processing for job: ${jobId}`);
   
   try {
+    // Update job status to processing
+    updateJob(jobId, 'processing', {});
+    
     console.log('[processCalendar] Calling Gemini API...');
     const output = await runGemini(calendarPrompt(topic, days), { maxTokens: 4096, temperature: 0.7 });
-    console.log('[processCalendar] Gemini response received');
+    console.log('[processCalendar] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
     
     let data = tryParseJson(output, []);
     
@@ -684,12 +691,17 @@ async function processCalendar(jobId, topic, days) {
     }
     
     // Update job with completed status
-    updateJob(jobId, 'done', { data });
-    console.log(`[processCalendar] ✅ Job ${jobId} completed successfully`);
+    updateJob(jobId, 'completed', { data });
+    console.log(`[processCalendar] ✅ Job ${jobId} completed successfully, data items: ${data.length}`);
   } catch (error) {
-    console.error(`[processCalendar] Error processing job ${jobId}:`, error);
-    // Store fallback result instead of error (empty array)
-    updateJob(jobId, 'done', { data: [], error: error.message || 'AI generation failed' });
+    console.error(`[processCalendar] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processCalendar] Error stack:`, error.stack);
+    // Store fallback result with failed status
+    updateJob(jobId, 'failed', { 
+      data: [], 
+      error: error.message || 'AI generation failed' 
+    });
+    console.log(`[processCalendar] ⚠️ Job ${jobId} marked as failed with fallback data`);
   }
 }
 

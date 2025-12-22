@@ -297,14 +297,24 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
         const fallbackModels = ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.0-pro'];
         
         for (const fallbackModel of fallbackModels) {
-          if (fallbackModel === actualModelName) continue; // Skip if already tried
+          if (fallbackModel === actualModelName) {
+            console.log(`[runGemini] ⏭️ Skipping ${fallbackModel} (already tried)`);
+            continue; // Skip if already tried
+          }
           
           console.log(`[runGemini] 🔄 Retrying with ${fallbackModel} (v1beta)...`);
           try {
-            return await callGeminiViaRestAPI(fallbackModel, contents, opts);
+            const fallbackResult = await callGeminiViaRestAPI(fallbackModel, contents, opts);
+            console.log(`[runGemini] ✅ Fallback ${fallbackModel} succeeded!`);
+            return fallbackResult;
           } catch (fallbackError) {
-            console.error(`[runGemini] ❌ Fallback ${fallbackModel} also failed: ${fallbackError.message}`);
+            console.error(`[runGemini] ❌ Fallback ${fallbackModel} failed: ${fallbackError.message}`);
             // Continue to next fallback
+            if (fallbackError.message === 'GEMINI_MODEL_NOT_FOUND') {
+              continue; // Try next model
+            }
+            // For other errors, still try next model
+            continue;
           }
         }
         
