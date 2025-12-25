@@ -4,16 +4,10 @@ const axios = require('axios');
 const apiKey = process.env.GEMINI_API_KEY;
 // Use correct Gemini model names for v1 API
 // These are the exact model names available in v1 API
-const PRIMARY_MODEL = 'gemini-2.5-flash';
-const FALLBACK_MODEL = 'gemini-2.5-pro';
+const PRIMARY_MODEL = 'gemini-1.5-flash';
+const FALLBACK_MODEL = 'gemini-1.5-pro';
 const LEGACY_MODEL = 'gemini-1.0-pro'; // Legacy fallback
 const envModel = process.env.GEMINI_MODEL;
-
-// Map deprecated 1.5 model names to 2.5 equivalents
-const DEPRECATED_MODEL_MAP = {
-  'gemini-1.5-flash': 'gemini-2.5-flash',
-  'gemini-1.5-pro': 'gemini-2.5-pro',
-};
 
 let genAI = null;
 let model = null;
@@ -28,19 +22,13 @@ if (!apiKey || apiKey.trim() === '') {
     genAI = new GoogleGenerativeAI(apiKey.trim());
     console.log('[GeminiClient] ✅ GoogleGenerativeAI SDK initialized');
     
-    // IMPORTANT: SDK may have compatibility issues with Gemini 2.5/1.5 models
+    // IMPORTANT: SDK may have compatibility issues with Gemini 1.5 models
     // We'll use REST API v1beta directly for all models (more reliable)
     let modelToUse = envModel && envModel.trim() !== '' ? envModel.trim() : PRIMARY_MODEL;
-
-    // If an old 1.5 model name is supplied, remap it to the 2.5 equivalent
-    if (DEPRECATED_MODEL_MAP[modelToUse]) {
-      console.log(`[GeminiClient] 🔄 Remapping deprecated model "${modelToUse}" → "${DEPRECATED_MODEL_MAP[modelToUse]}"`);
-      modelToUse = DEPRECATED_MODEL_MAP[modelToUse];
-    }
     
-    // Check if model is Gemini 2.5 or 1.5 - if yes, use REST API v1beta directly
-    if (modelToUse.includes('2.5') || modelToUse.includes('1.5')) {
-      console.log(`[GeminiClient] ✅ Gemini 2.5/1.5 model detected: ${modelToUse}`);
+    // Check if model is Gemini 1.5 - if yes, use REST API v1beta directly
+    if (modelToUse.includes('1.5')) {
+      console.log(`[GeminiClient] ✅ Gemini 1.5 model detected: ${modelToUse}`);
       console.log('[GeminiClient] ✅ Using REST API v1beta directly (more reliable)');
       isApiActive = true; // We'll use REST API v1beta
       finalModelName = modelToUse;
@@ -72,7 +60,7 @@ if (!apiKey || apiKey.trim() === '') {
 async function callGeminiViaRestAPI(modelName, contents, opts) {
   const timeoutMs = 20000;
   
-  // CRITICAL FIX: Use v1beta for 2.5/1.5 models, v1 for 1.0 models
+  // CRITICAL FIX: Use v1beta for 1.5 models, v1 for 1.0 models
   const baseUrl = 'https://generativelanguage.googleapis.com';
   // Determine API version based on model name
   let apiVersion = 'v1beta';
@@ -91,12 +79,6 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   
   // Model name validation - use exact model names for v1/v1beta API
   let actualModelName = modelName;
-
-  // Remap deprecated 1.5 model names to 2.5 equivalents
-  if (DEPRECATED_MODEL_MAP[actualModelName]) {
-    console.log(`[runGemini] 🔄 Remapping deprecated model "${actualModelName}" → "${DEPRECATED_MODEL_MAP[actualModelName]}"`);
-    actualModelName = DEPRECATED_MODEL_MAP[actualModelName];
-  }
   
   // Remove "-latest" suffix if present (v1 API doesn't support it)
   if (modelName.endsWith('-latest')) {
@@ -115,7 +97,7 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   }
   
   // Validate model name is one of the supported models
-  const supportedModels = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.0-pro'];
+  const supportedModels = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro'];
   if (!supportedModels.includes(actualModelName)) {
     console.warn(`[runGemini] ⚠️ Model "${actualModelName}" may not be available in v1/v1beta API`);
     console.warn(`[runGemini] ⚠️ Supported models: ${supportedModels.join(', ')}`);
@@ -396,7 +378,7 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
 }
 
 /**
- * MAIN runGemini function - ONLY uses REST API v1beta for Gemini 2.5 models
+ * MAIN runGemini function - ONLY uses REST API v1beta for Gemini 1.5 models
  */
 async function runGemini(prompt, opts = {}) {
   console.log('[runGemini] Starting...');
@@ -416,25 +398,13 @@ async function runGemini(prompt, opts = {}) {
     }
   }
   
-  // CRITICAL: Ensure we always use gemini-2.5-flash (never 1.5)
+  // Use PRIMARY_MODEL (gemini-1.5-flash)
   let modelToUse = PRIMARY_MODEL;
   
-  // Safety check: If PRIMARY_MODEL is somehow 1.5, force it to 2.5
-  if (modelToUse.includes('1.5')) {
-    console.warn(`[runGemini] ⚠️ WARNING: PRIMARY_MODEL is ${modelToUse}, forcing to gemini-2.5-flash`);
-    modelToUse = 'gemini-2.5-flash';
-  }
-  
-  // Remap deprecated 1.5 models to 2.5 if somehow passed
-  if (DEPRECATED_MODEL_MAP[modelToUse]) {
-    console.log(`[runGemini] 🔄 Remapping deprecated model "${modelToUse}" → "${DEPRECATED_MODEL_MAP[modelToUse]}"`);
-    modelToUse = DEPRECATED_MODEL_MAP[modelToUse];
-  }
-  
-  // Final validation: Must be 2.5 or 1.0 (legacy)
-  if (!modelToUse.includes('2.5') && !modelToUse.includes('1.0')) {
-    console.warn(`[runGemini] ⚠️ Invalid model "${modelToUse}", defaulting to gemini-2.5-flash`);
-    modelToUse = 'gemini-2.5-flash';
+  // Final validation: Must be 1.5 or 1.0 (legacy)
+  if (!modelToUse.includes('1.5') && !modelToUse.includes('1.0')) {
+    console.warn(`[runGemini] ⚠️ Invalid model "${modelToUse}", defaulting to gemini-1.5-flash`);
+    modelToUse = 'gemini-1.5-flash';
   }
   
   console.log(`[runGemini] ✅ Using REST API v1beta - Model: ${modelToUse}, Prompt length: ${actualPrompt.length}`);
@@ -452,7 +422,7 @@ async function runGemini(prompt, opts = {}) {
     contents = [{ role: 'user', parts: [{ text: actualPrompt }] }];
   }
   
-  // ALWAYS use REST API v1beta for 2.5 models (skip SDK completely)
+  // ALWAYS use REST API v1beta for 1.5 models (skip SDK completely)
   try {
     return await callGeminiViaRestAPI(modelToUse, contents, opts);
   } catch (error) {
@@ -460,8 +430,8 @@ async function runGemini(prompt, opts = {}) {
     
     if (error.message === 'GEMINI_MODEL_NOT_FOUND') {
       console.error('[runGemini] 💡 Available models in v1/v1beta:');
-      console.error('[runGemini]     • gemini-2.5-flash');
-      console.error('[runGemini]     • gemini-2.5-pro');
+      console.error('[runGemini]     • gemini-1.5-flash');
+      console.error('[runGemini]     • gemini-1.5-pro');
       console.error('[runGemini]     • gemini-1.0-pro');
       console.error('[runGemini] 💡 Current PRIMARY_MODEL:', PRIMARY_MODEL);
       console.error('[runGemini] 💡 Model used in call:', modelToUse);
@@ -471,17 +441,17 @@ async function runGemini(prompt, opts = {}) {
   }
 }
 
-// Vision API function (using REST API v1beta for Gemini 2.5/1.5)
+// Vision API function (using REST API v1beta for Gemini 1.5)
 async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jpeg', opts = {}) {
-  console.log('[runGeminiWithImage] Using REST API v1beta for Gemini 2.5/1.5...');
+  console.log('[runGeminiWithImage] Using REST API v1beta for Gemini 1.5...');
   
   if (!apiKey || apiKey.trim() === '') {
     throw new Error('GEMINI_API_KEY missing');
   }
   
   const baseUrl = 'https://generativelanguage.googleapis.com';
-  const modelName = 'gemini-2.5-pro'; // Vision needs pro model
-  // Gemini 2.5 models require v1beta API
+  const modelName = 'gemini-1.5-pro'; // Vision needs pro model
+  // Gemini 1.5 models require v1beta API
   const apiVersion = 'v1beta';
   
   const apiPath = `/${apiVersion}/models/${modelName}:generateContent`;
