@@ -4,8 +4,8 @@ const axios = require('axios');
 const apiKey = process.env.GEMINI_API_KEY;
 // Use correct Gemini model names for v1 API
 // These are the exact model names available in v1 API
-const PRIMARY_MODEL = 'gemini-1.5-flash';
-const FALLBACK_MODEL = 'gemini-1.5-pro';
+const PRIMARY_MODEL = 'gemini-1.0-pro';
+const FALLBACK_MODEL = 'gemini-1.0-pro';
 const LEGACY_MODEL = 'gemini-1.0-pro'; // Legacy fallback
 const envModel = process.env.GEMINI_MODEL;
 
@@ -22,18 +22,18 @@ if (!apiKey || apiKey.trim() === '') {
     genAI = new GoogleGenerativeAI(apiKey.trim());
     console.log('[GeminiClient] ✅ GoogleGenerativeAI SDK initialized');
     
-    // IMPORTANT: SDK may have compatibility issues with Gemini 1.5 models
-    // We'll use REST API v1beta directly for all models (more reliable)
+    // IMPORTANT: Using gemini-1.0-pro with v1 API (available and reliable)
+    // We'll use REST API v1 directly for gemini-1.0-pro
     let modelToUse = envModel && envModel.trim() !== '' ? envModel.trim() : PRIMARY_MODEL;
     
-    // Check if model is Gemini 1.5 - if yes, use REST API v1beta directly
-    if (modelToUse.includes('1.5')) {
-      console.log(`[GeminiClient] ✅ Gemini 1.5 model detected: ${modelToUse}`);
-      console.log('[GeminiClient] ✅ Using REST API v1beta directly (more reliable)');
-      isApiActive = true; // We'll use REST API v1beta
+    // For gemini-1.0-pro, use REST API v1 directly
+    if (modelToUse.includes('1.0') || modelToUse === 'gemini-pro') {
+      console.log(`[GeminiClient] ✅ Gemini 1.0 model detected: ${modelToUse}`);
+      console.log('[GeminiClient] ✅ Using REST API v1 directly (more reliable)');
+      isApiActive = true; // We'll use REST API v1
       finalModelName = modelToUse;
     } else {
-      // For legacy models (gemini-pro), use SDK
+      // For other models, try SDK first
       try {
         model = genAI.getGenerativeModel({ model: modelToUse });
         isApiActive = true;
@@ -55,29 +55,20 @@ if (!apiKey || apiKey.trim() === '') {
 // Keep your existing mock response function here...
 
 /**
- * Main function to call Gemini API - ALWAYS use REST API v1beta for all Gemini models
+ * Main function to call Gemini API - Uses REST API v1 for gemini-1.0-pro
  */
 async function callGeminiViaRestAPI(modelName, contents, opts) {
   const timeoutMs = 20000;
   
-  // CRITICAL FIX: Use v1beta for 1.5 models, v1 for 1.0 models
+  // CRITICAL FIX: Use v1 API for gemini-1.0-pro (available and reliable)
   const baseUrl = 'https://generativelanguage.googleapis.com';
-  // Determine API version based on model name
-  let apiVersion = 'v1beta';
+  // Use v1 API for gemini-1.0-pro
+  let apiVersion = 'v1';
   
-  // For legacy models (1.0), use v1 API
-  if (modelName.includes('1.0') || modelName === 'gemini-pro') {
-    apiVersion = 'v1';
-    console.log(`[runGemini] Using v1 API for legacy model: ${modelName}`);
-  }
+  // Log API version being used
+  console.log(`[runGemini] Using v1 API for model: ${modelName}`);
   
-  // If v1 was already tried and failed, don't try again
-  if (opts._v1Tried && apiVersion === 'v1beta') {
-    console.error(`[runGemini] ⚠️ v1 already tried, skipping v1beta retry`);
-    throw new Error('GEMINI_MODEL_NOT_FOUND');
-  }
-  
-  // Model name validation - use exact model names for v1/v1beta API
+  // Model name validation - use exact model names for v1 API
   let actualModelName = modelName;
   
   // Remove "-latest" suffix if present (v1 API doesn't support it)
@@ -97,9 +88,9 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   }
   
   // Validate model name is one of the supported models
-  const supportedModels = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro'];
+  const supportedModels = ['gemini-1.0-pro', 'gemini-pro'];
   if (!supportedModels.includes(actualModelName)) {
-    console.warn(`[runGemini] ⚠️ Model "${actualModelName}" may not be available in v1/v1beta API`);
+    console.warn(`[runGemini] ⚠️ Model "${actualModelName}" may not be available in v1 API`);
     console.warn(`[runGemini] ⚠️ Supported models: ${supportedModels.join(', ')}`);
   }
   
@@ -302,49 +293,7 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
       console.error(`[runGemini] ❌ HTTP ${response.status}: ${message}`);
       
       if (response.status === 404) {
-        console.error(`[runGemini] 💡 Model "${actualModelName}" not found in ${apiVersion} API`);
-        
-        // If v1beta failed, try v1 API with gemini-1.0-pro (legacy model) - ONLY ONCE
-        // CRITICAL: Don't recursively call callGeminiViaRestAPI - directly call v1 API
-        if (apiVersion === 'v1beta' && !opts._v1Tried) {
-          console.error(`[runGemini] 💡 v1beta failed, trying v1 API with gemini-1.0-pro...`);
-          try {
-            // Use v1 API for legacy model - DIRECT API CALL (no recursion)
-            const v1Url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.0-pro:generateContent?key=${apiKey}`;
-            const v1Response = await Promise.race([
-              axios.post(v1Url, requestBody, {
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Accept': 'application/json',
-                },
-                timeout: timeoutMs,
-                validateStatus: (status) => status < 500,
-              }),
-              new Promise((_, reject) => setTimeout(() => reject(new Error('GEMINI_TIMEOUT')), timeoutMs)),
-            ]);
-            
-            if (v1Response.status >= 200 && v1Response.status < 300) {
-              // Extract response text
-              if (v1Response.data?.candidates?.[0]?.content?.parts) {
-                let fullText = '';
-                for (const part of v1Response.data.candidates[0].content.parts) {
-                  if (part?.text) fullText += part.text;
-                }
-                if (fullText.trim()) {
-                  console.log(`[runGemini] ✅ v1 API success with gemini-1.0-pro! Response length: ${fullText.length}`);
-                  return fullText;
-                }
-              }
-            } else {
-              console.error(`[runGemini] ❌ v1 API returned status ${v1Response.status}`);
-            }
-          } catch (v1Error) {
-            console.error(`[runGemini] ❌ v1 API also failed: ${v1Error.message}`);
-          }
-        }
-        
-        // If we get here, all attempts failed
-        console.error(`[runGemini] 💡 All API versions failed for model: ${actualModelName}`);
+        console.error(`[runGemini] 💡 Model "${actualModelName}" not found in v1 API`);
         throw new Error('GEMINI_MODEL_NOT_FOUND');
       }
       if (response.status === 403) {
@@ -378,7 +327,7 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
 }
 
 /**
- * MAIN runGemini function - ONLY uses REST API v1beta for Gemini 1.5 models
+ * MAIN runGemini function - Uses REST API v1 for Gemini 1.0-pro model
  */
 async function runGemini(prompt, opts = {}) {
   console.log('[runGemini] Starting...');
@@ -398,16 +347,16 @@ async function runGemini(prompt, opts = {}) {
     }
   }
   
-  // Use PRIMARY_MODEL (gemini-1.5-flash)
+  // Use PRIMARY_MODEL (gemini-1.0-pro)
   let modelToUse = PRIMARY_MODEL;
   
-  // Final validation: Must be 1.5 or 1.0 (legacy)
-  if (!modelToUse.includes('1.5') && !modelToUse.includes('1.0')) {
-    console.warn(`[runGemini] ⚠️ Invalid model "${modelToUse}", defaulting to gemini-1.5-flash`);
-    modelToUse = 'gemini-1.5-flash';
+  // Final validation: Must be 1.0 or gemini-pro
+  if (!modelToUse.includes('1.0') && modelToUse !== 'gemini-pro') {
+    console.warn(`[runGemini] ⚠️ Invalid model "${modelToUse}", defaulting to gemini-1.0-pro`);
+    modelToUse = 'gemini-1.0-pro';
   }
   
-  console.log(`[runGemini] ✅ Using REST API v1beta - Model: ${modelToUse}, Prompt length: ${actualPrompt.length}`);
+  console.log(`[runGemini] ✅ Using REST API v1 - Model: ${modelToUse}, Prompt length: ${actualPrompt.length}`);
   console.log(`[runGemini] ✅ PRIMARY_MODEL constant: ${PRIMARY_MODEL}`);
   
   // Prepare contents
@@ -422,17 +371,16 @@ async function runGemini(prompt, opts = {}) {
     contents = [{ role: 'user', parts: [{ text: actualPrompt }] }];
   }
   
-  // ALWAYS use REST API v1beta for 1.5 models (skip SDK completely)
+  // ALWAYS use REST API v1 for gemini-1.0-pro (skip SDK completely)
   try {
     return await callGeminiViaRestAPI(modelToUse, contents, opts);
   } catch (error) {
     console.error('[runGemini] ❌ Error:', error.message);
     
     if (error.message === 'GEMINI_MODEL_NOT_FOUND') {
-      console.error('[runGemini] 💡 Available models in v1/v1beta:');
-      console.error('[runGemini]     • gemini-1.5-flash');
-      console.error('[runGemini]     • gemini-1.5-pro');
+      console.error('[runGemini] 💡 Available models in v1:');
       console.error('[runGemini]     • gemini-1.0-pro');
+      console.error('[runGemini]     • gemini-pro');
       console.error('[runGemini] 💡 Current PRIMARY_MODEL:', PRIMARY_MODEL);
       console.error('[runGemini] 💡 Model used in call:', modelToUse);
     }
@@ -441,18 +389,18 @@ async function runGemini(prompt, opts = {}) {
   }
 }
 
-// Vision API function (using REST API v1beta for Gemini 1.5)
+// Vision API function (using REST API v1 for Gemini 1.0-pro)
 async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jpeg', opts = {}) {
-  console.log('[runGeminiWithImage] Using REST API v1beta for Gemini 1.5...');
+  console.log('[runGeminiWithImage] Using REST API v1 for Gemini 1.0-pro...');
   
   if (!apiKey || apiKey.trim() === '') {
     throw new Error('GEMINI_API_KEY missing');
   }
   
   const baseUrl = 'https://generativelanguage.googleapis.com';
-  const modelName = 'gemini-1.5-pro'; // Vision needs pro model
-  // Gemini 1.5 models require v1beta API
-  const apiVersion = 'v1beta';
+  const modelName = 'gemini-1.0-pro'; // Vision uses 1.0-pro model
+  // Gemini 1.0-pro requires v1 API
+  const apiVersion = 'v1';
   
   const apiPath = `/${apiVersion}/models/${modelName}:generateContent`;
   const url = `${baseUrl}${apiPath}?key=${apiKey}`;
