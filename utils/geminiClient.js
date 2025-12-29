@@ -478,4 +478,7 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
   }
 }
 
-module.exports = { runGemini, runGeminiWithImage };
+module.exports = { runGemini, runGeminiWithImage };   
+    
+ 
+// Deploy trigger: 12/29/2025 15:40:09
