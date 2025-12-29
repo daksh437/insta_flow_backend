@@ -106,7 +106,7 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   // Validate model name is one of the supported models
   const supportedModels = ['gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-1.0-pro', 'gemini-pro'];
   if (!supportedModels.includes(actualModelName)) {
-    console.warn(`[runGemini] ⚠️ Model "${actualModelName}" may not be available in v1 API`);
+    console.warn(`[runGemini] ⚠️ Model "${actualModelName}" may not be available in v1/v1beta API`);
     console.warn(`[runGemini] ⚠️ Supported models: ${supportedModels.join(', ')}`);
   }
   
@@ -478,7 +478,4 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
   }
 }
 
-module.exports = { runGemini, runGeminiWithImage };   
-    
- 
-// Deploy trigger: 12/29/2025 15:40:09
+module.exports = { runGemini, runGeminiWithImage };

@@ -72,7 +72,7 @@ app.use((err, req, res, next) => {
 app.listen(PORT, '0.0.0.0', () => {
   const env = process.env.NODE_ENV || 'development';
   const apiKey = process.env.GEMINI_API_KEY;
-  const modelName = process.env.GEMINI_MODEL || 'gemini-1.0-pro';
+  const modelName = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
   const geminiMode = (apiKey && apiKey.trim() !== '') ? 'REAL MODE' : 'MOCK MODE';
   
   console.log(`🚀 InstaFlow backend running on port ${PORT}`);
