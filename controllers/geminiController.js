@@ -1956,6 +1956,12 @@ function getJobStatus(req, res) {
             job.duration || '15s'
           );
           break;
+        case 'post-ideas':
+          response.data = [];
+          break;
+        case 'hashtags':
+          response.data = [];
+          break;
         default:
           response.data = {};
       }
@@ -1971,6 +1977,238 @@ function getJobStatus(req, res) {
   res.json(response);
 }
 
+/**
+ * POST /ai/post-ideas
+ * Generate post ideas using Gemini API
+ */
+async function generatePostIdeas(req, res) {
+  const { topic, niche, count = 5 } = req.body || {};
+  
+  if (!topic || topic.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Topic is required', data: [] });
+  }
+  
+  const jobId = generateJobId('POST_IDEAS');
+  
+  createJob(jobId, {
+    type: 'post-ideas',
+    topic: topic.trim(),
+    niche: niche || '',
+    count: parseInt(count) || 5,
+  });
+  
+  console.log(`[generatePostIdeas] ===== NEW REQUEST =====`);
+  console.log(`[generatePostIdeas] Job ID: ${jobId}`);
+  console.log(`[generatePostIdeas] Topic: "${topic}", Niche: "${niche}", Count: ${count}`);
+  
+  processPostIdeas(jobId, topic.trim(), niche || '', parseInt(count) || 5)
+    .catch((error) => {
+      console.error(`[generatePostIdeas] Background processing failed for job ${jobId}:`, error);
+      updateJob(jobId, 'done', { 
+        data: [],
+        error: error.message || 'AI generation failed'
+      });
+    });
+  
+  console.log(`[generatePostIdeas] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing for post ideas generation
+ */
+async function processPostIdeas(jobId, topic, niche, count) {
+  console.log(`[processPostIdeas] Starting background processing for job: ${jobId}`);
+  
+  try {
+    updateJob(jobId, 'processing', {});
+    
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    const nicheContext = niche ? ` for ${niche} niche` : '';
+    
+    const prompt = `Generate ${count} creative and engaging Instagram post ideas${nicheContext} based on the topic: "${topic}"
+
+Each post idea should include:
+- A catchy title/headline
+- A brief description (1-2 sentences)
+- Suggested content angle
+- Target audience
+- Engagement strategy
+
+Make each idea unique, creative, and relevant to the topic.
+Ensure variety in approach, tone, and content style.
+
+Return the ideas as a JSON array with this structure:
+[
+  {
+    "title": "Post idea title",
+    "description": "Brief description",
+    "angle": "Content angle",
+    "audience": "Target audience",
+    "engagement": "Engagement strategy"
+  },
+  ...
+]
+
+🎲 UNIQUE_SEED: ${uniqueSeed}
+📅 TIMESTAMP: ${timestamp}
+🔄 REQUEST_ID: ${jobId}`;
+    
+    console.log('[processPostIdeas] Calling Gemini API with unique prompt...');
+    const output = await runGemini(prompt, { 
+      maxTokens: 2048, 
+      temperature: 0.9,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    console.log('[processPostIdeas] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
+    
+    let data = tryParseJson(output, []);
+    
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('Invalid post ideas data from Gemini API');
+    }
+    
+    // Ensure we have the requested count
+    data = data.slice(0, count);
+    
+    updateJob(jobId, 'completed', { data });
+    console.log(`[processPostIdeas] ✅ Job ${jobId} completed successfully, ideas: ${data.length}`);
+  } catch (error) {
+    console.error(`[processPostIdeas] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processPostIdeas] Error stack:`, error.stack);
+    updateJob(jobId, 'failed', { 
+      data: [], 
+      error: error.message || 'AI generation failed' 
+    });
+  }
+}
+
+/**
+ * POST /ai/hashtags
+ * Generate hashtags using Gemini API
+ */
+async function generateHashtags(req, res) {
+  const { topic, caption, count = 20 } = req.body || {};
+  
+  if (!topic && !caption) {
+    return res.status(400).json({ success: false, error: 'Topic or caption is required', data: [] });
+  }
+  
+  const jobId = generateJobId('HASHTAGS');
+  
+  createJob(jobId, {
+    type: 'hashtags',
+    topic: topic || '',
+    caption: caption || '',
+    count: parseInt(count) || 20,
+  });
+  
+  console.log(`[generateHashtags] ===== NEW REQUEST =====`);
+  console.log(`[generateHashtags] Job ID: ${jobId}`);
+  console.log(`[generateHashtags] Topic: "${topic}", Caption: "${caption?.substring(0, 50)}...", Count: ${count}`);
+  
+  processHashtags(jobId, topic || '', caption || '', parseInt(count) || 20)
+    .catch((error) => {
+      console.error(`[generateHashtags] Background processing failed for job ${jobId}:`, error);
+      updateJob(jobId, 'done', { 
+        data: [],
+        error: error.message || 'AI generation failed'
+      });
+    });
+  
+  console.log(`[generateHashtags] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing for hashtags generation
+ */
+async function processHashtags(jobId, topic, caption, count) {
+  console.log(`[processHashtags] Starting background processing for job: ${jobId}`);
+  
+  try {
+    updateJob(jobId, 'processing', {});
+    
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    
+    const context = caption ? `Caption: "${caption}"` : `Topic: "${topic}"`;
+    
+    const prompt = `Generate ${count} relevant and trending Instagram hashtags based on: ${context}
+
+Requirements:
+- Mix of popular and niche hashtags
+- Relevant to the topic/caption
+- Include trending hashtags when appropriate
+- Mix of broad and specific hashtags
+- Include engagement-focused hashtags
+- Ensure hashtags are Instagram-friendly (no spaces, special characters)
+
+Return the hashtags as a JSON array of strings:
+["#hashtag1", "#hashtag2", "#hashtag3", ...]
+
+🎲 UNIQUE_SEED: ${uniqueSeed}
+📅 TIMESTAMP: ${timestamp}
+🔄 REQUEST_ID: ${jobId}`;
+    
+    console.log('[processHashtags] Calling Gemini API with unique prompt...');
+    const output = await runGemini(prompt, { 
+      maxTokens: 1024, 
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    console.log('[processHashtags] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
+    
+    let data = tryParseJson(output, []);
+    
+    if (!Array.isArray(data) || data.length === 0) {
+      // Try to extract hashtags from plain text
+      const hashtagRegex = /#[\w]+/g;
+      const extractedHashtags = output.match(hashtagRegex) || [];
+      if (extractedHashtags.length > 0) {
+        data = extractedHashtags.slice(0, count);
+      } else {
+        throw new Error('Invalid hashtags data from Gemini API');
+      }
+    }
+    
+    // Ensure we have the requested count
+    data = data.slice(0, count);
+    
+    // Ensure all hashtags start with #
+    data = data.map(tag => tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`);
+    
+    updateJob(jobId, 'completed', { data });
+    console.log(`[processHashtags] ✅ Job ${jobId} completed successfully, hashtags: ${data.length}`);
+  } catch (error) {
+    console.error(`[processHashtags] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processHashtags] Error stack:`, error.stack);
+    updateJob(jobId, 'failed', { 
+      data: [], 
+      error: error.message || 'AI generation failed' 
+    });
+  }
+}
+
 module.exports = {
   generateCaptions,
   generateImageCaptions,
@@ -1979,6 +2217,8 @@ module.exports = {
   generateStrategy,
   analyzeNiche,
   generateReelsScript,
+  generatePostIdeas,
+  generateHashtags,
   getJobStatus,
 };
 

@@ -8,6 +8,8 @@ const {
   generateImageCaptions,
   generateCaptionFromMedia,
   generateReelsScript,
+  generatePostIdeas,
+  generateHashtags,
   getJobStatus
 } = require('../controllers/geminiController');
 
@@ -21,6 +23,8 @@ router.post('/calendar', generateCalendar);
 router.post('/strategy', generateStrategy);
 router.post('/analyze', analyzeNiche);
 router.post('/reels-script', generateReelsScript);
+router.post('/post-ideas', generatePostIdeas);
+router.post('/hashtags', generateHashtags);
 
 // Unified Job Status Endpoint (for all AI jobs)
 router.get('/job-status/:jobId', getJobStatus);
