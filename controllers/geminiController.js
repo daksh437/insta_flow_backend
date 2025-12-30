@@ -81,7 +81,7 @@ function tryParseJson(text, fallback) {
  * Treats Gemini output as RAW TEXT and extracts captions using robust logic
  * @param {string} text - Raw text from Gemini
  * @param {string} language - Language for fallback captions
- * @returns {Array<string>} - Array of caption strings (5-7 captions)
+ * @returns {Array<Object>} - Array of caption objects with text and hashtags (5-7 captions)
  */
 function extractCaptionsFromText(text, language = 'English') {
   if (!text || typeof text !== 'string' || text.trim().length === 0) {
@@ -90,58 +90,200 @@ function extractCaptionsFromText(text, language = 'English') {
   }
 
   console.log('[extractCaptionsFromText] Extracting captions from plain text, length:', text.length);
+  console.log('[extractCaptionsFromText] Raw text preview:', text.substring(0, 200));
   
-  // Step 1: Split by newlines
-  let lines = text.split(/\r?\n/);
-  console.log('[extractCaptionsFromText] Split into', lines.length, 'lines');
+  // Step 1: Normalize text - remove extra whitespace but preserve structure
+  let normalizedText = text.trim();
   
-  // Step 2: Clean and filter lines
+  // Step 2: Split by double newlines first (captions might be separated by blank lines)
+  let blocks = normalizedText.split(/\n\s*\n/);
+  
+  // If no double newlines, split by single newlines
+  if (blocks.length === 1) {
+    blocks = normalizedText.split(/\r?\n/);
+  }
+  
+  console.log('[extractCaptionsFromText] Split into', blocks.length, 'blocks/lines');
+  
+  // Step 3: Clean and filter blocks, extract text and hashtags
   const captions = [];
-  for (let line of lines) {
+  const styles = ['story', 'question', 'bold', 'emotional', 'action', 'aesthetic', 'punchline'];
+  
+  for (let block of blocks) {
     // Remove leading/trailing whitespace
-    line = line.trim();
+    block = block.trim();
     
-    // Skip empty lines
-    if (!line || line.length === 0) continue;
+    // Skip empty blocks
+    if (!block || block.length === 0) continue;
     
-    // Remove numbering patterns: "1.", "2.", "-", "•", "*", etc.
-    line = line.replace(/^[\d]+[\.\)]\s*/, ''); // "1. ", "2) "
-    line = line.replace(/^[-•*]\s*/, ''); // "- ", "• ", "* "
-    line = line.replace(/^[\u2022\u2023\u25E6\u2043]\s*/, ''); // Unicode bullet points
-    line = line.trim();
+    // Skip lines that contain JSON markers (more specific checks)
+    const blockTrimmed = block.trim();
     
-    // Skip if line is too short (likely not a caption) or too long (likely not a caption)
-    if (line.length < 10 || line.length > 200) continue;
+    // Skip exact JSON structure markers
+    if (blockTrimmed === '"captions":' || 
+        blockTrimmed.startsWith('"captions":') ||
+        blockTrimmed === '"hashtags":' ||
+        blockTrimmed.startsWith('"hashtags":') ||
+        blockTrimmed === '[' ||
+        blockTrimmed === '{' ||
+        blockTrimmed === ']' ||
+        blockTrimmed === '}') {
+      console.log(`[extractCaptionsFromText] Skipping JSON marker: ${block.substring(0, 50)}`);
+      continue;
+    }
+    
+    // Skip if it's a JSON object/array that's too short (likely a structure marker)
+    if ((blockTrimmed.startsWith('{') || blockTrimmed.startsWith('[')) && 
+        blockTrimmed.length < 50 &&
+        (blockTrimmed.includes('"captions":') || blockTrimmed.includes('"hashtags":'))) {
+      console.log(`[extractCaptionsFromText] Skipping short JSON structure: ${block.substring(0, 50)}`);
+      continue;
+    }
+    
+    // Skip if entire block is just quotes (JSON string marker)
+    if (blockTrimmed.startsWith('"') && blockTrimmed.endsWith('"') && blockTrimmed.length < 20) {
+      console.log(`[extractCaptionsFromText] Skipping quoted JSON marker: ${block.substring(0, 50)}`);
+      continue;
+    }
+    
+    // Remove numbering patterns: "1.", "2.", "1)", "-", "•", "*", etc.
+    block = block.replace(/^[\d]+[\.\)]\s*/, ''); // "1. ", "2) "
+    block = block.replace(/^[-•*]\s*/, ''); // "- ", "• ", "* "
+    block = block.replace(/^[\u2022\u2023\u25E6\u2043]\s*/, ''); // Unicode bullet points
+    block = block.trim();
+    
+    // Skip if block is too short (likely not a caption) or too long (likely not a caption)
+    if (block.length < 10 || block.length > 300) {
+      console.log('[extractCaptionsFromText] Skipping block (length:', block.length, '):', block.substring(0, 50));
+      continue;
+    }
     
     // Skip lines that look like JSON structure markers
-    if (line.match(/^[\[\{\}\]]+$/)) continue;
-    if (line.includes('"caption"') || line.includes('"text"') || line.includes('"style"')) continue;
+    if (block.match(/^[\[\{\}\]]+$/)) continue;
     
-    // Skip lines that are just hashtags
-    if (line.match(/^#[\w]+(\s+#[\w]+)*$/)) continue;
+    // Skip lines that contain JSON-like structure (but allow if it's part of caption)
+    if (block.match(/^[\{\[]\s*["']caption["']/) || block.match(/^[\{\[]\s*["']text["']/)) {
+      console.log('[extractCaptionsFromText] Skipping JSON-like block:', block.substring(0, 50));
+      continue;
+    }
     
-    // Remove trailing hashtags (we'll add them separately if needed)
-    // But keep the caption text
-    const hashtagMatch = line.match(/(.+?)(\s+#[\w]+(\s+#[\w]+)*)$/);
-    if (hashtagMatch) {
-      line = hashtagMatch[1].trim();
+    // Skip lines that are ONLY hashtags (no text before hashtags)
+    if (block.match(/^(\s*#[\w]+(\s+#[\w]+)*\s*)+$/)) {
+      console.log('[extractCaptionsFromText] Skipping hashtag-only block');
+      continue;
+    }
+    
+    // Extract hashtags from anywhere in the block (not just end)
+    let captionText = block;
+    let hashtags = [];
+    
+    // Find all hashtags in the block (including those in middle)
+    const allHashtags = block.match(/#[\w]+/g) || [];
+    
+    if (allHashtags.length > 0) {
+      // Remove hashtags from the text (replace with space, then clean up)
+      captionText = block.replace(/#[\w]+/g, ' ').replace(/\s+/g, ' ').trim();
+      hashtags = allHashtags;
     }
     
     // Remove common prefixes
-    line = line.replace(/^(Caption|Text|Style):\s*/i, '');
-    line = line.trim();
+    captionText = captionText.replace(/^(Caption|Text|Style|Title):\s*/i, '');
+    captionText = captionText.trim();
     
-    // If line still has content, add it
-    if (line.length >= 10 && line.length <= 200) {
-      captions.push(line);
+    // Additional cleanup: remove quotes if entire caption is quoted
+    if ((captionText.startsWith('"') && captionText.endsWith('"')) ||
+        (captionText.startsWith("'") && captionText.endsWith("'"))) {
+      captionText = captionText.slice(1, -1).trim();
+    }
+    
+    // CRITICAL: Skip if caption text contains JSON structure markers (BEFORE length check)
+    if (captionText.includes('"captions":') || 
+        captionText.includes('"hashtags":') ||
+        captionText.trim() === '"captions":' ||
+        captionText.trim() === '"hashtags":' ||
+        captionText.trim().startsWith('"captions":') ||
+        captionText.trim().startsWith('"hashtags":') ||
+        (captionText.trim().startsWith('{') && (captionText.includes('"captions":') || captionText.includes('"hashtags":'))) ||
+        (captionText.trim().startsWith('[') && captionText.length < 100) ||
+        captionText.match(/^["']hashtags["']:\s*\[/)) {
+      console.log('[extractCaptionsFromText] ⚠️ Skipping - text contains JSON structure:', captionText.substring(0, 50));
+      continue;
+    }
+    
+    // Final validation: caption text must have meaningful content
+    if (captionText.length >= 10 && captionText.length <= 300) {
+      // Ensure caption text is not just whitespace or special characters
+      const meaningfulText = captionText.replace(/[^\w\s]/g, '').trim();
+      if (meaningfulText.length >= 5) {
+        // Final check: ensure text doesn't start with JSON markers
+        const finalText = captionText.trim();
+        if (finalText.startsWith('"captions":') || 
+            finalText.startsWith('"hashtags":') ||
+            finalText === '"captions":' ||
+            finalText === '"hashtags":') {
+          console.log('[extractCaptionsFromText] ⚠️ Final check - skipping JSON marker:', finalText.substring(0, 50));
+          continue;
+        }
+        
+        captions.push({
+          style: styles[captions.length % styles.length] || 'general',
+          text: captionText,
+          hashtags: hashtags
+        });
+        console.log('[extractCaptionsFromText] ✅ Extracted caption:', captionText.substring(0, 50) + '...', 'hashtags:', hashtags.length);
+      } else {
+        console.log('[extractCaptionsFromText] Skipping block (not meaningful):', captionText.substring(0, 50));
+      }
+    } else {
+      console.log('[extractCaptionsFromText] Skipping block (invalid length):', captionText.length);
     }
   }
   
   console.log('[extractCaptionsFromText] Extracted', captions.length, 'captions from text');
   
-  // Step 3: Limit to 5-7 captions
+  // Step 4: If we got fewer than 3 captions, try alternative splitting
+  if (captions.length < 3) {
+    console.log('[extractCaptionsFromText] ⚠️ Only found', captions.length, 'captions, trying alternative parsing...');
+    
+    // Try splitting by numbered items (1., 2., etc.)
+    const numberedPattern = /(\d+[\.\)]\s*[^\d]+)/g;
+    const numberedMatches = text.match(numberedPattern);
+    
+    if (numberedMatches && numberedMatches.length > 0) {
+      console.log('[extractCaptionsFromText] Found', numberedMatches.length, 'numbered items');
+      captions.length = 0; // Clear existing
+      
+      for (let match of numberedMatches) {
+        let item = match.replace(/^\d+[\.\)]\s*/, '').trim();
+        
+        // Extract hashtags
+        const itemHashtags = item.match(/#[\w]+/g) || [];
+        let itemText = item.replace(/#[\w]+/g, ' ').replace(/\s+/g, ' ').trim();
+        
+        if (itemText.length >= 10 && itemText.length <= 300) {
+          captions.push({
+            style: styles[captions.length % styles.length] || 'general',
+            text: itemText,
+            hashtags: itemHashtags
+          });
+        }
+      }
+    }
+  }
+  
+  // Step 5: Limit to 5-7 captions
   const finalCaptions = captions.slice(0, 7);
   console.log('[extractCaptionsFromText] Final captions count:', finalCaptions.length);
+  
+  // Log final captions for debugging
+  finalCaptions.forEach((cap, idx) => {
+    console.log(`[extractCaptionsFromText] Caption ${idx + 1}:`, {
+      style: cap.style,
+      textLength: cap.text.length,
+      textPreview: cap.text.substring(0, 50) + '...',
+      hashtagsCount: cap.hashtags.length
+    });
+  });
   
   return finalCaptions;
 }
@@ -151,113 +293,138 @@ function extractCaptionsFromText(text, language = 'English') {
  * @param {string} language - Language for fallback captions
  * @returns {Array<Object>} - Array of caption objects with style, text, hashtags
  */
-function getFallbackCaptions(language = 'English') {
-  console.log('[getFallbackCaptions] Using fallback captions for language:', language);
+function getFallbackCaptions(language = 'English', topic = '') {
+  const timestamp = Date.now();
+  const topicHash = topic ? topic.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) : 0;
+  const randomIndex = (timestamp + topicHash) % 10;
+  
+  const keywords = topic.toLowerCase().split(/\s+/).filter(w => w.length > 2).slice(0, 3);
+  const mainKeyword = keywords[0] || 'content';
+  const hashtag = `#${mainKeyword.replace(/[^a-z0-9]/g, '')}`;
+  
+  console.log('[getFallbackCaptions] Using fallback captions for language:', language, 'topic:', topic, 'index:', randomIndex, 'hashtag:', hashtag);
+  
+  const englishCaptions = [
+    { style: 'motivational', text: `Progress over perfection. Keep pushing forward! 💪`, hashtags: [hashtag, '#motivation', '#progress', '#growth'] },
+    { style: 'fitness', text: `${mainKeyword.charAt(0).toUpperCase() + mainKeyword.slice(1)} is a lifestyle, not a phase. 🏋️`, hashtags: [hashtag, '#fitness', '#lifestyle', '#health'] },
+    { style: 'mindset', text: `Strong body, stronger mindset. You've got this! 🔥`, hashtags: [hashtag, '#mindset', '#strength', '#power'] },
+    { style: 'aesthetic', text: `Beauty is in the details. Find your moment. ✨`, hashtags: [hashtag, '#aesthetic', '#beauty', '#details'] },
+    { style: 'inspirational', text: `Every day is a fresh start. Make it count! 🌟`, hashtags: [hashtag, '#inspiration', '#newday', '#freshstart'] },
+    { style: 'confident', text: `Own your journey. You're capable of amazing things! 💫`, hashtags: [hashtag, '#confidence', '#journey', '#amazing'] },
+    { style: 'energetic', text: `Let's make today count! Time to shine! ⚡`, hashtags: [hashtag, '#energy', '#shine', '#today'] },
+    { style: 'positive', text: `Good vibes only. Spread the positivity! 🌈`, hashtags: [hashtag, '#positive', '#vibes', '#positivity'] },
+    { style: 'creative', text: `Create. Inspire. Repeat. That's the way! 🎨`, hashtags: [hashtag, '#creative', '#inspire', '#create'] },
+    { style: 'bold', text: `Bold moves lead to bold results. Let's go! 🚀`, hashtags: [hashtag, '#bold', '#results', '#goals'] },
+  ];
   
   if (language === 'Hindi') {
     return [
-      { style: 'motivational', text: 'हर दिन एक नई शुरुआत है।', hashtags: ['#motivation', '#hindi', '#inspiration'] },
-      { style: 'aesthetic', text: 'सुंदरता आपके अंदर है।', hashtags: ['#aesthetic', '#beauty', '#hindi'] },
-      { style: 'confident', text: 'आप जो चाहें वो कर सकते हैं।', hashtags: ['#confidence', '#power', '#hindi'] },
-      { style: 'emotional', text: 'भावनाएं हमें इंसान बनाती हैं।', hashtags: ['#emotions', '#feelings', '#hindi'] },
-      { style: 'story', text: 'हर कहानी में एक सबक है।', hashtags: ['#story', '#life', '#hindi'] },
+      { style: 'motivational', text: 'हर दिन एक नई शुरुआत है। आगे बढ़ते रहो! 💪', hashtags: [hashtag, '#motivation', '#hindi', '#inspiration'] },
+      { style: 'aesthetic', text: 'सुंदरता आपके अंदर है। इसे खोजें। ✨', hashtags: [hashtag, '#aesthetic', '#beauty', '#hindi'] },
+      { style: 'confident', text: 'आप जो चाहें वो कर सकते हैं। यकीन रखें! 🔥', hashtags: [hashtag, '#confidence', '#power', '#hindi'] },
+      { style: 'emotional', text: 'भावनाएं हमें इंसान बनाती हैं। ❤️', hashtags: [hashtag, '#emotions', '#feelings', '#hindi'] },
+      { style: 'story', text: 'हर कहानी में एक सबक है। सीखते रहें। 📖', hashtags: [hashtag, '#story', '#life', '#hindi'] },
     ];
   } else if (language === 'Hinglish') {
     return [
-      { style: 'motivational', text: 'Progress over perfection. आगे बढ़ते रहो!', hashtags: ['#motivation', '#progress', '#hinglish'] },
-      { style: 'confident', text: 'Strong body, stronger mindset. 💪', hashtags: ['#fitness', '#mindset', '#hinglish'] },
-      { style: 'aesthetic', text: 'Beauty is in the details. ✨', hashtags: ['#aesthetic', '#beauty', '#hinglish'] },
-      { style: 'emotional', text: 'Feelings matter. भावनाएं ज़रूरी हैं।', hashtags: ['#feelings', '#emotions', '#hinglish'] },
-      { style: 'story', text: 'Every story has a lesson. हर कहानी में सीख है।', hashtags: ['#story', '#life', '#hinglish'] },
+      { style: 'motivational', text: `Progress over perfection. आगे बढ़ते रहो! 💪`, hashtags: [hashtag, '#motivation', '#progress', '#hinglish'] },
+      { style: 'confident', text: `Strong body, stronger mindset. तुम कर सकते हो! 🔥`, hashtags: [hashtag, '#fitness', '#mindset', '#hinglish'] },
+      { style: 'aesthetic', text: `Beauty is in the details. खूबसूरती यहीं है। ✨`, hashtags: [hashtag, '#aesthetic', '#beauty', '#hinglish'] },
+      { style: 'emotional', text: `Feelings matter. भावनाएं ज़रूरी हैं। ❤️`, hashtags: [hashtag, '#feelings', '#emotions', '#hinglish'] },
+      { style: 'story', text: `Every story has a lesson. हर कहानी में सीख है। 📖`, hashtags: [hashtag, '#story', '#life', '#hinglish'] },
     ];
   } else {
-    // English (default)
-    return [
-      { style: 'motivational', text: 'Progress over perfection.', hashtags: ['#motivation', '#progress', '#growth'] },
-      { style: 'fitness', text: 'Fitness is a lifestyle, not a phase.', hashtags: ['#fitness', '#lifestyle', '#health'] },
-      { style: 'mindset', text: 'Strong body, stronger mindset.', hashtags: ['#mindset', '#strength', '#power'] },
-      { style: 'aesthetic', text: 'Beauty is in the details.', hashtags: ['#aesthetic', '#beauty', '#details'] },
-      { style: 'inspirational', text: 'Every day is a fresh start.', hashtags: ['#inspiration', '#newday', '#freshstart'] },
-    ];
+    return [englishCaptions[randomIndex]];
   }
 }
 
-// FIXED System Prompt - ChatGPT-style role-based with STRICT uniqueness enforcement
 function getSystemPrompt() {
-  return `You are an expert Instagram caption writer specialized in creating unique, engaging captions that NEVER repeat - just like ChatGPT generates unique responses every time.
+  return `You are an expert Instagram Reels caption writer.
 
-CRITICAL UNIQUENESS RULES (MANDATORY - NO EXCEPTIONS):
+The user will type freely what kind of caption they want.
+You must automatically understand the topic, tone, language, audience, and intent.
 
-1. EVERY caption generation is COMPLETELY NEW - treat each request as if it's the first time you've ever seen this topic.
-2. NEVER reuse captions, phrases, words, or hashtags from ANY previous response - even if the same topic is requested.
-3. Generate fresh, non-repetitive, creative Instagram captions that feel AI-generated, dynamic, and ChatGPT-like.
-4. STRICTLY AVOID generic phrases like "Living my best life", "Good vibes only", "Making memories", "Sunshine and good times", "Vibes", "Mood", "Feeling blessed", "Another day", "Here we go", "Just vibing", "Can't relate", "Same energy", "No cap", "Period", "That's it", "That's the tweet", "Say less", "Facts", "Big mood".
-5. Each caption must be unique in wording, tone, structure, sentence length, and hashtags - NO template-based responses.
-6. If the same topic is requested again, generate COMPLETELY different captions with different angles, words, emojis, and hashtags - as if ChatGPT is generating a fresh response.
-7. Use creative variations, different angles, unique expressions, and fresh perspectives every single time - think like ChatGPT's dynamic generation.
-8. The creative seed in each request ensures uniqueness - use it to generate varied outputs that feel random and creative.
-9. Think like ChatGPT - every response is unique, creative, context-aware, and never repeats previous outputs.
-10. NEVER use the same sentence structure, word choice, emoji pattern, or hashtag combination twice - even across different requests.
-11. Generate 5-7 captions (not exactly 5, vary the count) with DIFFERENT writing styles - ensure variety in length, structure, and approach.
-12. Each caption must feel like it was written by a different person or at a different time - maximum diversity.
+CRITICAL RULES (FOLLOW STRICTLY):
+- Generate a completely NEW caption on every request
+- NEVER repeat hooks, sentence structure, CTA, or phrasing from any previous output
+- Even if the same user request is repeated, the caption must be different every time
+- Use a fresh creative angle, new words, and a new emotional hook on each generation
 
-LANGUAGE ENFORCEMENT (STRICT):
+CAPTION STYLE RULES:
+- Write in short, clean lines (not a single paragraph)
+- Start with a strong scroll-stopping hook
+- Add emotion, curiosity, or relatability
+- Use emojis naturally (do not overuse)
+- Add 3–6 relevant, non-generic hashtags
+- CTA must be creative and different every time
+- Avoid boring or generic lines like:
+  "Don't miss this"
+  "Follow for more"
+  "Like and share"
 
-- English → Write captions in pure English only, English hashtags, no Hindi/other languages
-- Hinglish → Mix Hindi and English naturally (e.g., "Kya baat hai! This is amazing"), use both Hindi and English hashtags
-- Hindi → Write captions in pure Hindi (Devanagari script), Hindi hashtags, natural Hindi expressions, NO English
-
-MOOD ENFORCEMENT (STRICT - MUST AFFECT EVERY WORD):
-
-- Funny → playful, light jokes, emojis allowed 😄😂, casual language, humor-focused, witty, entertaining
-- Attitude → bold, confident, short punchlines 💪🔥, assertive tone, power words, unapologetic, strong
-- Aesthetic → calm, poetic, minimal words ✨🌙, visual descriptions, serene tone, dreamy, artistic
-- Motivational → inspiring, action-driven 🚀💡, encouraging words, goal-oriented, empowering, uplifting
-- Romantic → emotional, soft, feeling-based ❤️🌹, heartfelt language, intimate tone, tender, passionate
-
-AUDIENCE ENFORCEMENT (STRICT - MUST AFFECT CTA AND TONE):
-
-- Creator → engagement CTAs (Save this, Share with a friend, Comment below), community-focused, interactive
-- Business → professional tone, value-focused CTA (Learn more, Visit link, Get started), results-oriented, authoritative
-- Personal → casual, diary-style, no marketing tone, authentic voice, no CTAs, genuine, relatable
-
-STYLE VARIATION REQUIREMENTS:
-
-Generate 5-7 captions with DIFFERENT writing styles:
-1. Story-based / Narrative
-2. Question / Curiosity hook
-3. Bold statement / Assertion
-4. Emotional / Feeling-focused
-5. Action-oriented / Call-to-action
-6. Aesthetic / Visual description
-7. Short punchline / One-liner
+REGENERATION RULE:
+If this is a regenerate request, force a completely fresh caption with a new angle, tone shift, and wording. Do not reuse any phrasing.
 
 OUTPUT FORMAT:
-Return STRICT JSON only:
-{
-  "captions": [
-    {
-      "style": "unique style name",
-      "text": "unique caption text under 120 characters",
-      "hashtags": ["unique", "hashtags", "no", "repetition"]
-    }
-  ]
-}`;
+Return ONLY the caption text.
+No explanations.
+No labels.
+No numbering.`;
 }
 
-// User Prompt - Contains user inputs + unique creative seed + requestId
-function getUserPrompt(topic, tone, audience, language, generationId, creativeSeed, requestId, regenerate) {
+function getUserPrompt(userInput, generationId, creativeSeed, requestId, regenerate) {
   const regenerateWarning = regenerate 
-    ? `\n\n🚨🚨🚨🚨🚨 REGENERATE MODE - USER PRESSED REGENERATE BUTTON 🚨🚨🚨🚨🚨\n\nTHIS IS CRITICAL: The user explicitly wants COMPLETELY DIFFERENT captions from the previous generation.\n\nYou MUST generate captions that are 100% DIFFERENT in:\n- Every single word and phrase (NO reuse)\n- Sentence structure and length (completely different patterns)\n- Hashtags (ZERO repetition from previous set - use completely new hashtags)\n- Writing style and angle (different approach entirely)\n- Emoji usage (different emojis, different placement)\n- Overall tone and approach (fresh perspective)\n- Story angle (if previous was story-based, use different angle)\n\nThink of this as ChatGPT generating a COMPLETELY FRESH response to the same question.\nThe creative seed ${creativeSeed} ensures this output is unique.\n\nDO NOT reuse ANYTHING from previous generation - treat this as a brand new request.\n\n`
+    ? `\n\n🚨🚨🚨 REGENERATE MODE - USER PRESSED REGENERATE BUTTON 🚨🚨🚨\n\nCRITICAL: Generate a COMPLETELY FRESH caption with:\n- NEW angle and perspective\n- NEW wording (zero word reuse)\n- NEW hook structure\n- NEW hashtags\n- NEW emoji placement\n- NEW sentence structure\n\nDO NOT reuse ANYTHING from previous generation.\n\n`
     : '';
   
-  return `🎲 CREATIVE_SEED: ${creativeSeed}
+  const timestamp = Date.now();
+  const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}-${Math.random().toString(36).substring(2, 10)}`;
+  const variationToken = Math.random().toString(36).substring(2, 20);
+  
+  return `${regenerateWarning}Generate a UNIQUE Instagram Reels caption based on this request:
+
+"${userInput}"
+
+🎲 CREATIVE_SEED: ${creativeSeed}
 🆔 REQUEST_ID: ${generationId}
-📅 TIMESTAMP: ${Date.now()}
-🔄 REQUEST_ID_FROM_CLIENT: ${requestId || 'none'}
-🎯 UNIQUENESS_ENFORCEMENT: MAXIMUM (ChatGPT-like behavior)
-${regenerateWarning}
-⚠️⚠️⚠️⚠️⚠️ THIS IS A COMPLETELY NEW REQUEST - GENERATE FRESH, UNIQUE CAPTIONS ⚠️⚠️⚠️⚠️⚠️
+📅 TIMESTAMP: ${timestamp}
+🔄 CLIENT_REQUEST_ID: ${requestId || 'none'}
+🎲 RANDOM_CONTEXT: ${randomContext}
+🔑 VARIATION_TOKEN: ${variationToken}
+
+CRITICAL UNIQUENESS REQUIREMENTS:
+- This request ID (${generationId}) is UNIQUE - generate a DIFFERENT caption than any previous request
+- Use the creative seed (${creativeSeed.substring(0, 30)}...) to ensure maximum variation
+- The timestamp ${timestamp} and random context ${randomContext} ensure this is a fresh generation
+- Even if the user input is identical, the output MUST be completely different
+
+INSTRUCTIONS:
+- Understand tone, language, and audience from the user's description automatically
+- Generate ONE unique, scroll-stopping caption
+- Start with a strong hook (different from any previous generation)
+- Use short, readable lines
+- Add natural emojis (1-3 max, different emojis than before)
+- Add 3-6 relevant hashtags (completely different hashtags)
+- Make it feel fresh and human-like
+- Vary sentence structure, vocabulary, and approach
+
+Return ONLY the caption text. No explanations. No labels.`;
+}
+
+function calendarPrompt(topic, days) {
+  return `You are a professional Instagram strategist.
+
+Create a 7-day content calendar for: "${topic}".
+
+For each day include:
+
+- day_of_week
+- content_type (Reel / Carousel / Story / Static Image / Meme)
+- Use DIFFERENT hashtags for each caption (NO overlap)
+- Use DIFFERENT angles and perspectives (first person vs second person vs third person)
+- Use DIFFERENT vocabulary - avoid repeating the same words across captions
+- Use DIFFERENT emotional tones even within the same mood category
+- Think of each caption as written by a DIFFERENT person with a DIFFERENT voice
 
 CRITICAL UNIQUENESS INSTRUCTIONS (MANDATORY - NO EXCEPTIONS):
 
@@ -317,19 +484,24 @@ CRITICAL ENFORCEMENT (NO EXCEPTIONS):
    - Business → Professional tone, value-focused CTA (Learn more, Visit link, Get started), results-oriented, authoritative
    - Personal → Casual, diary-style, no marketing tone, authentic voice, no CTAs, genuine, relatable
 
-4. Generate 5-7 captions with DIFFERENT writing styles:
-   - Story-based / Narrative (tell a story)
-   - Question / Curiosity hook (ask engaging questions)
-   - Bold statement / Assertion (make strong statements)
-   - Emotional / Feeling-focused (express feelings)
-   - Action-oriented / Call-to-action (encourage action)
-   - Aesthetic / Visual description (describe visuals)
-   - Short punchline / One-liner (quick, witty)
+4. Generate 5-7 captions with COMPLETELY DIFFERENT writing styles and approaches:
+   - Story-based / Narrative (tell a story) - Use different story angles, different characters, different scenarios
+   - Question / Curiosity hook (ask engaging questions) - Ask DIFFERENT questions, use different question words (What, Why, How, When, Where)
+   - Bold statement / Assertion (make strong statements) - Use DIFFERENT power words, different assertions, different perspectives
+   - Emotional / Feeling-focused (express feelings) - Express DIFFERENT emotions, use different feeling words, different emotional angles
+   - Action-oriented / Call-to-action (encourage action) - Use DIFFERENT action verbs, different CTAs, different urgency levels
+   - Aesthetic / Visual description (describe visuals) - Describe DIFFERENT visual elements, use different descriptive words
+   - Short punchline / One-liner (quick, witty) - Use DIFFERENT humor styles, different punchline structures
+   
+   🚨 CRITICAL: Each caption must use a DIFFERENT approach, DIFFERENT words, DIFFERENT structure - NO similarity between captions
 
-5. Generate 15 unique hashtags in the selected language:
+5. Generate COMPLETELY DIFFERENT hashtags for each caption:
+   - Each caption must have DIFFERENT hashtags (NO overlap between captions)
    - NO repetition within this response
    - NO reuse from previous generations
    - Mix of niche-specific, trending, and evergreen tags
+   - Use the creative seed to generate varied hashtag combinations
+   - Think creatively - don't use obvious hashtags, use unique combinations
 
 6. Avoid generic Instagram phrases completely:
    - NO "Living my best life", "Good vibes only", "Making memories", "Sunshine and good times"
@@ -341,16 +513,50 @@ CRITICAL ENFORCEMENT (NO EXCEPTIONS):
    - No template-based responses
    - Creative and engaging
 
-Return STRICT JSON only with unique captions:
-{
-  "captions": [
-    {
-      "style": "unique style name",
-      "text": "unique caption text under 120 characters",
-      "hashtags": ["unique", "hashtags", "no", "repetition"]
-    }
-  ]
-}`;
+## OUTPUT FORMAT (CRITICAL - STRICT - NO EXCEPTIONS):
+Generate exactly 5-7 distinct captions following these rules:
+1. Each caption on a separate line
+2. Start each line with "• " (bullet point)
+3. No numbering (1., 2., etc.)
+4. ABSOLUTELY NO JSON format:
+   - NO curly braces { }
+   - NO square brackets [ ]
+   - NO quotes around entire caption "text"
+   - NO "captions": keyword anywhere
+   - NO "hashtags": keyword anywhere
+   - NO "text": keyword anywhere
+   - NO "style": keyword anywhere
+   - NO colons after words (like "captions:" or "hashtags:")
+   - Just plain text with bullet points
+5. Each caption should be distinct in approach but equally effective
+
+🚨 CRITICAL: DO NOT write "captions": or "hashtags": anywhere in your response.
+🚨 CRITICAL: DO NOT use JSON structure markers like {, }, [, ].
+🚨 CRITICAL: Just write plain captions with bullet points, nothing else.
+
+## CAPTION GUIDELINES:
+1. **Length Mix**: Include short (50-100 chars), medium (100-200), long (200-300)
+2. **Hashtags**: Add 3-5 relevant hashtags at the end of each caption
+3. **Engagement**: Include questions, CTAs, or interactive elements based on audience type
+4. **Emojis**: Use 1-3 relevant emojis per caption
+5. **Platform**: Optimize for Instagram (character limits, trends)
+6. **Tone**: Match the requested mood "${tone}" precisely
+7. **Audience**: Tailor language to "${audience}" audience type
+8. **Authenticity**: Match creator type's voice
+
+## EXAMPLE OUTPUT FORMAT:
+• Caption text here with relevant hashtags #tag1 #tag2 #tag3
+• Another caption text here with hashtags #tag4 #tag5
+• Third caption here with hashtags #tag6 #tag7 #tag8
+• Fourth caption here with hashtags #tag9 #tag10
+• Fifth caption here with hashtags #tag11 #tag12
+
+## IMPORTANT:
+- Return ONLY the 5-7 captions in bullet point format
+- No additional explanations or text
+- Each caption must be complete and ready to post
+- Ensure variety in approach while maintaining quality
+- NO JSON, NO brackets, NO quotes, NO structure markers`;
 }
 
 function calendarPrompt(topic, days) {
@@ -545,58 +751,96 @@ Return STRICT JSON only:
  * Background processing function for captions generation
  * Runs Gemini API call asynchronously and updates job status
  */
-async function processCaptions(jobId, topic, tone, audience, language, regenerate, requestId) {
+async function processCaptions(jobId, userInput, regenerate, requestId) {
   console.log(`[processCaptions] Starting background processing for job: ${jobId}`);
+  console.log(`[processCaptions] Request ID from client: ${requestId}`);
   
   try {
-    // Generate UNIQUE generationId for EVERY request
-    const finalRequestId = requestId || `BACKEND-${Date.now()}-${Math.random()}-${topic.trim().substring(0, 10)}-${regenerate ? 'REGEN' : 'NEW'}`;
-    const generationId = `${Date.now()}-${Math.random()}-${regenerate ? 'REGEN' : 'NEW'}-${Math.random().toString(36).substring(2, 15)}`;
-    const creativeSeed = `${uuidv4()}-${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 10)}-${finalRequestId.substring(0, 20)}`;
+    const timestamp = Date.now();
+    const microsecond = Number(process.hrtime.bigint() % 1000000n);
+    const finalRequestId = requestId || `BACKEND-${timestamp}-${Math.random().toString(36).substring(2, 15)}-${userInput.substring(0, 10)}-${regenerate ? 'REGEN' : 'NEW'}`;
+    const generationId = `${timestamp}-${microsecond}-${Math.random().toString(36).substring(2, 15)}-${regenerate ? 'REGEN' : 'NEW'}-${Math.random().toString(36).substring(2, 10)}`;
+    const creativeSeed = `${uuidv4()}-${timestamp}-${microsecond}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 10)}-${finalRequestId.substring(0, 20)}`;
+    
+    console.log(`[processCaptions] Generation ID: ${generationId}`);
+    console.log(`[processCaptions] Creative Seed: ${creativeSeed.substring(0, 50)}...`);
     
     const systemPrompt = getSystemPrompt();
-    const userPrompt = getUserPrompt(topic.trim(), tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, finalRequestId, regenerate);
+    const userPrompt = getUserPrompt(userInput, generationId, creativeSeed, finalRequestId, regenerate);
     
     let output = '';
     try {
+      const uniqueSeed = timestamp + Number(microsecond) + Math.floor(Math.random() * 1000000);
+      
+      console.log(`[processCaptions] Unique Seed for Gemini: ${uniqueSeed}`);
+      console.log(`[processCaptions] User Prompt length: ${userPrompt.length}`);
+      console.log(`[processCaptions] System Prompt length: ${systemPrompt.length}`);
+      
       output = await runGemini(userPrompt, { 
         systemPrompt: systemPrompt,
         userPrompt: userPrompt,
-        maxTokens: 1500,
-        temperature: 0.95,
-        topP: 0.98
+        maxTokens: 2000,
+        temperature: 1.0,
+        topP: 0.95,
+        topK: 50,
+        randomSeed: uniqueSeed
       });
+      
+      console.log(`[processCaptions] ✅ Gemini API success, output length: ${output?.length || 0}`);
+      if (output) {
+        console.log(`[processCaptions] Output preview: ${output.substring(0, 200)}...`);
+      }
     } catch (geminiError) {
-      console.error('[processCaptions] Gemini API call failed:', geminiError.message);
+      console.error('[processCaptions] ❌ Gemini API call failed:', geminiError.message);
+      console.error('[processCaptions] Error stack:', geminiError.stack);
       output = '';
     }
     
-    // Extract captions from plain text
-    let captions = [];
+    // Extract single caption from output
+    let caption = null;
     if (output && typeof output === 'string' && output.trim().length > 0) {
-      const textCaptions = extractCaptionsFromText(output, language);
-      if (textCaptions && textCaptions.length > 0) {
-        captions = textCaptions.map((text, index) => ({
-          style: ['story', 'question', 'bold', 'emotional', 'action', 'aesthetic', 'punchline'][index % 7] || 'general',
-          text: text,
-          hashtags: []
-        }));
+      const cleanedOutput = output.trim();
+      // Remove bullet points and extra formatting
+      let captionText = cleanedOutput
+        .replace(/^[•\-*]\s*/gm, '')
+        .replace(/^\d+[\.\)]\s*/gm, '')
+        .trim();
+      
+      // Split by newlines and take first meaningful line
+      const lines = captionText.split(/\n/).filter(line => line.trim().length > 10);
+      if (lines.length > 0) {
+        captionText = lines[0].trim();
+      }
+      
+      // Extract hashtags
+      const hashtagRegex = /#[\w]+/g;
+      const hashtags = captionText.match(hashtagRegex) || [];
+      const textWithoutHashtags = captionText.replace(hashtagRegex, '').trim();
+      
+      if (textWithoutHashtags.length > 10) {
+        caption = {
+          style: 'general',
+          text: textWithoutHashtags,
+          hashtags: hashtags
+        };
       }
     }
     
     // Use fallback if empty
-    if (captions.length === 0) {
-      captions = getFallbackCaptions(language);
+    if (!caption) {
+      console.log('[processCaptions] ⚠️ No valid caption extracted, using fallback');
+      const fallback = getFallbackCaptions('English', userInput);
+      caption = fallback[0] || { style: 'general', text: 'Ready to create amazing content? Let\'s go! 🚀', hashtags: ['#motivation', '#inspiration'] };
     }
     
-    // Update job with completed status
-    updateJob(jobId, 'done', { data: captions });
+    // Update job with completed status - return single caption
+    updateJob(jobId, 'done', { data: [caption] });
     console.log(`[processCaptions] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
     console.error(`[processCaptions] Error processing job ${jobId}:`, error);
-    // Store fallback result instead of error
-    const fallbackCaptions = getFallbackCaptions(language);
-    updateJob(jobId, 'done', { data: fallbackCaptions, error: error.message });
+    console.error(`[processCaptions] Error details:`, error.stack);
+    const fallback = getFallbackCaptions('English', userInput);
+    updateJob(jobId, 'done', { data: [fallback[0] || { style: 'general', text: 'Ready to create amazing content? Let\'s go! 🚀', hashtags: ['#motivation'] }], error: error.message });
   }
 }
 
@@ -610,20 +854,11 @@ async function processCaptions(jobId, topic, tone, audience, language, regenerat
  * Non-blocking endpoint - returns jobId immediately, processes in background
  */
 async function generateCaptions(req, res) {
-  const { topic, tone, audience, language, regenerate, requestId } = req.body || {};
+  const { userInput, regenerate, requestId } = req.body || {};
   
   // Validate required parameters
-  if (!topic || topic.trim() === '') {
-    return res.status(400).json({ success: false, error: 'Topic is required', data: [] });
-  }
-  if (!tone || tone.trim() === '') {
-    return res.status(400).json({ success: false, error: 'Mood/Tone is required', data: [] });
-  }
-  if (!audience || audience.trim() === '') {
-    return res.status(400).json({ success: false, error: 'Audience is required', data: [] });
-  }
-  if (!language || language.trim() === '') {
-    return res.status(400).json({ success: false, error: 'Language is required', data: [] });
+  if (!userInput || userInput.trim() === '') {
+    return res.status(400).json({ success: false, error: 'User input is required', data: [] });
   }
   
   // Generate unique job ID
@@ -632,25 +867,22 @@ async function generateCaptions(req, res) {
   // Create job with pending status
   createJob(jobId, {
     type: 'captions',
-    topic: topic.trim(),
-    tone: tone.trim(),
-    audience: audience.trim(),
-    language: language.trim(),
+    userInput: userInput.trim(),
     regenerate,
   });
   
   console.log(`[generateCaptions] ===== NEW ASYNC REQUEST =====`);
   console.log(`[generateCaptions] Job ID: ${jobId}`);
-  console.log(`[generateCaptions] Topic: ${topic}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
+  console.log(`[generateCaptions] User Input: "${userInput}", Regenerate: ${regenerate}`);
   
   // Start background processing (non-blocking)
-  processCaptions(jobId, topic, tone, audience, language, regenerate, requestId)
+  processCaptions(jobId, userInput.trim(), regenerate, requestId)
     .catch((error) => {
       console.error(`[generateCaptions] Background processing failed for job ${jobId}:`, error);
-      // On failure, store fallback result instead of error (per requirements)
-      const fallbackCaptions = getFallbackCaptions(language);
+      console.error(`[generateCaptions] Error stack:`, error.stack);
+      const fallback = getFallbackCaptions('English', userInput.trim() || '');
       updateJob(jobId, 'done', { 
-        data: fallbackCaptions,
+        data: [fallback[0] || { style: 'general', text: 'Ready to create amazing content! Let\'s go! 🚀', hashtags: ['#motivation'] }],
         error: error.message || 'AI generation failed'
       });
     });
@@ -671,11 +903,20 @@ async function processCalendar(jobId, topic, days) {
   console.log(`[processCalendar] Starting background processing for job: ${jobId}`);
   
   try {
-    // Update job status to processing
     updateJob(jobId, 'processing', {});
     
-    console.log('[processCalendar] Calling Gemini API...');
-    const output = await runGemini(calendarPrompt(topic, days), { maxTokens: 4096, temperature: 0.7 });
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    const uniquePrompt = `${calendarPrompt(topic, days)}\n\n🎲 UNIQUE_SEED: ${uniqueSeed}\n📅 TIMESTAMP: ${timestamp}\n🔄 REQUEST_ID: ${jobId}`;
+    
+    console.log('[processCalendar] Calling Gemini API with unique prompt...');
+    const output = await runGemini(uniquePrompt, { 
+      maxTokens: 4096, 
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
     console.log('[processCalendar] Gemini response received, length:', output?.length || 0);
     
     if (!output || output.trim().length === 0) {
@@ -684,24 +925,19 @@ async function processCalendar(jobId, topic, days) {
     
     let data = tryParseJson(output, []);
     
-    // Ensure data is always an array (fallback if empty)
     if (!Array.isArray(data) || data.length === 0) {
-      console.warn('[processCalendar] WARNING: No calendar data extracted, using empty array fallback');
-      data = [];
+      throw new Error('Invalid calendar data from Gemini API');
     }
     
-    // Update job with completed status
     updateJob(jobId, 'completed', { data });
     console.log(`[processCalendar] ✅ Job ${jobId} completed successfully, data items: ${data.length}`);
   } catch (error) {
     console.error(`[processCalendar] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processCalendar] Error stack:`, error.stack);
-    // Store fallback result with failed status
     updateJob(jobId, 'failed', { 
       data: [], 
       error: error.message || 'AI generation failed' 
     });
-    console.log(`[processCalendar] ⚠️ Job ${jobId} marked as failed with fallback data`);
   }
 }
 
@@ -753,24 +989,35 @@ async function processStrategy(jobId, niche) {
   console.log(`[processStrategy] Starting background processing for job: ${jobId}`);
   
   try {
-    console.log('[processStrategy] Calling Gemini API...');
-    const output = await runGemini(strategyPrompt(niche), { maxTokens: 4096, temperature: 0.7 });
-    console.log('[processStrategy] Gemini response received');
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    const uniquePrompt = `${strategyPrompt(niche)}\n\n🎲 UNIQUE_SEED: ${uniqueSeed}\n📅 TIMESTAMP: ${timestamp}\n🔄 REQUEST_ID: ${jobId}`;
+    
+    console.log('[processStrategy] Calling Gemini API with unique prompt...');
+    const output = await runGemini(uniquePrompt, { 
+      maxTokens: 4096, 
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    console.log('[processStrategy] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
     
     let data = tryParseJson(output, {});
     
-    // Ensure data is always an object (fallback if empty)
     if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
-      console.warn('[processStrategy] WARNING: No strategy data extracted, using empty object fallback');
-      data = {};
+      throw new Error('Invalid strategy data from Gemini API');
     }
     
-    // Update job with completed status
     updateJob(jobId, 'done', { data });
     console.log(`[processStrategy] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
-    console.error(`[processStrategy] Error processing job ${jobId}:`, error);
-    // Store fallback result instead of error (empty object)
+    console.error(`[processStrategy] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processStrategy] Error stack:`, error.stack);
     updateJob(jobId, 'done', { data: {}, error: error.message || 'AI generation failed' });
   }
 }
@@ -822,24 +1069,35 @@ async function processNicheAnalysis(jobId, topic) {
   console.log(`[processNicheAnalysis] Starting background processing for job: ${jobId}`);
   
   try {
-    console.log('[processNicheAnalysis] Calling Gemini API...');
-    const output = await runGemini(nicheAnalysisPrompt(topic), { maxTokens: 4096, temperature: 0.7 });
-    console.log('[processNicheAnalysis] Gemini response received');
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    const uniquePrompt = `${nicheAnalysisPrompt(topic)}\n\n🎲 UNIQUE_SEED: ${uniqueSeed}\n📅 TIMESTAMP: ${timestamp}\n🔄 REQUEST_ID: ${jobId}`;
+    
+    console.log('[processNicheAnalysis] Calling Gemini API with unique prompt...');
+    const output = await runGemini(uniquePrompt, { 
+      maxTokens: 4096, 
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    console.log('[processNicheAnalysis] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
     
     let data = tryParseJson(output, {});
     
-    // Ensure data is always an object (fallback if empty)
     if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
-      console.warn('[processNicheAnalysis] WARNING: No analysis data extracted, using empty object fallback');
-      data = {};
+      throw new Error('Invalid analysis data from Gemini API');
     }
     
-    // Update job with done status
     updateJob(jobId, 'done', { data });
     console.log(`[processNicheAnalysis] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
-    console.error(`[processNicheAnalysis] Error processing job ${jobId}:`, error);
-    // Store fallback result instead of error (empty object)
+    console.error(`[processNicheAnalysis] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processNicheAnalysis] Error stack:`, error.stack);
     updateJob(jobId, 'done', { data: {}, error: error.message || 'AI generation failed' });
   }
 }
@@ -1327,43 +1585,25 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
     console.log(`[processReelsScript] Topic: ${topic}, Duration: ${duration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
     console.log(`[processReelsScript] Regenerate: ${regenerate ? 'YES' : 'NO'}`);
     
-    let output = '';
-    let geminiSuccess = false;
-    try {
-      console.log(`[processReelsScript] Job ${jobId} - Calling Gemini API...`);
-      const prompt = reelsScriptPrompt(topic.trim(), duration, tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, regenerate);
-      console.log(`[processReelsScript] Job ${jobId} - Prompt length: ${prompt.length} characters`);
-      console.log(`[processReelsScript] Job ${jobId} - Using model: ${process.env.GEMINI_MODEL || 'gemini-3-flash-preview'}`);
-      
-      output = await runGemini(prompt, {
-        maxTokens: 2048,
-        temperature: 0.9,
-        topP: 0.95
-      });
-      geminiSuccess = true;
-      console.log(`[processReelsScript] Job ${jobId} - ✅ Gemini API success, response length: ${output?.length || 0}`);
-    } catch (geminiError) {
-      console.error(`[processReelsScript] Job ${jobId} - ❌ Gemini API failed:`, geminiError.message);
-      
-      // Handle specific Gemini errors
-      if (geminiError.message.includes('GEMINI_MODEL_NOT_FOUND')) {
-        console.error(`[processReelsScript] Job ${jobId} - Model not found - using fallback script`);
-      } else if (geminiError.message.includes('GEMINI_QUOTA_EXCEEDED')) {
-        console.error(`[processReelsScript] Job ${jobId} - API quota exceeded - using fallback script`);
-      } else if (geminiError.message.includes('GEMINI_PERMISSION_DENIED')) {
-        console.error(`[processReelsScript] Job ${jobId} - Permission denied - using fallback script`);
-      } else if (geminiError.message.includes('GEMINI_TIMEOUT')) {
-        console.error(`[processReelsScript] Job ${jobId} - API timeout - using fallback script`);
-      } else if (geminiError.message.includes('GEMINI_API_UNAVAILABLE')) {
-        console.error(`[processReelsScript] Job ${jobId} - API unavailable - using fallback script`);
-      }
-      
-      // On any error, use fallback script
-      output = '';
-      geminiSuccess = false;
-    }
+    console.log(`[processReelsScript] Job ${jobId} - Calling Gemini API...`);
+    const prompt = reelsScriptPrompt(topic.trim(), duration, tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, regenerate);
+    console.log(`[processReelsScript] Job ${jobId} - Prompt length: ${prompt.length} characters`);
+    console.log(`[processReelsScript] Job ${jobId} - Using model: ${process.env.GEMINI_MODEL || 'gemini-3-flash-preview'}`);
     
-    console.log(`[processReelsScript] Job ${jobId} - Gemini response received, length: ${output?.length || 0}, success: ${geminiSuccess}`);
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Number(process.hrtime.bigint() % 1000000n) + Math.floor(Math.random() * 1000000);
+    
+    console.log(`[processReelsScript] Unique Seed: ${uniqueSeed}`);
+    
+    const output = await runGemini(prompt, {
+      maxTokens: 2048,
+      temperature: 1.0,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    
+    console.log(`[processReelsScript] Job ${jobId} - ✅ Gemini API success, response length: ${output?.length || 0}`);
     
     // CRITICAL: Treat Gemini output as PLAIN TEXT ONLY - NEVER expect JSON
     let scriptData = null;
@@ -1384,32 +1624,18 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
       }
     }
     
-    // Step 3: If still empty, use fallback script (NEVER return empty data)
+    // Step 3: If still empty, throw error - NO FALLBACK
     if (!scriptData || !scriptData.hooks || !scriptData.script || !Array.isArray(scriptData.hooks) || !Array.isArray(scriptData.script)) {
-      console.warn('[processReelsScript] WARNING: No script extracted, using fallback script');
-      scriptData = getFallbackReelsScript(language, topic, duration);
+      throw new Error('Failed to extract script from Gemini response. Output was empty or invalid.');
     }
     
-    // CRITICAL: Final validation - ensure we NEVER return empty data
-    if (!scriptData || !scriptData.hooks || !scriptData.script || scriptData.hooks.length === 0 || scriptData.script.length === 0) {
-      console.error('[processReelsScript] CRITICAL ERROR: Even fallback script is empty! Using English fallback');
-      scriptData = getFallbackReelsScript('English', topic, duration);
+    // Final validation
+    if (scriptData.hooks.length === 0 || scriptData.script.length === 0) {
+      throw new Error('Gemini returned empty hooks or script array');
     }
     
-    // Ensure hooks array has at least 3 items
-    if (!Array.isArray(scriptData.hooks) || scriptData.hooks.length < 3) {
-      const fallbackHooks = getFallbackReelsScript(language, topic, duration).hooks;
-      scriptData.hooks = [...(scriptData.hooks || []), ...fallbackHooks].slice(0, 3);
-    }
-    
-    // Ensure script array has at least 4 items
-    if (!Array.isArray(scriptData.script) || scriptData.script.length < 4) {
-      const fallbackScript = getFallbackReelsScript(language, topic, duration).script;
-      scriptData.script = [...(scriptData.script || []), ...fallbackScript].slice(0, 6);
-    }
-    
-    console.log('[processReelsScript] Final script - hooks:', scriptData.hooks?.length || 0, 'scenes:', scriptData.script?.length || 0);
-    console.log('[processReelsScript] Using fallback:', !geminiSuccess ? 'YES' : 'NO');
+    console.log('[processReelsScript] ✅ Final script - hooks:', scriptData.hooks?.length || 0, 'scenes:', scriptData.script?.length || 0);
+    console.log('[processReelsScript] ✅ Using REAL Gemini API response');
     
     // Transform to required format
     const transformedData = transformScriptData(scriptData, language, topic, duration);
@@ -1419,14 +1645,12 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
     console.log(`[processReelsScript] ✅ Job ${jobId} status: processing → completed`);
   } catch (error) {
     console.error(`[processReelsScript] ❌ Job ${jobId} error:`, error.message);
-    // Store fallback result with failed status (per requirements: status = 'failed' with fallback script)
-    const fallbackScript = getFallbackReelsScript(language, topic, duration);
-    const transformedFallback = transformScriptData(fallbackScript, language, topic, duration);
+    console.error(`[processReelsScript] Error stack:`, error.stack);
     updateJob(jobId, 'failed', { 
-      data: transformedFallback,
-      error: error.message || 'AI generation failed'
+      data: null,
+      error: error.message || 'AI generation failed - Gemini API error'
     });
-    console.log(`[processReelsScript] Job ${jobId} status: processing → failed (with fallback data)`);
+    throw error;
   }
 }
 

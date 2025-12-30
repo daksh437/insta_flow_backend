@@ -10,9 +10,19 @@ if (!apiKey || apiKey.trim() === '') {
   console.warn('[GeminiClient] ⚠️ GEMINI_API_KEY not set');
 }
 
-/**
- * Call Gemini API via REST
- */
+function generateVariationNonce() {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 15);
+  const nonce = Math.floor(Math.random() * 1000000);
+  return `${timestamp}-${random}-${nonce}`;
+}
+
+function injectPromptVariation(text, nonce) {
+  const zeroWidthSpace = '\u200B';
+  const variationMarker = `${zeroWidthSpace}${nonce}${zeroWidthSpace}`;
+  return text + variationMarker;
+}
+
 async function callGeminiViaRestAPI(modelName, contents, opts) {
   const timeoutMs = opts.timeout ?? 60000;
   
@@ -40,11 +50,14 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   const apiPath = `/${apiVersion}/models/${actualModelName}:generateContent`;
   const url = `${baseUrl}${apiPath}?key=${apiKey}`;
   
-  // Validate and normalize contents
+  const seedValue = opts.randomSeed || Date.now() + Math.floor(Math.random() * 1000000);
+  const variationNonce = `${seedValue}-${generateVariationNonce()}`;
+  
   let validatedContents = [];
   
   if (Array.isArray(contents)) {
-    for (const content of contents) {
+    for (let i = 0; i < contents.length; i++) {
+      const content = contents[i];
       if (content && typeof content === 'object' && !Array.isArray(content)) {
         const role = content.role || 'user';
         let parts = [];
@@ -53,20 +66,36 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
           for (const part of content.parts) {
             if (part && typeof part === 'object' && !Array.isArray(part)) {
               if (part.text !== undefined && typeof part.text === 'string' && part.text.trim().length > 0) {
-                parts.push({ text: part.text.trim() });
+                let text = part.text.trim();
+                if (role === 'user' && i === contents.length - 1) {
+                  text = injectPromptVariation(text, variationNonce);
+                }
+                parts.push({ text: text });
               } else if (part.inlineData && typeof part.inlineData === 'object' && !Array.isArray(part.inlineData)) {
                 if (part.inlineData.data && part.inlineData.mimeType) {
                   parts.push({ inlineData: part.inlineData });
                 }
               }
             } else if (typeof part === 'string' && part.trim().length > 0) {
-              parts.push({ text: part.trim() });
+              let text = part.trim();
+              if (role === 'user' && i === contents.length - 1) {
+                text = injectPromptVariation(text, variationNonce);
+              }
+              parts.push({ text: text });
             }
           }
         } else if (typeof content.parts === 'string' && content.parts.trim().length > 0) {
-          parts = [{ text: content.parts.trim() }];
+          let text = content.parts.trim();
+          if (role === 'user' && i === contents.length - 1) {
+            text = injectPromptVariation(text, variationNonce);
+          }
+          parts = [{ text: text }];
         } else if (content.text !== undefined && typeof content.text === 'string' && content.text.trim().length > 0) {
-          parts = [{ text: content.text.trim() }];
+          let text = content.text.trim();
+          if (role === 'user' && i === contents.length - 1) {
+            text = injectPromptVariation(text, variationNonce);
+          }
+          parts = [{ text: text }];
         }
         
         if (parts.length > 0) {
@@ -82,20 +111,36 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
       for (const part of contents.parts) {
         if (part && typeof part === 'object' && !Array.isArray(part)) {
           if (part.text !== undefined && typeof part.text === 'string' && part.text.trim().length > 0) {
-            parts.push({ text: part.text.trim() });
+            let text = part.text.trim();
+            if (role === 'user') {
+              text = injectPromptVariation(text, variationNonce);
+            }
+            parts.push({ text: text });
           } else if (part.inlineData && typeof part.inlineData === 'object' && !Array.isArray(part.inlineData)) {
             if (part.inlineData.data && part.inlineData.mimeType) {
               parts.push({ inlineData: part.inlineData });
             }
           }
         } else if (typeof part === 'string' && part.trim().length > 0) {
-          parts.push({ text: part.trim() });
+          let text = part.trim();
+          if (role === 'user') {
+            text = injectPromptVariation(text, variationNonce);
+          }
+          parts.push({ text: text });
         }
       }
     } else if (typeof contents.parts === 'string' && contents.parts.trim().length > 0) {
-      parts = [{ text: contents.parts.trim() }];
+      let text = contents.parts.trim();
+      if (role === 'user') {
+        text = injectPromptVariation(text, variationNonce);
+      }
+      parts = [{ text: text }];
     } else if (contents.text !== undefined && typeof contents.text === 'string' && contents.text.trim().length > 0) {
-      parts = [{ text: contents.text.trim() }];
+      let text = contents.text.trim();
+      if (role === 'user') {
+        text = injectPromptVariation(text, variationNonce);
+      }
+      parts = [{ text: text }];
     }
     
     if (parts.length > 0) {
@@ -107,16 +152,11 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
     throw new Error('Invalid contents: No valid content items found');
   }
   
-  // Generate fresh randomSeed for each request
-  const randomSeed = Math.floor(Math.random() * 2147483647);
-  
-  // Create fresh generation config for each request
   const generationConfig = {
     temperature: opts.temperature ?? 1.0,
     maxOutputTokens: opts.maxTokens ?? 2048,
-    topP: opts.topP ?? 0.9,
+    topP: opts.topP ?? 0.95,
     topK: opts.topK ?? 50,
-    randomSeed: randomSeed,
   };
   
   const requestBody = {
@@ -179,9 +219,6 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
   }
 }
 
-/**
- * Main runGemini function
- */
 async function runGemini(prompt, opts = {}) {
   if (!apiKey || apiKey.trim() === '') {
     throw new Error('GEMINI_API_UNAVAILABLE: GEMINI_API_KEY not set');
@@ -210,15 +247,21 @@ async function runGemini(prompt, opts = {}) {
     modelToUse = PRIMARY_MODEL;
   }
   
+  const seedValue = opts.randomSeed || Date.now() + Math.floor(Math.random() * 1000000);
+  const variationNonce = `${seedValue}-${generateVariationNonce()}`;
+  
   let contents;
   if (opts.systemPrompt && opts.userPrompt) {
+    const systemText = opts.systemPrompt.trim();
+    const userText = injectPromptVariation(opts.userPrompt.trim(), variationNonce);
     contents = [
-      { role: 'user', parts: [{ text: opts.systemPrompt }] },
+      { role: 'user', parts: [{ text: systemText }] },
       { role: 'model', parts: [{ text: 'Understood.' }] },
-      { role: 'user', parts: [{ text: opts.userPrompt }] }
+      { role: 'user', parts: [{ text: userText }] }
     ];
   } else {
-    contents = [{ role: 'user', parts: [{ text: actualPrompt }] }];
+    const promptText = injectPromptVariation(actualPrompt.trim(), variationNonce);
+    contents = [{ role: 'user', parts: [{ text: promptText }] }];
   }
   
   try {
@@ -228,9 +271,6 @@ async function runGemini(prompt, opts = {}) {
   }
 }
 
-/**
- * Vision API function
- */
 async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jpeg', opts = {}) {
   if (!apiKey || apiKey.trim() === '') {
     throw new Error('GEMINI_API_KEY missing');
@@ -242,6 +282,9 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
   const apiPath = `/${apiVersion}/models/${modelName}:generateContent`;
   const url = `${baseUrl}${apiPath}?key=${apiKey}`;
   
+  const variationNonce = generateVariationNonce();
+  const promptText = injectPromptVariation(prompt.trim(), variationNonce);
+  
   const contents = [{ 
     role: 'user', 
     parts: [
@@ -251,12 +294,9 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
           mimeType: imageMimeType
         }
       },
-      { text: prompt }
+      { text: promptText }
     ]
   }];
-  
-  // Generate fresh randomSeed for each request
-  const randomSeed = Math.floor(Math.random() * 2147483647);
   
   const requestBody = {
     contents: contents,
@@ -265,7 +305,6 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
       maxOutputTokens: opts.maxTokens ?? 2048,
       topP: opts.topP ?? 0.95,
       topK: opts.topK ?? 40,
-      randomSeed: randomSeed,
     },
   };
   
