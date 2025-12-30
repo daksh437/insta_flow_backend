@@ -345,43 +345,49 @@ The user will type freely what kind of caption they want.
 You must automatically understand the topic, tone, language, audience, and intent.
 
 CRITICAL RULES (FOLLOW STRICTLY):
-- Generate a completely NEW caption on every request
-- NEVER repeat hooks, sentence structure, CTA, or phrasing from any previous output
-- Even if the same user request is repeated, the caption must be different every time
-- Use a fresh creative angle, new words, and a new emotional hook on each generation
+- Generate EXACTLY 3 completely DIFFERENT captions on every request
+- Each caption must be UNIQUE with different hooks, sentence structure, CTA, and phrasing
+- NEVER repeat hooks, sentence structure, CTA, or phrasing between the 3 captions
+- Even if the same user request is repeated, all 3 captions must be different every time
+- Use fresh creative angles, new words, and new emotional hooks for each caption
 
-CAPTION STYLE RULES:
+CAPTION STYLE RULES (for each of the 3 captions):
 - Write in short, clean lines (not a single paragraph)
 - Start with a strong scroll-stopping hook
 - Add emotion, curiosity, or relatability
 - Use emojis naturally (do not overuse)
 - Add 3–6 relevant, non-generic hashtags
-- CTA must be creative and different every time
+- CTA must be creative and different for each caption
 - Avoid boring or generic lines like:
   "Don't miss this"
   "Follow for more"
   "Like and share"
 
 REGENERATION RULE:
-If this is a regenerate request, force a completely fresh caption with a new angle, tone shift, and wording. Do not reuse any phrasing.
+If this is a regenerate request, force completely fresh captions with new angles, tone shifts, and wording. Do not reuse any phrasing.
 
 OUTPUT FORMAT:
-Return ONLY the caption text.
+Return EXACTLY 3 captions, each on a separate line.
+Start each caption with "• " (bullet point).
 No explanations.
 No labels.
-No numbering.`;
+No numbering.
+Example format:
+• First unique caption with hashtags #tag1 #tag2
+• Second unique caption with hashtags #tag3 #tag4
+• Third unique caption with hashtags #tag5 #tag6`;
 }
 
 function getUserPrompt(userInput, generationId, creativeSeed, requestId, regenerate) {
   const regenerateWarning = regenerate 
-    ? `\n\n🚨🚨🚨 REGENERATE MODE - USER PRESSED REGENERATE BUTTON 🚨🚨🚨\n\nCRITICAL: Generate a COMPLETELY FRESH caption with:\n- NEW angle and perspective\n- NEW wording (zero word reuse)\n- NEW hook structure\n- NEW hashtags\n- NEW emoji placement\n- NEW sentence structure\n\nDO NOT reuse ANYTHING from previous generation.\n\n`
+    ? `\n\n🚨🚨🚨 REGENERATE MODE - USER PRESSED REGENERATE BUTTON 🚨🚨🚨\n\nCRITICAL: Generate 3 COMPLETELY FRESH captions with:\n- NEW angle and perspective for each caption\n- NEW wording (zero word reuse)\n- NEW hook structure for each caption\n- NEW hashtags for each caption\n- NEW emoji placement for each caption\n- NEW sentence structure for each caption\n\nDO NOT reuse ANYTHING from previous generation.\n\n`
     : '';
   
   const timestamp = Date.now();
   const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}-${Math.random().toString(36).substring(2, 10)}`;
   const variationToken = Math.random().toString(36).substring(2, 20);
   
-  return `${regenerateWarning}Generate a UNIQUE Instagram Reels caption based on this request:
+  return `${regenerateWarning}Generate EXACTLY 3 UNIQUE Instagram Reels captions based on this request:
 
 "${userInput}"
 
@@ -393,22 +399,31 @@ function getUserPrompt(userInput, generationId, creativeSeed, requestId, regener
 🔑 VARIATION_TOKEN: ${variationToken}
 
 CRITICAL UNIQUENESS REQUIREMENTS:
-- This request ID (${generationId}) is UNIQUE - generate a DIFFERENT caption than any previous request
+- This request ID (${generationId}) is UNIQUE - generate 3 DIFFERENT captions than any previous request
 - Use the creative seed (${creativeSeed.substring(0, 30)}...) to ensure maximum variation
 - The timestamp ${timestamp} and random context ${randomContext} ensure this is a fresh generation
-- Even if the user input is identical, the output MUST be completely different
+- Even if the user input is identical, all 3 captions MUST be completely different
+- Each of the 3 captions must be unique from each other (different hooks, structure, hashtags)
 
 INSTRUCTIONS:
 - Understand tone, language, and audience from the user's description automatically
-- Generate ONE unique, scroll-stopping caption
-- Start with a strong hook (different from any previous generation)
-- Use short, readable lines
-- Add natural emojis (1-3 max, different emojis than before)
-- Add 3-6 relevant hashtags (completely different hashtags)
-- Make it feel fresh and human-like
-- Vary sentence structure, vocabulary, and approach
+- Generate EXACTLY 3 completely DIFFERENT captions
+- Each caption must have a unique hook, structure, and CTA
+- Start each caption with a strong scroll-stopping hook (different from others)
+- Use short, readable lines for each caption
+- Add natural emojis (1-3 max, different emojis for each caption)
+- Add 3-6 relevant hashtags to each caption (completely different hashtags for each)
+- Make each caption feel fresh and human-like
+- If regenerate=true, use completely different angles and wording for all 3 captions
 
-Return ONLY the caption text. No explanations. No labels.`;
+OUTPUT FORMAT:
+Return EXACTLY 3 captions, each on a separate line.
+Format:
+• First caption text with hashtags #tag1 #tag2 #tag3
+• Second caption text with hashtags #tag4 #tag5 #tag6
+• Third caption text with hashtags #tag7 #tag8 #tag9
+
+No explanations. No labels. Just 3 captions, one per line.`;
 }
 
 function calendarPrompt(topic, days) {
@@ -796,8 +811,8 @@ async function processCaptions(jobId, userInput, regenerate, requestId) {
       output = '';
     }
     
-    // Extract single caption from output
-    let caption = null;
+    // Extract 3 captions from output
+    let captions = [];
     if (output && typeof output === 'string' && output.trim().length > 0) {
       const cleanedOutput = output.trim();
       // Remove bullet points and extra formatting
@@ -806,35 +821,50 @@ async function processCaptions(jobId, userInput, regenerate, requestId) {
         .replace(/^\d+[\.\)]\s*/gm, '')
         .trim();
       
-      // Split by newlines and take first meaningful line
+      // Split by newlines and filter meaningful lines
       const lines = captionText.split(/\n/).filter(line => line.trim().length > 10);
-      if (lines.length > 0) {
-        captionText = lines[0].trim();
-      }
       
-      // Extract hashtags
-      const hashtagRegex = /#[\w]+/g;
-      const hashtags = captionText.match(hashtagRegex) || [];
-      const textWithoutHashtags = captionText.replace(hashtagRegex, '').trim();
-      
-      if (textWithoutHashtags.length > 10) {
-        caption = {
-          style: 'general',
-          text: textWithoutHashtags,
-          hashtags: hashtags
-        };
+      // Extract up to 3 captions
+      for (let i = 0; i < Math.min(3, lines.length); i++) {
+        const line = lines[i].trim();
+        if (line.length > 10) {
+          // Extract hashtags
+          const hashtagRegex = /#[\w]+/g;
+          const hashtags = line.match(hashtagRegex) || [];
+          const textWithoutHashtags = line.replace(hashtagRegex, '').trim();
+          
+          if (textWithoutHashtags.length > 10) {
+            captions.push({
+              style: 'general',
+              text: textWithoutHashtags,
+              hashtags: hashtags
+            });
+          }
+        }
       }
     }
     
-    // Use fallback if empty
-    if (!caption) {
-      console.log('[processCaptions] ⚠️ No valid caption extracted, using fallback');
+    // Use fallback if we don't have 3 captions
+    if (captions.length < 3) {
+      console.log(`[processCaptions] ⚠️ Only ${captions.length} captions extracted, using fallback for remaining`);
       const fallback = getFallbackCaptions('English', userInput);
-      caption = fallback[0] || { style: 'general', text: 'Ready to create amazing content? Let\'s go! 🚀', hashtags: ['#motivation', '#inspiration'] };
+      
+      // Add fallback captions to reach 3 total
+      for (let i = captions.length; i < 3; i++) {
+        const fallbackIndex = (i - captions.length) % fallback.length;
+        captions.push(fallback[fallbackIndex] || { 
+          style: 'general', 
+          text: 'Ready to create amazing content? Let\'s go! 🚀', 
+          hashtags: ['#motivation', '#inspiration'] 
+        });
+      }
     }
     
-    // Update job with completed status - return single caption
-    updateJob(jobId, 'done', { data: [caption] });
+    // Ensure we have exactly 3 captions
+    captions = captions.slice(0, 3);
+    
+    // Update job with completed status - return 3 captions
+    updateJob(jobId, 'done', { data: captions });
     console.log(`[processCaptions] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
     console.error(`[processCaptions] Error processing job ${jobId}:`, error);
