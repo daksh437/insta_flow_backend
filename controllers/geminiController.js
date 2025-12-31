@@ -1968,6 +1968,9 @@ function getJobStatus(req, res) {
         case 'hooks':
           response.data = [];
           break;
+        case 'comment-reply':
+          response.data = null;
+          break;
         default:
           response.data = {};
       }
@@ -2481,6 +2484,137 @@ Example format:
   }
 }
 
+/**
+ * POST /ai/comment-reply
+ * Generate AI reply to a comment using Gemini API
+ */
+async function generateCommentReply(req, res) {
+  const { comment, tone = 'friendly' } = req.body || {};
+  
+  if (!comment || comment.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Comment is required', data: null });
+  }
+  
+  const jobId = generateJobId('REPLY');
+  
+  createJob(jobId, {
+    type: 'comment-reply',
+    comment: comment.trim(),
+    tone: tone,
+  });
+  
+  console.log(`[generateCommentReply] ===== NEW REQUEST =====`);
+  console.log(`[generateCommentReply] Job ID: ${jobId}`);
+  const commentPreview = comment.length > 50 ? `${comment.substring(0, 50)}...` : comment;
+  console.log(`[generateCommentReply] Comment: "${commentPreview}", Tone: ${tone}`);
+  
+  processCommentReply(jobId, comment.trim(), tone)
+    .catch((error) => {
+      console.error(`[generateCommentReply] Background processing failed for job ${jobId}:`, error);
+      updateJob(jobId, 'done', { 
+        data: null,
+        error: error.message || 'AI generation failed'
+      });
+    });
+  
+  console.log(`[generateCommentReply] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing for comment reply generation
+ */
+async function processCommentReply(jobId, comment, tone) {
+  console.log(`[processCommentReply] Starting background processing for job: ${jobId}`);
+  
+  try {
+    updateJob(jobId, 'processing', {});
+    
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}`;
+    
+    const toneInstructions = {
+      'friendly': 'Be warm, friendly, and approachable. Use casual language.',
+      'professional': 'Be formal, polite, and business-like. Use professional language.',
+      'funny': 'Be humorous, witty, and light-hearted. Add humor where appropriate.',
+      'empathetic': 'Be understanding, supportive, and compassionate. Show empathy.',
+      'brief': 'Be concise and to the point. Keep it short and clear.',
+      'enthusiastic': 'Be energetic, positive, and excited. Show enthusiasm.'
+    };
+    
+    const toneGuide = toneInstructions[tone] || toneInstructions['friendly'];
+    
+    const prompt = `Generate an engaging Instagram comment reply for this comment: "${comment}"
+
+Tone: ${tone}
+${toneGuide}
+
+CRITICAL REQUIREMENTS:
+- Reply should be authentic and natural
+- Match the tone requested (${tone})
+- Keep it concise (1-2 sentences max, under 100 characters ideally)
+- Be engaging and encourage further interaction
+- Use appropriate emojis (1-2 max, natural placement)
+- Sound human and conversational
+- Address the comment directly
+- If the comment is a question, answer it
+- If the comment is positive, acknowledge and thank
+- If the comment is negative, be diplomatic and helpful
+
+OUTPUT FORMAT:
+Return ONLY the reply text.
+No explanations.
+No labels.
+Just the reply.
+
+🎲 UNIQUE_SEED: ${uniqueSeed}
+📅 TIMESTAMP: ${timestamp}
+🔄 REQUEST_ID: ${jobId}
+🎲 RANDOM_CONTEXT: ${randomContext}`;
+    
+    console.log('[processCommentReply] Calling Gemini API with unique prompt...');
+    const output = await runGemini(prompt, { 
+      maxTokens: 256, 
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    console.log('[processCommentReply] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
+    
+    // Clean the output - remove any extra formatting
+    let reply = output.trim()
+      .replace(/^[•\-*]\s*/gm, '')
+      .replace(/^\d+[\.\)]\s*/gm, '')
+      .replace(/^Reply:\s*/i, '')
+      .replace(/^Comment Reply:\s*/i, '')
+      .replace(/^Response:\s*/i, '')
+      .trim();
+    
+    if (reply.length < 5) {
+      throw new Error('Invalid reply data from Gemini API - too short');
+    }
+    
+    updateJob(jobId, 'completed', { data: reply });
+    console.log(`[processCommentReply] ✅ Job ${jobId} completed successfully, reply length: ${reply.length}`);
+  } catch (error) {
+    console.error(`[processCommentReply] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processCommentReply] Error stack:`, error.stack);
+    updateJob(jobId, 'failed', { 
+      data: null, 
+      error: error.message || 'AI generation failed' 
+    });
+  }
+}
+
 module.exports = {
   generateCaptions,
   generateImageCaptions,
@@ -2493,6 +2627,7 @@ module.exports = {
   generateHashtags,
   generateBio,
   generateHooks,
+  generateCommentReply,
   getJobStatus,
 };
 

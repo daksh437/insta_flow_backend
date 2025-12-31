@@ -12,6 +12,7 @@ const {
   generateHashtags,
   generateBio,
   generateHooks,
+  generateCommentReply,
   getJobStatus
 } = require('../controllers/geminiController');
 
@@ -29,6 +30,7 @@ router.post('/post-ideas', generatePostIdeas);
 router.post('/hashtags', generateHashtags);
 router.post('/bio', generateBio);
 router.post('/hooks', generateHooks);
+router.post('/comment-reply', generateCommentReply);
 
 // Unified Job Status Endpoint (for all AI jobs)
 router.get('/job-status/:jobId', getJobStatus);
