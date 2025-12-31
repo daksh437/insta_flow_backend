@@ -17,7 +17,7 @@ app.use(
     origin: corsOrigins.length ? corsOrigins : '*', // Allow all origins if CORS_ORIGINS not set
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'x-user-uid', 'X-User-UID', 'X-Request-Time', 'Cache-Control', 'Pragma', 'Expires'],
   })
 );
 
