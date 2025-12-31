@@ -1962,6 +1962,9 @@ function getJobStatus(req, res) {
         case 'hashtags':
           response.data = [];
           break;
+        case 'bio':
+          response.data = null;
+          break;
         default:
           response.data = {};
       }
@@ -2209,6 +2212,122 @@ Return the hashtags as a JSON array of strings:
   }
 }
 
+/**
+ * POST /ai/bio
+ * Generate Instagram bio using Gemini API
+ */
+async function generateBio(req, res) {
+  const { description, style = 'short' } = req.body || {};
+  
+  if (!description || description.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Description is required', data: null });
+  }
+  
+  const jobId = generateJobId('BIO');
+  
+  createJob(jobId, {
+    type: 'bio',
+    description: description.trim(),
+    style: style,
+  });
+  
+  console.log(`[generateBio] ===== NEW REQUEST =====`);
+  console.log(`[generateBio] Job ID: ${jobId}`);
+  console.log(`[generateBio] Description: "${description.substring(0, 50)}...", Style: ${style}`);
+  
+  processBio(jobId, description.trim(), style)
+    .catch((error) => {
+      console.error(`[generateBio] Background processing failed for job ${jobId}:`, error);
+      updateJob(jobId, 'done', { 
+        data: null,
+        error: error.message || 'AI generation failed'
+      });
+    });
+  
+  console.log(`[generateBio] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing for bio generation
+ */
+async function processBio(jobId, description, style) {
+  console.log(`[processBio] Starting background processing for job: ${jobId}`);
+  
+  try {
+    updateJob(jobId, 'processing', {});
+    
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    
+    const styleInstructions = {
+      'short': 'Keep it concise (under 150 characters). Make it punchy and memorable.',
+      'long': 'Create a detailed bio (200-300 characters). Include more information about the person/brand.',
+      'aesthetic': 'Make it visually appealing with emojis and creative formatting. Keep it stylish and modern.'
+    };
+    
+    const styleGuide = styleInstructions[style] || styleInstructions['short'];
+    
+    const prompt = `Generate an engaging Instagram bio based on this description: "${description}"
+
+Style: ${style}
+${styleGuide}
+
+Requirements:
+- Engaging and authentic
+- Include relevant emojis (1-3 max for short/aesthetic, more for long)
+- Make it compelling and scroll-stopping
+- Optimize for Instagram bio character limit
+- Include a call-to-action if appropriate
+- Match the style requested (${style})
+
+Return ONLY the bio text. No explanations. No labels. Just the bio.
+
+🎲 UNIQUE_SEED: ${uniqueSeed}
+📅 TIMESTAMP: ${timestamp}
+🔄 REQUEST_ID: ${jobId}`;
+    
+    console.log('[processBio] Calling Gemini API with unique prompt...');
+    const output = await runGemini(prompt, { 
+      maxTokens: 512, 
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    console.log('[processBio] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
+    
+    // Clean the output - remove any extra formatting
+    let bio = output.trim()
+      .replace(/^[•\-*]\s*/gm, '')
+      .replace(/^\d+[\.\)]\s*/gm, '')
+      .replace(/^Bio:\s*/i, '')
+      .replace(/^Instagram Bio:\s*/i, '')
+      .trim();
+    
+    if (bio.length < 10) {
+      throw new Error('Invalid bio data from Gemini API - too short');
+    }
+    
+    updateJob(jobId, 'completed', { data: bio });
+    console.log(`[processBio] ✅ Job ${jobId} completed successfully, bio length: ${bio.length}`);
+  } catch (error) {
+    console.error(`[processBio] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processBio] Error stack:`, error.stack);
+    updateJob(jobId, 'failed', { 
+      data: null, 
+      error: error.message || 'AI generation failed' 
+    });
+  }
+}
+
 module.exports = {
   generateCaptions,
   generateImageCaptions,
@@ -2219,6 +2338,7 @@ module.exports = {
   generateReelsScript,
   generatePostIdeas,
   generateHashtags,
+  generateBio,
   getJobStatus,
 };
 
