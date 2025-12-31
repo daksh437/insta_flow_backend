@@ -1971,6 +1971,9 @@ function getJobStatus(req, res) {
         case 'comment-reply':
           response.data = null;
           break;
+        case 'trends':
+          response.data = { hashtags: [], topics: [], ideas: [] };
+          break;
         default:
           response.data = {};
       }
@@ -2615,6 +2618,173 @@ Just the reply.
   }
 }
 
+/**
+ * POST /ai/trends
+ * Get trending topics, hashtags, and content ideas using Gemini API
+ */
+async function generateTrends(req, res) {
+  const { niche, category = 'All' } = req.body || {};
+  
+  const jobId = generateJobId('TREND');
+  
+  createJob(jobId, {
+    type: 'trends',
+    niche: niche || category,
+    category: category,
+  });
+  
+  console.log(`[generateTrends] ===== NEW REQUEST =====`);
+  console.log(`[generateTrends] Job ID: ${jobId}`);
+  console.log(`[generateTrends] Niche: "${niche || 'All'}", Category: ${category}`);
+  
+  processTrends(jobId, niche || category, category)
+    .catch((error) => {
+      console.error(`[generateTrends] Background processing failed for job ${jobId}:`, error);
+      updateJob(jobId, 'done', { 
+        data: { hashtags: [], topics: [], ideas: [] },
+        error: error.message || 'AI generation failed'
+      });
+    });
+  
+  console.log(`[generateTrends] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing for trends generation
+ */
+async function processTrends(jobId, niche, category) {
+  console.log(`[processTrends] Starting background processing for job: ${jobId}`);
+  
+  try {
+    updateJob(jobId, 'processing', {});
+    
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}`;
+    
+    const nicheContext = niche && niche !== 'All' ? `Focus on ${niche} niche specifically.` : 'Cover all popular niches and general trends.';
+    
+    const prompt = `Generate current trending content for Instagram in ${category === 'All' ? 'all categories' : category} niche.
+
+${nicheContext}
+
+CRITICAL REQUIREMENTS:
+- Provide REAL, CURRENT trending topics (as of ${new Date().toLocaleDateString()})
+- Include trending hashtags that are actually being used right now
+- Suggest trending content ideas that creators are posting
+- Focus on what's viral and engaging on Instagram Reels and Posts
+- Include mix of general trends and niche-specific trends
+- Make it relevant to current events, seasons, and social media culture
+
+OUTPUT FORMAT (JSON):
+{
+  "hashtags": ["#trending1", "#trending2", "#trending3", ...],
+  "topics": ["Trending topic 1", "Trending topic 2", "Trending topic 3", ...],
+  "ideas": ["Content idea 1", "Content idea 2", "Content idea 3", ...]
+}
+
+Return EXACTLY 20 trending hashtags, 10 trending topics, and 10 content ideas.
+All should be CURRENT and RELEVANT to Instagram trends.
+
+🎲 UNIQUE_SEED: ${uniqueSeed}
+📅 TIMESTAMP: ${timestamp}
+🔄 REQUEST_ID: ${jobId}
+🎲 RANDOM_CONTEXT: ${randomContext}`;
+    
+    console.log('[processTrends] Calling Gemini API with unique prompt...');
+    const output = await runGemini(prompt, { 
+      maxTokens: 1024, 
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    console.log('[processTrends] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
+    
+    // Try to parse JSON from output
+    let trendsData = null;
+    try {
+      // Extract JSON from markdown code blocks if present
+      const jsonMatch = output.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
+      if (jsonMatch) {
+        trendsData = JSON.parse(jsonMatch[1]);
+      } else {
+        // Try direct JSON parse
+        trendsData = JSON.parse(output.trim());
+      }
+    } catch (parseError) {
+      // If JSON parsing fails, extract from text
+      console.log('[processTrends] JSON parsing failed, extracting from text...');
+      trendsData = extractTrendsFromText(output);
+    }
+    
+    if (!trendsData || !trendsData.hashtags || !Array.isArray(trendsData.hashtags)) {
+      throw new Error('Invalid trends data from Gemini API');
+    }
+    
+    // Ensure all hashtags start with #
+    trendsData.hashtags = trendsData.hashtags.map(tag => 
+      tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`
+    );
+    
+    // Ensure we have arrays
+    trendsData.topics = trendsData.topics || [];
+    trendsData.ideas = trendsData.ideas || [];
+    
+    updateJob(jobId, 'completed', { data: trendsData });
+    console.log(`[processTrends] ✅ Job ${jobId} completed successfully - hashtags: ${trendsData.hashtags.length}, topics: ${trendsData.topics.length}, ideas: ${trendsData.ideas.length}`);
+  } catch (error) {
+    console.error(`[processTrends] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processTrends] Error stack:`, error.stack);
+    updateJob(jobId, 'failed', { 
+      data: { hashtags: [], topics: [], ideas: [] }, 
+      error: error.message || 'AI generation failed' 
+    });
+  }
+}
+
+/**
+ * Extract trends from plain text if JSON parsing fails
+ */
+function extractTrendsFromText(text) {
+  const result = {
+    hashtags: [],
+    topics: [],
+    ideas: []
+  };
+  
+  // Extract hashtags
+  const hashtagRegex = /#[\w]+/g;
+  const foundHashtags = text.match(hashtagRegex) || [];
+  result.hashtags = [...new Set(foundHashtags)].slice(0, 20);
+  
+  // Extract topics (lines starting with bullet points or numbers)
+  const lines = text.split('\n').filter(line => line.trim().length > 0);
+  const topicLines = lines.filter(line => 
+    /^[•\-*\d+\.\)]/.test(line.trim()) && 
+    !line.includes('#') &&
+    line.trim().length > 10
+  );
+  result.topics = topicLines.slice(0, 10).map(line => 
+    line.replace(/^[•\-*\d+\.\)]\s*/, '').trim()
+  );
+  
+  // Extract ideas (similar to topics)
+  result.ideas = topicLines.slice(10, 20).map(line => 
+    line.replace(/^[•\-*\d+\.\)]\s*/, '').trim()
+  );
+  
+  return result;
+}
+
 module.exports = {
   generateCaptions,
   generateImageCaptions,
@@ -2628,6 +2798,7 @@ module.exports = {
   generateBio,
   generateHooks,
   generateCommentReply,
+  generateTrends,
   getJobStatus,
 };
 
