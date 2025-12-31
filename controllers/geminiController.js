@@ -1974,6 +1974,9 @@ function getJobStatus(req, res) {
         case 'trends':
           response.data = { hashtags: [], topics: [], ideas: [] };
           break;
+        case 'carousel':
+          response.data = { title: '', caption: '', slides: [] };
+          break;
         default:
           response.data = {};
       }
@@ -2785,6 +2788,222 @@ function extractTrendsFromText(text) {
   return result;
 }
 
+/**
+ * POST /ai/carousel
+ * Generate Instagram carousel post content using Gemini API
+ */
+async function generateCarousel(req, res) {
+  const { topic, slides = 5 } = req.body || {};
+  
+  if (!topic || topic.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Topic is required', data: null });
+  }
+  
+  const jobId = generateJobId('CAROUSEL');
+  
+  createJob(jobId, {
+    type: 'carousel',
+    topic: topic.trim(),
+    slides: slides,
+  });
+  
+  console.log(`[generateCarousel] ===== NEW REQUEST =====`);
+  console.log(`[generateCarousel] Job ID: ${jobId}`);
+  const topicPreview = topic.length > 50 ? `${topic.substring(0, 50)}...` : topic;
+  console.log(`[generateCarousel] Topic: "${topicPreview}", Slides: ${slides}`);
+  
+  processCarousel(jobId, topic.trim(), slides)
+    .catch((error) => {
+      console.error(`[generateCarousel] Background processing failed for job ${jobId}:`, error);
+      updateJob(jobId, 'done', { 
+        data: null,
+        error: error.message || 'AI generation failed'
+      });
+    });
+  
+  console.log(`[generateCarousel] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing for carousel generation
+ */
+async function processCarousel(jobId, topic, slides) {
+  console.log(`[processCarousel] Starting background processing for job: ${jobId}`);
+  
+  try {
+    updateJob(jobId, 'processing', {});
+    
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}`;
+    
+    const prompt = `Generate an Instagram carousel post with ${slides} slides about: "${topic}"
+
+CRITICAL REQUIREMENTS:
+- Create EXACTLY ${slides} slides
+- Each slide should have a clear, engaging message
+- Slides should flow logically and tell a story
+- Each slide should be concise (1-2 sentences max)
+- Make it visually appealing and scroll-stopping
+- Include actionable tips, insights, or information
+- Use emojis naturally (1-2 per slide max)
+- Make it shareable and engaging
+
+OUTPUT FORMAT (JSON):
+{
+  "title": "Main title/headline for the carousel",
+  "caption": "Instagram caption with hashtags",
+  "slides": [
+    {
+      "slideNumber": 1,
+      "title": "Slide 1 title",
+      "content": "Slide 1 content text"
+    },
+    {
+      "slideNumber": 2,
+      "title": "Slide 2 title",
+      "content": "Slide 2 content text"
+    }
+    ... (${slides} slides total)
+  ]
+}
+
+Return ONLY valid JSON. No explanations. No markdown code blocks.
+
+🎲 UNIQUE_SEED: ${uniqueSeed}
+📅 TIMESTAMP: ${timestamp}
+🔄 REQUEST_ID: ${jobId}
+🎲 RANDOM_CONTEXT: ${randomContext}`;
+    
+    console.log('[processCarousel] Calling Gemini API with unique prompt...');
+    const output = await runGemini(prompt, { 
+      maxTokens: 2048, 
+      temperature: 0.8,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    console.log('[processCarousel] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
+    
+    // Try to parse JSON from output
+    let carouselData = null;
+    try {
+      // Extract JSON from markdown code blocks if present
+      const jsonMatch = output.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
+      if (jsonMatch) {
+        carouselData = JSON.parse(jsonMatch[1]);
+      } else {
+        // Try direct JSON parse
+        carouselData = JSON.parse(output.trim());
+      }
+    } catch (parseError) {
+      console.log('[processCarousel] JSON parsing failed, extracting from text...');
+      carouselData = extractCarouselFromText(output, slides);
+    }
+    
+    if (!carouselData || !carouselData.slides || !Array.isArray(carouselData.slides)) {
+      throw new Error('Invalid carousel data from Gemini API');
+    }
+    
+    // Ensure we have the right number of slides
+    if (carouselData.slides.length < slides) {
+      // Fill remaining slides
+      while (carouselData.slides.length < slides) {
+        carouselData.slides.push({
+          slideNumber: carouselData.slides.length + 1,
+          title: `Slide ${carouselData.slides.length + 1}`,
+          content: 'Additional content slide'
+        });
+      }
+    } else {
+      carouselData.slides = carouselData.slides.slice(0, slides);
+    }
+    
+    // Ensure title and caption exist
+    if (!carouselData.title) {
+      carouselData.title = `Carousel: ${topic}`;
+    }
+    if (!carouselData.caption) {
+      carouselData.caption = `Check out this carousel about ${topic}! 💫`;
+    }
+    
+    updateJob(jobId, 'completed', { data: carouselData });
+    console.log(`[processCarousel] ✅ Job ${jobId} completed successfully - slides: ${carouselData.slides.length}`);
+  } catch (error) {
+    console.error(`[processCarousel] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processCarousel] Error stack:`, error.stack);
+    updateJob(jobId, 'failed', { 
+      data: null, 
+      error: error.message || 'AI generation failed' 
+    });
+  }
+}
+
+/**
+ * Extract carousel data from plain text if JSON parsing fails
+ */
+function extractCarouselFromText(text, slides) {
+  const result = {
+    title: 'Carousel Post',
+    caption: 'Check out this carousel! 💫',
+    slides: []
+  };
+  
+  // Try to extract slides from numbered or bulleted list
+  const lines = text.split('\n').filter(line => line.trim().length > 0);
+  let currentSlide = null;
+  
+  for (const line of lines) {
+    // Check if line starts a new slide
+    const slideMatch = line.match(/^(?:slide\s*)?(\d+)[\.\):]\s*(.+)/i);
+    if (slideMatch) {
+      if (currentSlide) {
+        result.slides.push(currentSlide);
+      }
+      currentSlide = {
+        slideNumber: parseInt(slideMatch[1]),
+        title: slideMatch[2].trim(),
+        content: ''
+      };
+    } else if (currentSlide) {
+      // Add content to current slide
+      if (currentSlide.content) {
+        currentSlide.content += ' ' + line.trim();
+      } else {
+        currentSlide.content = line.trim();
+      }
+    } else if (line.toLowerCase().includes('title:')) {
+      result.title = line.replace(/title:\s*/i, '').trim();
+    } else if (line.toLowerCase().includes('caption:')) {
+      result.caption = line.replace(/caption:\s*/i, '').trim();
+    }
+  }
+  
+  // Add last slide
+  if (currentSlide) {
+    result.slides.push(currentSlide);
+  }
+  
+  // Ensure we have enough slides
+  while (result.slides.length < slides) {
+    result.slides.push({
+      slideNumber: result.slides.length + 1,
+      title: `Slide ${result.slides.length + 1}`,
+      content: 'Content for this slide'
+    });
+  }
+  
+  return result;
+}
+
 module.exports = {
   generateCaptions,
   generateImageCaptions,
@@ -2799,6 +3018,7 @@ module.exports = {
   generateHooks,
   generateCommentReply,
   generateTrends,
+  generateCarousel,
   getJobStatus,
 };
 
