@@ -1965,6 +1965,9 @@ function getJobStatus(req, res) {
         case 'bio':
           response.data = null;
           break;
+        case 'hooks':
+          response.data = [];
+          break;
         default:
           response.data = {};
       }
@@ -2328,6 +2331,156 @@ Return ONLY the bio text. No explanations. No labels. Just the bio.
   }
 }
 
+/**
+ * POST /ai/hooks
+ * Generate viral hooks using Gemini API
+ */
+async function generateHooks(req, res) {
+  const { topic, count = 5 } = req.body || {};
+  
+  if (!topic || topic.trim() === '') {
+    return res.status(400).json({ success: false, error: 'Topic is required', data: null });
+  }
+  
+  const jobId = generateJobId('HOOK');
+  
+  createJob(jobId, {
+    type: 'hooks',
+    topic: topic.trim(),
+    count: count,
+  });
+  
+  console.log(`[generateHooks] ===== NEW REQUEST =====`);
+  console.log(`[generateHooks] Job ID: ${jobId}`);
+  const topicPreview = topic.length > 50 ? `${topic.substring(0, 50)}...` : topic;
+  console.log(`[generateHooks] Topic: "${topicPreview}", Count: ${count}`);
+  
+  processHooks(jobId, topic.trim(), count)
+    .catch((error) => {
+      console.error(`[generateHooks] Background processing failed for job ${jobId}:`, error);
+      updateJob(jobId, 'done', { 
+        data: [],
+        error: error.message || 'AI generation failed'
+      });
+    });
+  
+  console.log(`[generateHooks] ✅ Returning jobId immediately: ${jobId}`);
+  res.json({ 
+    success: true, 
+    jobId: jobId
+  });
+}
+
+/**
+ * Background processing for hook generation
+ */
+async function processHooks(jobId, topic, count) {
+  console.log(`[processHooks] Starting background processing for job: ${jobId}`);
+  
+  try {
+    updateJob(jobId, 'processing', {});
+    
+    const timestamp = Date.now();
+    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
+    const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}`;
+    
+    const prompt = `Generate ${count} viral, scroll-stopping hooks for Instagram Reels based on this topic: "${topic}"
+
+CRITICAL REQUIREMENTS:
+- Each hook must be UNIQUE and different from others
+- Hooks must be scroll-stopping (make viewers stop and watch)
+- Keep hooks SHORT (5-15 words max)
+- Use curiosity, emotion, or surprise
+- Make them engaging and attention-grabbing
+- No generic phrases like "Don't miss this" or "You won't believe"
+- Each hook should have a different angle/approach
+
+HOOK STYLES TO USE (mix different styles):
+1. Question hooks (e.g., "What if I told you...")
+2. Bold statements (e.g., "This changed everything...")
+3. Controversial/Curiosity (e.g., "The truth nobody tells you...")
+4. Personal/Relatable (e.g., "I used to think...")
+5. Number/List hooks (e.g., "3 things that changed my life...")
+6. Story hooks (e.g., "Last week I discovered...")
+
+OUTPUT FORMAT:
+Return EXACTLY ${count} hooks, each on a separate line.
+Start each hook with "• " (bullet point).
+No numbering (1., 2., etc.).
+No explanations.
+No labels.
+Just the hooks.
+
+Example format:
+• What if I told you this one trick changed everything?
+• The truth about ${topic} that nobody wants to admit
+• I used to struggle with this until I discovered...
+• 3 secrets that will blow your mind
+• Last week I found out something that changed my life
+
+🎲 UNIQUE_SEED: ${uniqueSeed}
+📅 TIMESTAMP: ${timestamp}
+🔄 REQUEST_ID: ${jobId}
+🎲 RANDOM_CONTEXT: ${randomContext}`;
+    
+    console.log('[processHooks] Calling Gemini API with unique prompt...');
+    const output = await runGemini(prompt, { 
+      maxTokens: 512, 
+      temperature: 0.9,
+      topP: 0.95,
+      topK: 50,
+      randomSeed: uniqueSeed
+    });
+    console.log('[processHooks] Gemini response received, length:', output?.length || 0);
+    
+    if (!output || output.trim().length === 0) {
+      throw new Error('Empty response from Gemini API');
+    }
+    
+    // Extract hooks from output
+    const lines = output.trim().split('\n').filter(line => line.trim().length > 0);
+    const hooks = [];
+    
+    for (const line of lines) {
+      // Remove bullet points, numbering, and extra formatting
+      let hookText = line
+        .replace(/^[•\-*]\s*/, '') // Remove bullet points
+        .replace(/^\d+[\.\)]\s*/, '') // Remove numbering
+        .replace(/^Hook\s*\d*:?\s*/i, '') // Remove "Hook 1:" etc.
+        .trim();
+      
+      if (hookText.length > 5 && hookText.length < 100) { // Valid hook length
+        hooks.push(hookText);
+      }
+      if (hooks.length >= count) break; // Stop after getting enough hooks
+    }
+    
+    // Ensure we have at least some hooks
+    if (hooks.length === 0) {
+      throw new Error('No valid hooks extracted from Gemini response');
+    }
+    
+    // Fill remaining slots with variations if needed
+    while (hooks.length < count && hooks.length < 10) {
+      const baseHook = hooks[hooks.length % hooks.length];
+      hooks.push(`${baseHook} (variation ${hooks.length + 1})`);
+    }
+    
+    // Limit to requested count
+    const finalHooks = hooks.slice(0, count);
+    
+    updateJob(jobId, 'completed', { data: finalHooks });
+    console.log(`[processHooks] ✅ Job ${jobId} completed successfully with ${finalHooks.length} hooks`);
+  } catch (error) {
+    console.error(`[processHooks] ❌ Error processing job ${jobId}:`, error.message);
+    console.error(`[processHooks] Error stack:`, error.stack);
+    updateJob(jobId, 'failed', { 
+      data: [], 
+      error: error.message || 'AI generation failed' 
+    });
+  }
+}
+
 module.exports = {
   generateCaptions,
   generateImageCaptions,
@@ -2339,6 +2492,7 @@ module.exports = {
   generatePostIdeas,
   generateHashtags,
   generateBio,
+  generateHooks,
   getJobStatus,
 };
 
