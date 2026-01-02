@@ -2100,8 +2100,17 @@ async function processReelsScript(jobId, userInput, extractedParams, regenerate)
  */
 function generateFullScriptText(transformedData, rawOutput, language) {
   try {
-    // If raw output exists and is in the new format, use it directly
+    // NEW FORMAT: If raw output is plain text without headings, use it directly
     if (rawOutput && typeof rawOutput === 'string') {
+      // Check if it has headings (old format)
+      const hasHeadings = /HOOK|BODY|CTA/i.test(rawOutput);
+      
+      if (!hasHeadings) {
+        // New format: plain text lines - return as is (natural flow)
+        return rawOutput.trim();
+      }
+      
+      // Old format: extract from headings (for backward compatibility)
       const hookMatch = rawOutput.match(/HOOK\s*\([^)]+\)\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
       const bodyMatch = rawOutput.match(/BODY\s*:?\s*\n([\s\S]*?)(?=\nCTA\s*:|\n*$)/i);
       const ctaMatch = rawOutput.match(/CTA\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
@@ -2111,13 +2120,8 @@ function generateFullScriptText(transformedData, rawOutput, language) {
         const body = bodyMatch[1].trim();
         const cta = ctaMatch[1].trim();
         
-        // Format as complete script
-        return `🎬 INSTAGRAM REELS SCRIPT\n\n` +
-               `📌 HOOK (0-3 seconds):\n${hook}\n\n` +
-               `📝 MAIN CONTENT:\n${body}\n\n` +
-               `🎯 CALL TO ACTION:\n${cta}\n\n` +
-               `💬 CAPTION:\n${transformedData.caption || ''}\n\n` +
-               `🏷️ HASHTAGS:\n${(transformedData.hashtags || []).join(' ')}`;
+        // Format as natural flow (no headings)
+        return `${hook}\n\n${body}\n\n${cta}`;
       }
     }
     
