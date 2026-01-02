@@ -1423,6 +1423,71 @@ function extractReelsScriptFromText(text, language = 'English') {
 
   console.log('[extractReelsScriptFromText] Extracting script from plain text, length:', text.length);
   
+  // Try to extract from new format: HOOK, BODY, CTA
+  const hookMatch = text.match(/HOOK\s*\([^)]+\)\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
+  const bodyMatch = text.match(/BODY\s*:?\s*\n([\s\S]*?)(?=\nCTA\s*:|\n*$)/i);
+  const ctaMatch = text.match(/CTA\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
+  
+  if (hookMatch && bodyMatch && ctaMatch) {
+    const hook = hookMatch[1].trim();
+    const body = bodyMatch[1].trim();
+    const cta = ctaMatch[1].trim();
+    
+    // Split body into scenes (by lines or natural breaks)
+    const bodyLines = body.split('\n').filter(line => line.trim().length > 0);
+    
+    // Create script structure
+    const script = [];
+    
+    // Add hook as first scene
+    script.push({
+      scene: 'Hook',
+      duration: '0-3s',
+      shot: 'Close-up selfie',
+      voiceover: hook,
+      on_screen_text: hook.substring(0, 50) // First 50 chars as on-screen text
+    });
+    
+    // Add body scenes (split into 3-4 scenes based on content)
+    const scenesCount = Math.min(bodyLines.length, 4);
+    const linesPerScene = Math.ceil(bodyLines.length / scenesCount);
+    
+    for (let i = 0; i < scenesCount; i++) {
+      const startIdx = i * linesPerScene;
+      const endIdx = Math.min(startIdx + linesPerScene, bodyLines.length);
+      const sceneLines = bodyLines.slice(startIdx, endIdx);
+      const sceneText = sceneLines.join(' ');
+      
+      if (sceneText.trim().length > 0) {
+        script.push({
+          scene: i === 0 ? 'Setup' : i === scenesCount - 1 ? 'Value' : 'Story',
+          duration: `${3 + i * 3}-${3 + (i + 1) * 3}s`,
+          shot: i === 0 ? 'Medium shot' : i === scenesCount - 1 ? 'Close-up' : 'Wide shot',
+          voiceover: sceneText,
+          on_screen_text: sceneText.substring(0, 50)
+        });
+      }
+    }
+    
+    // Add CTA as last scene
+    script.push({
+      scene: 'CTA',
+      duration: '13-15s',
+      shot: 'Selfie',
+      voiceover: cta,
+      on_screen_text: cta.substring(0, 50)
+    });
+    
+    return {
+      hooks: [hook],
+      script: script,
+      cta: cta,
+      caption: `${hook} ${body.substring(0, 100)}...`,
+      hashtags: ['#reels', '#viral', '#instagram', '#content', '#trending']
+    };
+  }
+  
+  // Fallback: Try old format parsing
   try {
     // Try to find structured sections
     const hooksMatch = text.match(/(?:hooks?|hook):?\s*\[?([^\]]+)\]?/i);
@@ -1482,117 +1547,131 @@ function extractReelsScriptFromText(text, language = 'English') {
  */
 function reelsScriptPrompt(topic, duration, tone, audience, language, generationId, creativeSeed, regenerate) {
   const regenerateWarning = regenerate 
-    ? `\n\n🚨 REGENERATE MODE - USER PRESSED REGENERATE BUTTON 🚨\nThis means the user wants COMPLETELY DIFFERENT script from the previous generation.\nYou MUST generate a script that is 100% different in:\n- Hook angle and approach\n- Scene structure and flow\n- Voiceover text and style\n- On-screen text\n- Overall storytelling approach\nThink of this as ChatGPT generating a fresh response to the same question.\n\n`
+    ? `\n\n🚨🚨🚨 REGENERATE MODE - USER PRESSED REGENERATE BUTTON 🚨🚨🚨\n\nCRITICAL: Generate a COMPLETELY FRESH script with:\n- NEW hook angle and approach (different from previous)\n- NEW storytelling structure\n- NEW wording (zero word reuse)\n- NEW CTA style\n- NEW emotional angle\n\nDO NOT reuse ANYTHING from previous generation. Think of this as ChatGPT generating a completely new response.\n\n`
     : '';
 
   const languageGuidelines = language === 'Hindi' 
-    ? 'STRICT: Write EVERYTHING in pure Hindi (Devanagari script). No English words. Hindi hashtags only.'
+    ? 'Write EVERYTHING in pure Hindi (Devanagari script). No English words. Use natural Hindi expressions.'
     : language === 'Hinglish'
-    ? 'STRICT: Mix Hindi and English naturally (e.g., "Kya baat hai! This is amazing"). Use both Hindi and English hashtags.'
-    : 'STRICT: Write EVERYTHING in pure English. English hashtags only.';
+    ? 'Mix Hindi and English naturally (e.g., "Kya baat hai! This is amazing"). Use conversational Hinglish that feels authentic.'
+    : 'Write EVERYTHING in pure English. Use natural, conversational English.';
 
   const toneGuidelines = {
-    'Funny': 'Playful, light jokes, emojis allowed 😄😂, casual language, humor-focused, witty, entertaining',
-    'Motivational': 'Inspiring, action-driven 🚀💡, encouraging words, goal-oriented, empowering, uplifting',
-    'Attitude': 'Bold, confident, short punchlines 💪🔥, assertive tone, power words, unapologetic, strong',
-    'Emotional': 'Heartfelt, feeling-based ❤️🌹, emotional language, intimate tone, tender, passionate',
-    'Aesthetic': 'Calm, poetic, minimal words ✨🌙, visual descriptions, serene tone, dreamy, artistic'
+    'funny': 'Playful, witty, humorous, light-hearted, entertaining, use natural jokes and relatable humor',
+    'motivational': 'Inspiring, empowering, action-driven, encouraging, uplifting, goal-oriented',
+    'emotional': 'Heartfelt, feeling-based, intimate, tender, passionate, emotionally resonant',
+    'educational': 'Informative, clear, value-driven, teaching-focused, practical, helpful',
+    'storytelling': 'Narrative-driven, engaging story, relatable characters, plot-driven, immersive',
+    'dramatic': 'Intense, powerful, attention-grabbing, high-impact, compelling, strong emotions'
   };
 
   const audienceGuidelines = {
-    'Creator': 'Engagement-focused CTAs (Save this, Share with a friend, Comment below), community-focused, interactive',
-    'Business': 'Professional tone, value-focused CTA (Learn more, Visit link, Get started), results-oriented, authoritative',
-    'Personal': 'Casual, diary-style, no marketing tone, authentic voice, no CTAs, genuine, relatable'
+    'creators': 'Creator-focused, engagement-driven, community-oriented, interactive CTAs (comment, save, share)',
+    'business': 'Professional, value-focused, results-oriented, business CTAs (learn more, visit link, get started)',
+    'students': 'Student-friendly, relatable, educational, practical CTAs (save for later, share with friends)',
+    'general': 'Universal appeal, relatable to everyone, broad CTAs (follow, like, share)'
   };
 
-  return `You are an expert Instagram Reels script writer. Create a professional, viral-ready Reels script.
+  // Calculate timing based on duration
+  const durationSeconds = parseInt(duration.replace('s', '')) || 15;
+  const hookEnd = Math.min(3, durationSeconds);
+  const ctaStart = Math.max(durationSeconds - 3, hookEnd + 2);
+
+  // Generate unique variation token
+  const variationToken = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${creativeSeed.substring(0, 20)}`;
+
+  // Anti-repetition angles
+  const angles = ['story', 'question', 'myth', 'POV', 'mistake', 'truth', 'secret', 'transformation', 'confession', 'challenge'];
+  const hookStyles = ['curiosity', 'shock', 'emotion', 'question', 'statement', 'story', 'confession', 'transformation'];
+  const ctaVariations = ['comment', 'save', 'share', 'follow', 'DM', 'like', 'bookmark', 'tag', 'try', 'test'];
+
+  // Randomly select angle and style for this generation
+  const selectedAngle = angles[Math.floor(Math.random() * angles.length)];
+  const selectedHookStyle = hookStyles[Math.floor(Math.random() * hookStyles.length)];
+  const selectedCTA = ctaVariations[Math.floor(Math.random() * ctaVariations.length)];
+
+  return `You are a professional Instagram Reels script writer.
+Generate a COMPLETE, HIGH-QUALITY Instagram Reel script every time.
+The output must feel human-written, viral, and never repetitive.
 
 🎲 CREATIVE_SEED: ${creativeSeed}
 🆔 REQUEST_ID: ${generationId}
 📅 TIMESTAMP: ${Date.now()}
+🔄 VARIATION_TOKEN: ${variationToken}
+📐 SELECTED_ANGLE: ${selectedAngle}
+🎯 HOOK_STYLE: ${selectedHookStyle}
+📢 CTA_TYPE: ${selectedCTA}
 ${regenerateWarning}
 
-CRITICAL RULES (MANDATORY):
-1. EVERY response MUST be unique - never reuse hooks, scenes, or text from previous generations
-2. Hook-first approach - first 3 seconds must STOP SCROLLING
-3. Scene-wise storytelling - break down into 4-6 clear scenes
-4. Creator-friendly format - easy to shoot and edit
-5. ChatGPT-like creative output - fresh, dynamic, context-aware
+CORE RULES (VERY IMPORTANT):
+1. NEVER repeat the same hook, structure, or CTA for the same topic.
+2. Every generation must feel fresh, creative, and unique.
+3. Write like a real content creator, not like an AI.
+4. Use short punchy lines suitable for speaking in a reel.
+5. Avoid generic lines like "This will change your life" unless creatively rewritten.
 
-USER INPUTS (STRICT):
+USER INPUTS:
 - Topic: "${topic}"
-- Duration: "${duration}"
-- Tone: "${tone}" → ${toneGuidelines[tone] || 'Professional and engaging'}
-- Audience: "${audience}" → ${audienceGuidelines[audience] || 'General audience'}
+- Tone: "${tone}" → ${toneGuidelines[tone.toLowerCase()] || 'Professional and engaging'}
 - Language: "${language}" → ${languageGuidelines}
+- Duration: "${duration}" (${durationSeconds} seconds)
+- Target Audience: "${audience}" → ${audienceGuidelines[audience.toLowerCase()] || 'General audience'}
 
-DURATION BREAKDOWN:
-- ${duration} total duration
-- Hook: 0-3s (MUST be scroll-stopping)
-- Scene 1: 3-${Math.floor(parseInt(duration) * 0.3)}s
-- Scene 2: ${Math.floor(parseInt(duration) * 0.3)}-${Math.floor(parseInt(duration) * 0.6)}s
-- Scene 3: ${Math.floor(parseInt(duration) * 0.6)}-${Math.floor(parseInt(duration) * 0.8)}s
-- Scene 4: ${Math.floor(parseInt(duration) * 0.8)}-${duration}s
-- CTA: Last 2-3 seconds
+SCRIPT STRUCTURE (MANDATORY):
+Return the script strictly in this format:
 
-OUTPUT FORMAT (STRICT JSON):
-{
-  "hooks": [
-    "Hook 1 (scroll-stopping)",
-    "Hook 2 (alternative)",
-    "Hook 3 (alternative)"
-  ],
-  "script": [
-    {
-      "scene": "Hook",
-      "duration": "0-3s",
-      "shot": "Close-up selfie",
-      "voiceover": "Voiceover text (${tone} tone, ${language} language)",
-      "on_screen_text": "Short punchy text"
-    },
-    {
-      "scene": "Setup",
-      "duration": "3-7s",
-      "shot": "Medium shot",
-      "voiceover": "Voiceover text",
-      "on_screen_text": "On-screen text"
-    },
-    {
-      "scene": "Problem/Story",
-      "duration": "7-10s",
-      "shot": "Wide shot",
-      "voiceover": "Voiceover text",
-      "on_screen_text": "On-screen text"
-    },
-    {
-      "scene": "Solution/Value",
-      "duration": "10-13s",
-      "shot": "Close-up",
-      "voiceover": "Voiceover text",
-      "on_screen_text": "On-screen text"
-    },
-    {
-      "scene": "CTA",
-      "duration": "13-${duration}",
-      "shot": "Selfie",
-      "voiceover": "Voiceover text",
-      "on_screen_text": "Call to action"
-    }
-  ],
-  "cta": "Call to action text (${audience} audience, ${language} language)",
-  "caption": "Short reel caption (under 150 chars, ${tone} tone, ${language} language)",
-  "hashtags": ["#reels", "#${topic.toLowerCase().replace(/\s+/g, '')}", "#viral", "#instagram", "#${tone.toLowerCase()}"]
-}
+HOOK (0-${hookEnd} seconds):
+- 1-2 highly scroll-stopping lines
+- Use ${selectedHookStyle} style
+- Approach: ${selectedAngle}
+- Must create curiosity / shock / emotion
 
-CRITICAL:
-- Generate EXACTLY 3 hooks (all scroll-stopping)
-- Generate 4-6 scenes (based on ${duration} duration)
-- Each scene MUST have: scene name, duration, shot type, voiceover, on_screen_text
-- Language "${language}" MUST be strictly followed
-- Tone "${tone}" MUST be visible in every word
-- Audience "${audience}" MUST affect CTA and overall approach
-- NEVER reuse content from previous generations
-- Return STRICT JSON only (no markdown, no extra text)`;
+BODY (Main Content):
+- Clear storytelling or explanation
+- Broken into short spoken lines
+- Natural pauses
+- Emotion + relatability
+- Match ${tone} tone perfectly
+- Duration: ${hookEnd}-${ctaStart} seconds
+
+CTA (Last ${durationSeconds - ctaStart} seconds):
+- Creative call to action
+- Type: ${selectedCTA}
+- Must be different from previous generations
+- Natural and engaging
+
+BONUS RULES:
+- Add natural emojis (not too many, 1-3 max)
+- Use conversational language
+- Match the selected tone perfectly
+- If language is Hinglish, mix Hindi + English naturally
+- If duration is short (15s), keep lines crisp
+- If duration is long (30s+), add depth and storytelling
+- Write for ${audience} audience specifically
+
+ANTI-REPETITION LOGIC:
+- Change angle every time (using ${selectedAngle} approach)
+- Change hook style every generation (using ${selectedHookStyle} style)
+- Change CTA wording every generation (using ${selectedCTA} variation)
+- Use fresh vocabulary and sentence structures
+- Vary emotional intensity and pacing
+
+OUTPUT:
+Return ONLY the full reels script in this exact format:
+
+HOOK (0-${hookEnd}s):
+[Your scroll-stopping hook here - 1-2 lines max]
+
+BODY:
+[Your main content here - broken into short spoken lines, natural pauses, ${tone} tone]
+
+CTA:
+[Your creative call to action here - ${selectedCTA} style]
+
+No explanation.
+No headings outside the required structure.
+No markdown.
+Just the script text in the format above.`;
 }
 
 
