@@ -1958,11 +1958,17 @@ async function generateReelsScript(req, res) {
     console.log(`[generateReelsScript] ✅ Fallback script generated - hooks: ${fallbackScript.hooks?.length || 0}, scenes: ${fallbackScript.script?.length || 0}`);
     
     const transformedData = transformScriptData(fallbackScript, language.trim(), topic.trim(), finalDuration);
+    
+    // Generate full script text (like ChatGPT format)
+    const fullScript = generateFullScriptText(transformedData, null, language.trim());
+    transformedData.fullScript = fullScript;
+    
     console.log(`[generateReelsScript] ✅ Transformed data ready:`);
     console.log(`[generateReelsScript]    - hook: "${transformedData.hook?.substring(0, 50)}..."`);
     console.log(`[generateReelsScript]    - scene_by_scene: ${transformedData.scene_by_scene?.length || 0} scenes`);
     console.log(`[generateReelsScript]    - cta: "${transformedData.cta?.substring(0, 30)}..."`);
     console.log(`[generateReelsScript]    - hashtags: ${transformedData.hashtags?.length || 0} tags`);
+    console.log(`[generateReelsScript]    - fullScript: ${fullScript.length} characters`);
     
     // Update job with completed status and data
     updateJob(jobId, 'completed', { data: transformedData });
@@ -2030,6 +2036,9 @@ async function generateReelsScript(req, res) {
                `Check out this amazing content about ${topic.trim()}`,
       hashtags: ['#reels', '#viral', '#instagram', '#content', '#trending', '#fyp', '#explore', '#growth', '#success', '#motivation']
     };
+    
+    // Generate full script text for basic data
+    basicData.fullScript = generateFullScriptText(basicData, null, language.trim());
     
     updateJob(jobId, 'completed', { data: basicData });
     console.log(`[generateReelsScript] ✅ Returning basic fallback data for job ${jobId}`);
@@ -2105,12 +2114,15 @@ function getJobStatus(req, res) {
           break;
         case 'reels-script':
           const fallbackScript = getFallbackReelsScript(job.language || 'English', job.topic || 'motivation', job.duration || '15s');
-          response.data = transformScriptData(
+          const fallbackTransformed = transformScriptData(
             fallbackScript,
             job.language || 'English',
             job.topic || 'motivation',
             job.duration || '15s'
           );
+          // Generate full script text
+          fallbackTransformed.fullScript = generateFullScriptText(fallbackTransformed, null, job.language || 'English');
+          response.data = fallbackTransformed;
           break;
         case 'post-ideas':
           response.data = [];
