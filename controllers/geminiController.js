@@ -1534,7 +1534,238 @@ function extractReelsScriptFromText(text, language = 'English') {
 }
 
 /**
- * Generate reels script prompt
+ * Extract parameters from free-text user input (ChatGPT-style)
+ * Uses AI-like intelligence to understand user intent
+ */
+function extractParamsFromUserInput(userInput) {
+  const input = userInput.toLowerCase();
+  
+  // Extract duration (more flexible matching)
+  let duration = '15s';
+  if (input.match(/\b(30\s*sec|30s|thirty|30\s*second)\b/)) {
+    duration = '30s';
+  } else if (input.match(/\b(60\s*sec|60s|sixty|1\s*min|one\s*minute|60\s*second)\b/)) {
+    duration = '60s';
+  } else if (input.match(/\b(15\s*sec|15s|fifteen|15\s*second|short|quick)\b/)) {
+    duration = '15s';
+  }
+  
+  // Extract language (more flexible matching)
+  let language = 'English';
+  if (input.match(/\b(hinglish|hindi\s*english|mix|mixed)\b/)) {
+    language = 'Hinglish';
+  } else if (input.match(/\b(hindi|हिंदी)\b/) && !input.includes('hinglish')) {
+    language = 'Hindi';
+  }
+  
+  // Extract tone (more comprehensive matching)
+  let tone = 'motivational';
+  if (input.match(/\b(funny|humor|comedy|joke|hilarious|laugh)\b/)) {
+    tone = 'funny';
+  } else if (input.match(/\b(motivational|motivate|inspire|inspirational|uplifting|empower)\b/)) {
+    tone = 'motivational';
+  } else if (input.match(/\b(emotional|feeling|heartfelt|touching|sad|happy|love)\b/)) {
+    tone = 'emotional';
+  } else if (input.match(/\b(educational|teach|explain|learn|tutorial|how\s*to|tips)\b/)) {
+    tone = 'educational';
+  } else if (input.match(/\b(story|storytelling|narrative|tale|journey|experience)\b/)) {
+    tone = 'storytelling';
+  } else if (input.match(/\b(dramatic|bold|confident|attitude|powerful|intense|strong)\b/)) {
+    tone = 'dramatic';
+  }
+  
+  // Extract audience (more comprehensive matching)
+  let audience = 'general';
+  if (input.match(/\b(student|college|school|university|exam|study)\b/)) {
+    audience = 'students';
+  } else if (input.match(/\b(creator|influencer|content\s*creator|youtuber|tiktoker)\b/)) {
+    audience = 'creators';
+  } else if (input.match(/\b(business|brand|company|professional|entrepreneur|startup|marketing)\b/)) {
+    audience = 'business';
+  }
+  
+  // Extract topic - keep the main content, remove metadata words
+  let topic = userInput;
+  // Remove duration mentions
+  topic = topic.replace(/\b(15s?|30s?|60s?|15\s*sec|30\s*sec|60\s*sec|1\s*min|fifteen|thirty|sixty|short|quick|long)\b/gi, '');
+  // Remove language mentions
+  topic = topic.replace(/\b(hinglish|hindi|english|in\s*hinglish|in\s*hindi|in\s*english)\b/gi, '');
+  // Remove tone mentions
+  topic = topic.replace(/\b(funny|motivational|emotional|educational|storytelling|dramatic|bold|confident|casual|formal)\b/gi, '');
+  // Remove audience mentions
+  topic = topic.replace(/\b(for\s*student|for\s*creator|for\s*business|for\s*brand|for\s*company)\b/gi, '');
+  // Remove common action words
+  topic = topic.replace(/\b(make|create|generate|write|script|reel|video|about|on|the|a|an)\b/gi, '');
+  topic = topic.trim();
+  
+  // If topic is too short or empty, use original input (cleaned)
+  if (!topic || topic.length < 3) {
+    // Clean original input but keep more context
+    topic = userInput
+      .replace(/\b(make|create|generate|write|script|reel)\b/gi, '')
+      .trim();
+  }
+  
+  // Limit topic length but keep meaningful content
+  if (topic.length > 200) {
+    topic = topic.substring(0, 200).trim();
+  }
+  
+  return {
+    topic: topic || userInput.substring(0, 100), // Fallback to first 100 chars of input
+    duration,
+    tone,
+    audience,
+    language
+  };
+}
+
+/**
+ * Generate reels script prompt (ChatGPT-style with free text input)
+ * @param {string} userInput - Free text user input describing the reel
+ * @param {object} extractedParams - Extracted parameters {topic, duration, tone, audience, language}
+ * @param {string} generationId - Unique generation ID
+ * @param {string} creativeSeed - Creative seed for uniqueness
+ * @param {boolean} regenerate - Whether this is a regenerate request
+ * @returns {string} - Formatted prompt
+ */
+function reelsScriptPromptChatGPT(userInput, extractedParams, generationId, creativeSeed, regenerate) {
+  const { topic, duration, tone, audience, language } = extractedParams;
+  const durationSeconds = parseInt(duration.replace('s', '')) || 15;
+  const hookEnd = Math.min(3, durationSeconds);
+  const ctaStart = Math.max(durationSeconds - 3, hookEnd + 2);
+  
+  const regenerateWarning = regenerate 
+    ? `\n\n🚨🚨🚨 REGENERATE MODE - USER PRESSED REGENERATE BUTTON 🚨🚨🚨\n\nCRITICAL: Generate a COMPLETELY FRESH script with:\n- NEW hook angle and approach (different from previous)\n- NEW storytelling structure\n- NEW wording (zero word reuse)\n- NEW CTA style\n- NEW emotional angle\n\nDO NOT reuse ANYTHING from previous generation. Think of this as ChatGPT generating a completely new response.\n\n`
+    : '';
+
+  const languageGuidelines = language === 'Hindi' 
+    ? 'Write EVERYTHING in pure Hindi (Devanagari script). No English words. Use natural Hindi expressions.'
+    : language === 'Hinglish'
+    ? 'Mix Hindi and English naturally (e.g., "Kya baat hai! This is amazing"). Use conversational Hinglish that feels authentic.'
+    : 'Write EVERYTHING in pure English. Use natural, conversational English.';
+
+  const toneGuidelines = {
+    'funny': 'Playful, witty, humorous, light-hearted, entertaining, use natural jokes and relatable humor',
+    'motivational': 'Inspiring, empowering, action-driven, encouraging, uplifting, goal-oriented',
+    'emotional': 'Heartfelt, feeling-based, intimate, tender, passionate, emotionally resonant',
+    'educational': 'Informative, clear, value-driven, teaching-focused, practical, helpful',
+    'storytelling': 'Narrative-driven, engaging story, relatable characters, plot-driven, immersive',
+    'dramatic': 'Intense, powerful, attention-grabbing, high-impact, compelling, strong emotions'
+  };
+
+  const audienceGuidelines = {
+    'creators': 'Creator-focused, engagement-driven, community-oriented, interactive CTAs (comment, save, share)',
+    'business': 'Professional, value-focused, results-oriented, business CTAs (learn more, visit link, get started)',
+    'students': 'Student-friendly, relatable, educational, practical CTAs (save for later, share with friends)',
+    'general': 'Universal appeal, relatable to everyone, broad CTAs (follow, like, share)'
+  };
+
+  // Generate unique variation token
+  const variationToken = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${creativeSeed.substring(0, 20)}`;
+
+  // Anti-repetition angles
+  const angles = ['story', 'question', 'myth', 'POV', 'mistake', 'truth', 'secret', 'transformation', 'confession', 'challenge'];
+  const hookStyles = ['curiosity', 'shock', 'emotion', 'question', 'statement', 'story', 'confession', 'transformation'];
+  const ctaVariations = ['comment', 'save', 'share', 'follow', 'DM', 'like', 'bookmark', 'tag', 'try', 'test'];
+
+  // Randomly select angle and style for this generation
+  const selectedAngle = angles[Math.floor(Math.random() * angles.length)];
+  const selectedHookStyle = hookStyles[Math.floor(Math.random() * hookStyles.length)];
+  const selectedCTA = ctaVariations[Math.floor(Math.random() * ctaVariations.length)];
+
+  return `You are a professional Instagram Reels script writer.
+Generate a COMPLETE, HIGH-QUALITY Instagram Reel script every time.
+The output must feel human-written, viral, and never repetitive.
+
+🎲 CREATIVE_SEED: ${creativeSeed}
+🆔 REQUEST_ID: ${generationId}
+📅 TIMESTAMP: ${Date.now()}
+🔄 VARIATION_TOKEN: ${variationToken}
+📐 SELECTED_ANGLE: ${selectedAngle}
+🎯 HOOK_STYLE: ${selectedHookStyle}
+📢 CTA_TYPE: ${selectedCTA}
+${regenerateWarning}
+
+CORE RULES (VERY IMPORTANT):
+1. NEVER repeat the same hook, structure, or CTA for the same topic.
+2. Every generation must feel fresh, creative, and unique.
+3. Write like a real content creator, not like an AI.
+4. Use short punchy lines suitable for speaking in a reel.
+5. Avoid generic lines like "This will change your life" unless creatively rewritten.
+
+USER REQUEST:
+"${userInput}"
+
+EXTRACTED PARAMETERS:
+- Topic/Theme: ${topic}
+- Duration: ${duration} (${durationSeconds} seconds)
+- Tone: ${tone} → ${toneGuidelines[tone.toLowerCase()] || 'Professional and engaging'}
+- Language: ${language} → ${languageGuidelines}
+- Target Audience: ${audience} → ${audienceGuidelines[audience.toLowerCase()] || 'General audience'}
+
+SCRIPT STRUCTURE (MANDATORY):
+Return the script ONLY in the following structure:
+
+HOOK (0-${hookEnd} seconds):
+- 1-2 powerful scroll-stopping lines
+- Use ${selectedHookStyle} style
+- Approach: ${selectedAngle}
+- Must create curiosity / shock / emotion
+
+BODY:
+- Clear flow of thoughts or story
+- Short spoken lines
+- Natural pauses
+- Emotional or value-driven
+- Match ${tone} tone perfectly
+- Duration: ${hookEnd}-${ctaStart} seconds
+
+CTA (Last ${durationSeconds - ctaStart} seconds):
+- Creative call-to-action
+- Type: ${selectedCTA}
+- Must be different from previous generations
+- Natural and engaging
+
+LANGUAGE RULES:
+- ${languageGuidelines}
+- Match tone perfectly (${tone})
+
+ANTI-REPETITION LOGIC:
+- Change the angle every time (using ${selectedAngle} approach)
+- Change hook style every generation (using ${selectedHookStyle} style)
+- Change CTA wording every generation (using ${selectedCTA} variation)
+- Use fresh vocabulary and sentence structures
+- Vary emotional intensity and pacing
+
+CREATIVITY RULES:
+- Use emojis naturally (not excessive, 1-3 max)
+- Add pauses and punch
+- Make it feel viral and relatable
+- Respect reel duration (short = crisp, long = deeper)
+
+OUTPUT RULES:
+- Return ONLY the final reel script
+- No explanations
+- No markdown
+- No extra text
+- Just the script in the format above
+
+OUTPUT FORMAT:
+HOOK (0-${hookEnd}s):
+[Your scroll-stopping hook here - 1-2 lines max]
+
+BODY:
+[Your main content here - broken into short spoken lines, natural pauses]
+[Write each line on a new line for clarity]
+[Make it feel natural and conversational]
+
+CTA:
+[Your creative call to action here - ${selectedCTA} style]`;
+}
+
+/**
+ * Generate reels script prompt (Old format - for backward compatibility)
  * @param {string} topic - Topic for the reel
  * @param {string} duration - Duration (7s, 10s, 15s, 30s, 60s)
  * @param {string} tone - Tone (Funny, Motivational, Attitude, Emotional, Aesthetic)
@@ -1683,10 +1914,12 @@ IMPORTANT:
  * Background processing function for reels script (handles errors with fallback)
  * Wraps the main processing logic to ensure fallback on any error
  */
-async function processReelsScript(jobId, topic, duration, tone, audience, language, regenerate) {
+async function processReelsScript(jobId, userInput, extractedParams, regenerate) {
   try {
     // Main processing logic (moved inline to avoid duplicate function)
     console.log(`[processReelsScript] Starting background processing for job: ${jobId}`);
+    
+    const { topic, duration, tone, audience, language } = extractedParams;
     
     // Generate UNIQUE generationId for EVERY request (especially for regenerate)
     const finalRequestId = `REELS-${Date.now()}-${Math.random()}-${topic.trim().substring(0, Math.min(topic.trim().length, 10))}-${regenerate ? 'REGEN' : 'NEW'}`;
@@ -1695,11 +1928,13 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
     // Generate UNIQUE creative seed
     const creativeSeed = `${uuidv4()}-${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 10)}-${finalRequestId.substring(0, Math.min(finalRequestId.length, 20))}`;
     
-    console.log(`[processReelsScript] Topic: ${topic}, Duration: ${duration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
+    console.log(`[processReelsScript] User Input: "${userInput}"`);
+    console.log(`[processReelsScript] Extracted - Topic: ${topic}, Duration: ${duration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
     console.log(`[processReelsScript] Regenerate: ${regenerate ? 'YES' : 'NO'}`);
     
     console.log(`[processReelsScript] Job ${jobId} - Calling Gemini API...`);
-    const prompt = reelsScriptPrompt(topic.trim(), duration, tone.trim(), audience.trim(), language.trim(), generationId, creativeSeed, regenerate);
+    // Use ChatGPT-style prompt with free text input
+    const prompt = reelsScriptPromptChatGPT(userInput, extractedParams, generationId, creativeSeed, regenerate);
     console.log(`[processReelsScript] Job ${jobId} - Prompt length: ${prompt.length} characters`);
     console.log(`[processReelsScript] Job ${jobId} - Using model: ${process.env.GEMINI_MODEL || 'gemini-3-flash-preview'}`);
     
@@ -1751,10 +1986,10 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
     console.log('[processReelsScript] ✅ Using REAL Gemini API response');
     
     // Transform to required format
-    const transformedData = transformScriptData(scriptData, language, topic, duration);
+    const transformedData = transformScriptData(scriptData, extractedParams.language, extractedParams.topic, extractedParams.duration);
     
     // Generate full script text (like ChatGPT format)
-    const fullScript = generateFullScriptText(transformedData, output, language);
+    const fullScript = generateFullScriptText(transformedData, output, extractedParams.language);
     transformedData.fullScript = fullScript;
     
     // Update job with completed status and data
@@ -1919,34 +2154,61 @@ function transformScriptData(scriptData, language, topic, duration) {
  * Frontend polls GET /ai/job-status/:jobId for completion
  */
 async function generateReelsScript(req, res) {
-  const { topic, duration = '15s', tone = 'Motivational', audience = 'Creator', language = 'English', regenerate = false } = req.body || {};
+  // Accept either old format (topic, duration, etc.) or new format (userInput)
+  const { userInput, topic, duration, tone, audience, language, regenerate = false } = req.body || {};
   
-  // Validate required parameters
-  if (!topic || topic.trim() === '') {
-    return res.status(400).json({ success: false, error: 'Topic is required', data: {} });
+  // If userInput is provided, use new ChatGPT-style approach
+  // Otherwise, fall back to old format for backward compatibility
+  let finalUserInput = '';
+  let extractedParams = {
+    topic: '',
+    duration: '15s',
+    tone: 'motivational',
+    audience: 'general',
+    language: 'English'
+  };
+  
+  if (userInput && userInput.trim() !== '') {
+    // New ChatGPT-style: Extract parameters from free text
+    finalUserInput = userInput.trim();
+    extractedParams = extractParamsFromUserInput(finalUserInput);
+  } else if (topic && topic.trim() !== '') {
+    // Old format: Use provided parameters
+    finalUserInput = topic.trim();
+    extractedParams = {
+      topic: topic.trim(),
+      duration: duration || '15s',
+      tone: tone || 'motivational',
+      audience: audience || 'general',
+      language: language || 'English'
+    };
+  } else {
+    return res.status(400).json({ success: false, error: 'Please provide either userInput or topic', data: {} });
   }
   
   // Validate duration (15s, 30s, 60s only)
   const validDurations = ['15s', '30s', '60s'];
-  const finalDuration = validDurations.includes(duration) ? duration : '15s';
+  const finalDuration = validDurations.includes(extractedParams.duration) ? extractedParams.duration : '15s';
   
   // Generate unique job ID
   const jobId = generateJobId('REELS');
   
   console.log(`[generateReelsScript] ==========================================`);
   console.log(`[generateReelsScript] NEW REQUEST - Job ${jobId}`);
-  console.log(`[generateReelsScript] Topic: "${topic}", Duration: ${finalDuration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
+  console.log(`[generateReelsScript] User Input: "${finalUserInput}"`);
+  console.log(`[generateReelsScript] Extracted - Topic: "${extractedParams.topic}", Duration: ${finalDuration}, Tone: ${extractedParams.tone}, Audience: ${extractedParams.audience}, Language: ${extractedParams.language}`);
   console.log(`[generateReelsScript] ==========================================`);
   
   // Create job with queued status in jobStore
   createJob(jobId, {
     type: 'reels-script',
     status: 'queued',
-    topic: topic.trim(),
+    userInput: finalUserInput,
+    topic: extractedParams.topic,
     duration: finalDuration,
-    tone: tone.trim(),
-    audience: audience.trim(),
-    language: language.trim(),
+    tone: extractedParams.tone,
+    audience: extractedParams.audience,
+    language: extractedParams.language,
     regenerate: regenerate
   });
   
@@ -1954,13 +2216,13 @@ async function generateReelsScript(req, res) {
   // This ensures Flutter app always gets data, even when Gemini models fail
   try {
     console.log(`[generateReelsScript] ⚡ IMMEDIATE FALLBACK MODE - Generating fallback script NOW`);
-    const fallbackScript = getFallbackReelsScript(language.trim(), topic.trim(), finalDuration);
+    const fallbackScript = getFallbackReelsScript(extractedParams.language, extractedParams.topic, finalDuration);
     console.log(`[generateReelsScript] ✅ Fallback script generated - hooks: ${fallbackScript.hooks?.length || 0}, scenes: ${fallbackScript.script?.length || 0}`);
     
-    const transformedData = transformScriptData(fallbackScript, language.trim(), topic.trim(), finalDuration);
+    const transformedData = transformScriptData(fallbackScript, extractedParams.language, extractedParams.topic, finalDuration);
     
     // Generate full script text (like ChatGPT format)
-    const fullScript = generateFullScriptText(transformedData, null, language.trim());
+    const fullScript = generateFullScriptText(transformedData, null, extractedParams.language);
     transformedData.fullScript = fullScript;
     
     console.log(`[generateReelsScript] ✅ Transformed data ready:`);
@@ -1987,7 +2249,7 @@ async function generateReelsScript(req, res) {
       updateJob(jobId, 'processing');
       console.log(`[generateReelsScript] 🔄 Job ${jobId} - Attempting Gemini API in background (non-blocking)...`);
       
-      processReelsScript(jobId, topic.trim(), finalDuration, tone.trim(), audience.trim(), language.trim(), regenerate)
+      processReelsScript(jobId, finalUserInput, extractedParams, regenerate)
         .then(() => {
           console.log(`[generateReelsScript] ✅ Background Gemini succeeded for job ${jobId} - job updated with AI data`);
         })
