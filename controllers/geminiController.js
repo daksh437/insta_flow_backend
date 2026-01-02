@@ -2180,6 +2180,10 @@ async function generateReelsScript(req, res) {
     // New ChatGPT-style: Extract parameters from free text
     finalUserInput = userInput.trim();
     extractedParams = extractParamsFromUserInput(finalUserInput);
+    // Ensure topic is never empty after extraction
+    if (!extractedParams.topic || extractedParams.topic.trim() === '') {
+      extractedParams.topic = finalUserInput.substring(0, 100);
+    }
   } else if (topic && topic.trim() !== '') {
     // Old format: Use provided parameters
     finalUserInput = topic.trim();
@@ -2192,6 +2196,11 @@ async function generateReelsScript(req, res) {
     };
   } else {
     return res.status(400).json({ success: false, error: 'Please provide either userInput or topic', data: {} });
+  }
+  
+  // Final safety check: Ensure topic is never empty
+  if (!extractedParams.topic || extractedParams.topic.trim() === '') {
+    extractedParams.topic = finalUserInput || 'Instagram Reel';
   }
   
   // Validate duration (15s, 30s, 60s only)
