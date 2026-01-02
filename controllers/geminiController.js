@@ -2125,46 +2125,58 @@ function generateFullScriptText(transformedData, rawOutput, language) {
       }
     }
     
-    // Fallback: Build from structured data
-    let fullScript = `🎬 INSTAGRAM REELS SCRIPT\n\n`;
+    // Fallback: Build from structured data - NATURAL FLOW (NO HEADINGS)
+    let fullScript = '';
     
-    // Add Hook
+    // Add Hook (first line, no heading)
     if (transformedData.hook) {
-      fullScript += `📌 HOOK (0-3 seconds):\n${transformedData.hook}\n\n`;
+      fullScript += transformedData.hook.trim();
     }
     
-    // Add Scene by Scene
+    // Add Scene by Scene (natural flow, no headings or timestamps)
     if (transformedData.scene_by_scene && Array.isArray(transformedData.scene_by_scene)) {
-      fullScript += `📝 SCENE-BY-SCENE BREAKDOWN:\n\n`;
       transformedData.scene_by_scene.forEach((scene, index) => {
-        fullScript += `${index + 1}. [${scene.time}] ${scene.visual || 'Scene'}\n`;
-        fullScript += `   "${scene.dialogue || ''}"\n\n`;
+        if (scene.dialogue && scene.dialogue.trim()) {
+          if (fullScript) fullScript += '\n\n';
+          fullScript += scene.dialogue.trim();
+        }
       });
     }
     
-    // Add CTA
+    // Add CTA (last line, no heading)
     if (transformedData.cta) {
-      fullScript += `🎯 CALL TO ACTION:\n${transformedData.cta}\n\n`;
+      if (fullScript) fullScript += '\n\n';
+      fullScript += transformedData.cta.trim();
     }
     
-    // Add Caption
-    if (transformedData.caption) {
-      fullScript += `💬 CAPTION:\n${transformedData.caption}\n\n`;
+    // If still empty, create a basic natural flow
+    if (!fullScript || fullScript.trim().length === 0) {
+      const hook = transformedData.hook || 'Let me share something important with you.';
+      const scenes = (transformedData.scene_by_scene || []).map(s => s.dialogue).filter(d => d && d.trim());
+      const cta = transformedData.cta || 'Save this if it helped you.';
+      
+      fullScript = hook;
+      if (scenes.length > 0) {
+        fullScript += '\n\n' + scenes.join('\n\n');
+      }
+      fullScript += '\n\n' + cta;
     }
     
-    // Add Hashtags
-    if (transformedData.hashtags && transformedData.hashtags.length > 0) {
-      fullScript += `🏷️ HASHTAGS:\n${transformedData.hashtags.join(' ')}\n`;
-    }
-    
-    return fullScript;
+    return fullScript.trim();
   } catch (error) {
     console.error('[generateFullScriptText] Error:', error);
-    // Return basic format if error
-    return `🎬 INSTAGRAM REELS SCRIPT\n\n` +
-           `📌 HOOK:\n${transformedData.hook || 'Start with a scroll-stopping hook'}\n\n` +
-           `📝 CONTENT:\n${(transformedData.scene_by_scene || []).map(s => s.dialogue).join('\n\n')}\n\n` +
-           `🎯 CTA:\n${transformedData.cta || 'Follow for more'}`;
+    // Return basic natural flow if error (NO HEADINGS)
+    const hook = transformedData.hook || 'Let me share something important with you.';
+    const scenes = (transformedData.scene_by_scene || []).map(s => s.dialogue).filter(d => d && d.trim());
+    const cta = transformedData.cta || 'Save this if it helped you.';
+    
+    let errorScript = hook;
+    if (scenes.length > 0) {
+      errorScript += '\n\n' + scenes.join('\n\n');
+    }
+    errorScript += '\n\n' + cta;
+    
+    return errorScript.trim();
   }
 }
 
