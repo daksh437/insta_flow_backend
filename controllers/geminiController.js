@@ -1606,13 +1606,21 @@ function extractParamsFromUserInput(userInput) {
       .trim();
   }
   
+  // Final fallback: if still empty, use original input
+  if (!topic || topic.length < 3) {
+    topic = userInput.trim();
+  }
+  
   // Limit topic length but keep meaningful content
   if (topic.length > 200) {
     topic = topic.substring(0, 200).trim();
   }
   
+  // Ensure topic is never empty
+  const finalTopic = topic || userInput.substring(0, 100) || 'Instagram Reel';
+  
   return {
-    topic: topic || userInput.substring(0, 100), // Fallback to first 100 chars of input
+    topic: finalTopic,
     duration,
     tone,
     audience,
