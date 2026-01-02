@@ -1656,22 +1656,26 @@ ANTI-REPETITION LOGIC:
 - Use fresh vocabulary and sentence structures
 - Vary emotional intensity and pacing
 
-OUTPUT:
-Return ONLY the full reels script in this exact format:
+OUTPUT FORMAT:
+Return the complete script in this EXACT format (copy-paste ready):
 
 HOOK (0-${hookEnd}s):
 [Your scroll-stopping hook here - 1-2 lines max]
 
 BODY:
 [Your main content here - broken into short spoken lines, natural pauses, ${tone} tone]
+[Write each line on a new line for clarity]
+[Make it feel natural and conversational]
 
 CTA:
 [Your creative call to action here - ${selectedCTA} style]
 
-No explanation.
-No headings outside the required structure.
-No markdown.
-Just the script text in the format above.`;
+IMPORTANT:
+- Return ONLY the script text in the format above
+- No explanations before or after
+- No markdown formatting (no **, ##, etc.)
+- Just clean, readable text that can be directly copied and used
+- Make it feel like a real content creator wrote it`;
 }
 
 
@@ -1749,6 +1753,10 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
     // Transform to required format
     const transformedData = transformScriptData(scriptData, language, topic, duration);
     
+    // Generate full script text (like ChatGPT format)
+    const fullScript = generateFullScriptText(transformedData, output, language);
+    transformedData.fullScript = fullScript;
+    
     // Update job with completed status and data
     updateJob(jobId, 'completed', { data: transformedData });
     console.log(`[processReelsScript] ✅ Job ${jobId} status: processing → completed`);
@@ -1760,6 +1768,75 @@ async function processReelsScript(jobId, topic, duration, tone, audience, langua
       error: error.message || 'AI generation failed - Gemini API error'
     });
     throw error;
+  }
+}
+
+/**
+ * Generate full script text in readable format (like ChatGPT)
+ */
+function generateFullScriptText(transformedData, rawOutput, language) {
+  try {
+    // If raw output exists and is in the new format, use it directly
+    if (rawOutput && typeof rawOutput === 'string') {
+      const hookMatch = rawOutput.match(/HOOK\s*\([^)]+\)\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
+      const bodyMatch = rawOutput.match(/BODY\s*:?\s*\n([\s\S]*?)(?=\nCTA\s*:|\n*$)/i);
+      const ctaMatch = rawOutput.match(/CTA\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
+      
+      if (hookMatch && bodyMatch && ctaMatch) {
+        const hook = hookMatch[1].trim();
+        const body = bodyMatch[1].trim();
+        const cta = ctaMatch[1].trim();
+        
+        // Format as complete script
+        return `🎬 INSTAGRAM REELS SCRIPT\n\n` +
+               `📌 HOOK (0-3 seconds):\n${hook}\n\n` +
+               `📝 MAIN CONTENT:\n${body}\n\n` +
+               `🎯 CALL TO ACTION:\n${cta}\n\n` +
+               `💬 CAPTION:\n${transformedData.caption || ''}\n\n` +
+               `🏷️ HASHTAGS:\n${(transformedData.hashtags || []).join(' ')}`;
+      }
+    }
+    
+    // Fallback: Build from structured data
+    let fullScript = `🎬 INSTAGRAM REELS SCRIPT\n\n`;
+    
+    // Add Hook
+    if (transformedData.hook) {
+      fullScript += `📌 HOOK (0-3 seconds):\n${transformedData.hook}\n\n`;
+    }
+    
+    // Add Scene by Scene
+    if (transformedData.scene_by_scene && Array.isArray(transformedData.scene_by_scene)) {
+      fullScript += `📝 SCENE-BY-SCENE BREAKDOWN:\n\n`;
+      transformedData.scene_by_scene.forEach((scene, index) => {
+        fullScript += `${index + 1}. [${scene.time}] ${scene.visual || 'Scene'}\n`;
+        fullScript += `   "${scene.dialogue || ''}"\n\n`;
+      });
+    }
+    
+    // Add CTA
+    if (transformedData.cta) {
+      fullScript += `🎯 CALL TO ACTION:\n${transformedData.cta}\n\n`;
+    }
+    
+    // Add Caption
+    if (transformedData.caption) {
+      fullScript += `💬 CAPTION:\n${transformedData.caption}\n\n`;
+    }
+    
+    // Add Hashtags
+    if (transformedData.hashtags && transformedData.hashtags.length > 0) {
+      fullScript += `🏷️ HASHTAGS:\n${transformedData.hashtags.join(' ')}\n`;
+    }
+    
+    return fullScript;
+  } catch (error) {
+    console.error('[generateFullScriptText] Error:', error);
+    // Return basic format if error
+    return `🎬 INSTAGRAM REELS SCRIPT\n\n` +
+           `📌 HOOK:\n${transformedData.hook || 'Start with a scroll-stopping hook'}\n\n` +
+           `📝 CONTENT:\n${(transformedData.scene_by_scene || []).map(s => s.dialogue).join('\n\n')}\n\n` +
+           `🎯 CTA:\n${transformedData.cta || 'Follow for more'}`;
   }
 }
 
