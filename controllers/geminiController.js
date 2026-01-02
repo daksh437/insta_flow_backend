@@ -1423,7 +1423,8 @@ function extractReelsScriptFromText(text, language = 'English') {
 
   console.log('[extractReelsScriptFromText] Extracting script from plain text, length:', text.length);
   
-  // Try to extract from new format: HOOK, BODY, CTA
+  // NEW FORMAT: Plain text without headings - parse naturally
+  // Try to extract from new format: HOOK, BODY, CTA (for backward compatibility)
   const hookMatch = text.match(/HOOK\s*\([^)]+\)\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
   const bodyMatch = text.match(/BODY\s*:?\s*\n([\s\S]*?)(?=\nCTA\s*:|\n*$)/i);
   const ctaMatch = text.match(/CTA\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
@@ -1483,6 +1484,77 @@ function extractReelsScriptFromText(text, language = 'English') {
       script: script,
       cta: cta,
       caption: `${hook} ${body.substring(0, 100)}...`,
+      hashtags: ['#reels', '#viral', '#instagram', '#content', '#trending']
+    };
+  }
+  
+  // NEW FORMAT: Plain text lines without headings - parse naturally
+  const allLines = text.split('\n').filter(line => line.trim().length > 0);
+  
+  if (allLines.length >= 3) {
+    // First 1-2 lines are likely the hook
+    const hook = allLines.slice(0, Math.min(2, allLines.length)).join(' ').trim();
+    
+    // Last 1-2 lines are likely the CTA
+    const cta = allLines.slice(-2).join(' ').trim();
+    
+    // Middle lines are the body
+    const bodyLines = allLines.slice(Math.min(2, allLines.length), -2);
+    const body = bodyLines.join(' ').trim();
+    
+    // Create script structure
+    const script = [];
+    
+    // Add hook as first scene
+    if (hook) {
+      script.push({
+        scene: 'Hook',
+        duration: '0-3s',
+        shot: 'Close-up selfie',
+        voiceover: hook,
+        on_screen_text: hook.substring(0, Math.min(50, hook.length))
+      });
+    }
+    
+    // Add body scenes (split into 3-4 scenes based on content)
+    if (bodyLines.length > 0) {
+      const scenesCount = Math.min(bodyLines.length, 4);
+      const linesPerScene = Math.ceil(bodyLines.length / scenesCount);
+      
+      for (let i = 0; i < scenesCount; i++) {
+        const startIdx = i * linesPerScene;
+        const endIdx = Math.min(startIdx + linesPerScene, bodyLines.length);
+        const sceneLines = bodyLines.slice(startIdx, endIdx);
+        const sceneText = sceneLines.join(' ');
+        
+        if (sceneText.trim().length > 0) {
+          script.push({
+            scene: i === 0 ? 'Setup' : i === scenesCount - 1 ? 'Value' : 'Story',
+            duration: `${3 + i * 3}-${3 + (i + 1) * 3}s`,
+            shot: i === 0 ? 'Medium shot' : i === scenesCount - 1 ? 'Close-up' : 'Wide shot',
+            voiceover: sceneText,
+            on_screen_text: sceneText.substring(0, Math.min(50, sceneText.length))
+          });
+        }
+      }
+    }
+    
+    // Add CTA as last scene
+    if (cta) {
+      script.push({
+        scene: 'CTA',
+        duration: '13-15s',
+        shot: 'Selfie',
+        voiceover: cta,
+        on_screen_text: cta.substring(0, Math.min(50, cta.length))
+      });
+    }
+    
+    return {
+      hooks: [hook || allLines[0] || ''],
+      script: script,
+      cta: cta || allLines[allLines.length - 1] || '',
+      caption: `${hook || ''} ${body.substring(0, 100)}...`,
       hashtags: ['#reels', '#viral', '#instagram', '#content', '#trending']
     };
   }
@@ -1682,9 +1754,10 @@ function reelsScriptPromptChatGPT(userInput, extractedParams, generationId, crea
   const selectedHookStyle = hookStyles[Math.floor(Math.random() * hookStyles.length)];
   const selectedCTA = ctaVariations[Math.floor(Math.random() * ctaVariations.length)];
 
-  return `You are a professional Instagram Reels script writer.
-Generate a COMPLETE, HIGH-QUALITY Instagram Reel script every time.
-The output must feel human-written, viral, and never repetitive.
+  return `You are an expert Instagram Reels Script Writer who writes like real creators, not like templates.
+
+GOAL:
+Generate a natural, human-like Instagram Reel script based on the user's free-text prompt, exactly like ChatGPT or Gemini.
 
 🎲 CREATIVE_SEED: ${creativeSeed}
 🆔 REQUEST_ID: ${generationId}
@@ -1695,12 +1768,16 @@ The output must feel human-written, viral, and never repetitive.
 📢 CTA_TYPE: ${selectedCTA}
 ${regenerateWarning}
 
-CORE RULES (VERY IMPORTANT):
-1. NEVER repeat the same hook, structure, or CTA for the same topic.
-2. Every generation must feel fresh, creative, and unique.
-3. Write like a real content creator, not like an AI.
-4. Use short punchy lines suitable for speaking in a reel.
-5. Avoid generic lines like "This will change your life" unless creatively rewritten.
+VERY IMPORTANT – FORMAT RULES:
+❌ Do NOT use headings like:
+- HOOK (0–3s)
+- SCENE-BY-SCENE
+- Scene 1, Scene 2
+- Timestamps
+- BODY
+- CTA
+
+✅ Write the script as a smooth spoken flow, line by line, exactly how a creator would speak in a reel.
 
 USER REQUEST:
 "${userInput}"
@@ -1712,64 +1789,68 @@ EXTRACTED PARAMETERS:
 - Language: ${language} → ${languageGuidelines}
 - Target Audience: ${audience} → ${audienceGuidelines[audience.toLowerCase()] || 'General audience'}
 
-SCRIPT STRUCTURE (MANDATORY):
-Return the script ONLY in the following structure:
-
-HOOK (0-${hookEnd} seconds):
-- 1-2 powerful scroll-stopping lines
-- Use ${selectedHookStyle} style
-- Approach: ${selectedAngle}
-- Must create curiosity / shock / emotion
-
-BODY:
-- Clear flow of thoughts or story
-- Short spoken lines
+SCRIPT STYLE:
+- Short punchy lines
 - Natural pauses
-- Emotional or value-driven
-- Match ${tone} tone perfectly
-- Duration: ${hookEnd}-${ctaStart} seconds
+- Conversational tone
+- Sounds like a human talking to camera
+- Each line on a new line for clarity
 
-CTA (Last ${durationSeconds - ctaStart} seconds):
-- Creative call-to-action
-- Type: ${selectedCTA}
-- Must be different from previous generations
-- Natural and engaging
+STRUCTURE (but DO NOT label it):
+1. Start with a scroll-stopping opening line (use ${selectedHookStyle} style, ${selectedAngle} approach)
+2. Build curiosity / emotion / value
+3. Deliver the core message or story
+4. End with a creative CTA (${selectedCTA} style)
+
+CREATIVITY RULES (STRICT):
+- Never repeat the same opening line twice
+- Never reuse common phrases like:
+  "Are you making this mistake?"
+  "Most people do this"
+  "Did you know?"
+  "This will change your life"
+- Change angle every time (POV, story, confession, hard truth, question, myth-busting)
+- Use fresh vocabulary and sentence structures
+- Vary emotional intensity and pacing
 
 LANGUAGE RULES:
 - ${languageGuidelines}
 - Match tone perfectly (${tone})
+- If Hinglish, mix Hindi + English naturally, not translated
 
-ANTI-REPETITION LOGIC:
-- Change the angle every time (using ${selectedAngle} approach)
-- Change hook style every generation (using ${selectedHookStyle} style)
-- Change CTA wording every generation (using ${selectedCTA} variation)
-- Use fresh vocabulary and sentence structures
-- Vary emotional intensity and pacing
+CTA RULES:
+- CTA must be different every time
+- Type: ${selectedCTA}
+- Examples (rotate creatively): comment, save, follow, share, DM, try this, think about it
+- Make it feel natural, not forced
 
-CREATIVITY RULES:
-- Use emojis naturally (not excessive, 1-3 max)
-- Add pauses and punch
-- Make it feel viral and relatable
-- Respect reel duration (short = crisp, long = deeper)
+ANTI-REPETITION:
+- Assume the user may regenerate multiple times
+- Even with the same prompt, generate a COMPLETELY NEW script
+- Use the variation token (${variationToken}) to force uniqueness
+- Change opening angle, middle content, and CTA every time
 
 OUTPUT RULES:
-- Return ONLY the final reel script
+- Return ONLY the reel script
+- No headings
+- No timestamps
 - No explanations
 - No markdown
-- No extra text
-- Just the script in the format above
+- Just the script text, line by line, as a creator would speak it
 
-OUTPUT FORMAT:
-HOOK (0-${hookEnd}s):
-[Your scroll-stopping hook here - 1-2 lines max]
+EXAMPLE FORMAT (what you should return):
+I used to think success was about perfection.
+But here's what I learned...
+Real growth happens in the messy middle.
+When you're trying, failing, and trying again.
+That's where the magic is.
+So stop waiting for perfect.
+Start with messy.
+Save this if you needed to hear it today.
 
-BODY:
-[Your main content here - broken into short spoken lines, natural pauses]
-[Write each line on a new line for clarity]
-[Make it feel natural and conversational]
+(Notice: No headings, no timestamps, just natural flow)
 
-CTA:
-[Your creative call to action here - ${selectedCTA} style]`;
+Now generate the script for: "${userInput}"`;
 }
 
 /**
