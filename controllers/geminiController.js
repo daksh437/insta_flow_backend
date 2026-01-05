@@ -1756,8 +1756,10 @@ function reelsScriptPromptChatGPT(userInput, extractedParams, generationId, crea
 
   return `You are a professional Instagram Reels Script Writer.
 
-The user will give a free-text prompt describing what kind of reel they want.
-You must behave like ChatGPT or Gemini and fully understand intent, brand, tone, and duration.
+Your task is to generate a reel script STRICTLY based on the user's request.
+
+USER REQUEST:
+"${userInput}"
 
 🎲 CREATIVE_SEED: ${creativeSeed}
 🆔 REQUEST_ID: ${generationId}
@@ -1768,20 +1770,11 @@ You must behave like ChatGPT or Gemini and fully understand intent, brand, tone,
 📢 CTA_TYPE: ${selectedCTA}
 ${regenerateWarning}
 
-STRICT RULES:
-- DO NOT use generic phrases like:
-  "Are you making this mistake"
-  "Did you know this"
-  "Most people do this"
-  "This will change your life"
-  "Don't miss this"
-  "Follow for more"
-- DO NOT use templates or placeholders
-- DO NOT write robotic or list-style lines
-- DO NOT use headings, timestamps, or labels
-
-USER REQUEST:
-"${userInput}"
+STRICT INTERPRETATION RULES:
+- If a brand name is mentioned, the script MUST clearly reflect that brand's vibe, identity, and context.
+- Do NOT ignore the brand.
+- Do NOT generate a generic motivational script unless the user explicitly asks for it.
+- The script must directly relate to what the user requested.
 
 EXTRACTED PARAMETERS:
 - Topic/Theme: ${topic}
@@ -1790,27 +1783,29 @@ EXTRACTED PARAMETERS:
 - Language: ${language} → ${languageGuidelines}
 - Target Audience: ${audience} → ${audienceGuidelines[audience.toLowerCase()] || 'General audience'}
 
-SCRIPT STYLE:
-- Write like a real creator talking to camera
-- Natural spoken flow
-- Short punchy lines
-- Emotion + confidence + clarity
-- Each line on a new line for clarity
-- Sounds authentic and human, not AI-generated
+DURATION RULE:
+- The script must fit a ${durationSeconds}-second Instagram Reel.
+- Keep it concise and spoken-friendly.
+- Each line on a new line for clarity.
 
-BRAND RULES:
-- If a brand name is mentioned (example: Adidas, Nike, Apple, etc.),
-  write a brand-aligned script:
-  confident, premium, energetic, lifestyle-focused
-- Match the brand's personality and values
-- Do NOT use copyrighted slogans
-- Do NOT claim official brand endorsement
-- Write as if you're a creator promoting the brand naturally
+BRAND SAFETY RULES:
+- Do not claim official brand endorsement.
+- Do not use copyrighted slogans.
+- You may reference brand identity indirectly (example: style, mindset, visual cues).
+- If a brand is mentioned, the brand influence must be obvious in the script.
+
+STYLE RULES:
+- Sound like a real human creator speaking to camera.
+- Natural flow, no headings, no lists.
+- No generic hooks like "Did you know", "Are you making this mistake", "Most people do this".
+- Short punchy lines.
+- Emotion + confidence + clarity.
+- Sounds authentic and human, not AI-generated.
 
 STRUCTURE (do NOT label):
 - Start with a powerful opening line (use ${selectedHookStyle} style, ${selectedAngle} approach)
 - Build momentum
-- Highlight value or story
+- Highlight value or story related to the user's request
 - End with a strong CTA (${selectedCTA} style)
 
 UNIQUENESS (MANDATORY):
@@ -1833,7 +1828,9 @@ CTA RULES:
 - Strong and confident, not begging
 
 OUTPUT RULES:
-- Return ONLY the final reel script
+- Output ONLY the reel script.
+- The script must clearly relate to the user request.
+- If the request mentions a brand, the brand influence must be obvious.
 - No headings
 - No bullet points
 - No timestamps
@@ -1841,19 +1838,7 @@ OUTPUT RULES:
 - No markdown
 - Just the script text, line by line, as a creator would speak it
 
-EXAMPLE FORMAT (what you should return):
-I used to think success was about perfection.
-But here's what I learned...
-Real growth happens in the messy middle.
-When you're trying, failing, and trying again.
-That's where the magic is.
-So stop waiting for perfect.
-Start with messy.
-Save this if you needed to hear it today.
-
-(Notice: No headings, no timestamps, no generic phrases, just natural flow)
-
-Now generate the script for: "${userInput}"`;
+Now generate the reel script.`;
 }
 
 /**
