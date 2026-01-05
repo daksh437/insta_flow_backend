@@ -2035,13 +2035,23 @@ async function processReelsScript(jobId, userInput, extractedParams, regenerate)
     
     console.log(`[processReelsScript] Unique Seed: ${uniqueSeed}`);
     
+    // DEBUG: Log the exact prompt being sent to Gemini
+    console.log(`[processReelsScript] 📤 PROMPT SENT TO GEMINI (first 500 chars):`);
+    console.log(prompt.substring(0, 500));
+    console.log(`[processReelsScript] 📤 Full prompt length: ${prompt.length} characters`);
+    
     const output = await runGemini(prompt, {
       maxTokens: 2048,
-      temperature: 1.0,
-      topP: 0.95,
-      topK: 50,
+      temperature: 0.9,
+      topP: 1,
+      topK: 40,
       randomSeed: uniqueSeed
     });
+    
+    // DEBUG: Log the exact response received from Gemini
+    console.log(`[processReelsScript] 📥 RESPONSE RECEIVED FROM GEMINI (first 500 chars):`);
+    console.log(output ? output.substring(0, 500) : 'NULL');
+    console.log(`[processReelsScript] 📥 Full response length: ${output?.length || 0} characters`);
     
     console.log(`[processReelsScript] Job ${jobId} - ✅ Gemini API success, response length: ${output?.length || 0}`);
     
@@ -2329,104 +2339,47 @@ async function generateReelsScript(req, res) {
     regenerate: regenerate
   });
   
-  // IMMEDIATE RESPONSE MODE: Generate fallback script and return data immediately
-  // This ensures Flutter app always gets data, even when Gemini models fail
-  try {
-    console.log(`[generateReelsScript] ⚡ IMMEDIATE FALLBACK MODE - Generating fallback script NOW`);
-    const fallbackScript = getFallbackReelsScript(extractedParams.language, extractedParams.topic, finalDuration);
-    console.log(`[generateReelsScript] ✅ Fallback script generated - hooks: ${fallbackScript.hooks?.length || 0}, scenes: ${fallbackScript.script?.length || 0}`);
-    
-    const transformedData = transformScriptData(fallbackScript, extractedParams.language, extractedParams.topic, finalDuration);
-    
-    // Generate full script text (like ChatGPT format)
-    const fullScript = generateFullScriptText(transformedData, null, extractedParams.language);
-    transformedData.fullScript = fullScript;
-    
-    console.log(`[generateReelsScript] ✅ Transformed data ready:`);
-    console.log(`[generateReelsScript]    - hook: "${transformedData.hook?.substring(0, 50)}..."`);
-    console.log(`[generateReelsScript]    - scene_by_scene: ${transformedData.scene_by_scene?.length || 0} scenes`);
-    console.log(`[generateReelsScript]    - cta: "${transformedData.cta?.substring(0, 30)}..."`);
-    console.log(`[generateReelsScript]    - hashtags: ${transformedData.hashtags?.length || 0} tags`);
-    console.log(`[generateReelsScript]    - fullScript: ${fullScript.length} characters`);
-    
-    // Update job with completed status and data
-    updateJob(jobId, 'completed', { data: transformedData });
-    
-    // CRITICAL: Return data directly in response (Flutter expects this format)
-    console.log(`[generateReelsScript] ✅ SENDING RESPONSE WITH DATA to Flutter app`);
-    console.log(`[generateReelsScript] Response format: { success: true, jobId: "${jobId}", data: {...} }`);
-    res.json({
-      success: true,
-      jobId: jobId,
-      data: transformedData
-    });
-    
-    // Still try Gemini in background (non-blocking) - but don't wait for it
-    setImmediate(() => {
-      updateJob(jobId, 'processing');
-      console.log(`[generateReelsScript] 🔄 Job ${jobId} - Attempting Gemini API in background (non-blocking)...`);
-      
-      processReelsScript(jobId, finalUserInput, extractedParams, regenerate)
-        .then(() => {
-          console.log(`[generateReelsScript] ✅ Background Gemini succeeded for job ${jobId} - job updated with AI data`);
-        })
-        .catch(error => {
-          console.error(`[generateReelsScript] ⚠️ Background Gemini processing error for job ${jobId}:`, error.message);
-          // Job already has fallback data, so this is just for logging - user already got response
+  // CRITICAL: Wait for Gemini API response - NO IMMEDIATE FALLBACK
+  // This ensures user gets REAL AI-generated content, not hardcoded templates
+  console.log(`[generateReelsScript] 🚀 Starting Gemini API call - waiting for REAL AI response...`);
+  
+  // Update job status to processing
+  updateJob(jobId, 'processing');
+  
+  // Process with Gemini API (blocking - wait for response)
+  processReelsScript(jobId, finalUserInput, extractedParams, regenerate)
+    .then(() => {
+      // Get the completed job data
+      const job = getJob(jobId);
+      if (job && job.status === 'completed' && job.data) {
+        console.log(`[generateReelsScript] ✅ Gemini API succeeded - returning REAL AI data`);
+        res.json({
+          success: true,
+          jobId: jobId,
+          data: job.data
         });
+      } else {
+        throw new Error('Job completed but data is missing');
+      }
+    })
+    .catch(error => {
+      console.error(`[generateReelsScript] ❌ Gemini API failed:`, error.message);
+      console.error(`[generateReelsScript] Error stack:`, error.stack);
+      
+      // Update job with error status
+      updateJob(jobId, 'failed', { 
+        data: null,
+        error: error.message || 'AI generation failed'
+      });
+      
+      // Return error response - NO FALLBACK
+      res.status(500).json({
+        success: false,
+        jobId: jobId,
+        error: `AI generation failed: ${error.message}`,
+        data: null
+      });
     });
-  } catch (error) {
-    console.error(`[generateReelsScript] ❌ Error generating fallback script:`, error);
-    // Even if fallback fails, return basic structure
-    const basicData = {
-      hook: language.trim() === 'Hindi' ? 'क्या आप जानते हैं?' : 
-            language.trim() === 'Hinglish' ? 'Kya aap jaante hain?' : 
-            `Did you know about ${topic.trim()}?`,
-      scene_by_scene: [{
-        time: '0-3s',
-        visual: 'Close-up selfie',
-        dialogue: language.trim() === 'Hindi' ? 'यह बहुत महत्वपूर्ण है' : 
-                  language.trim() === 'Hinglish' ? 'Yeh bahut important hai' : 
-                  `Let's talk about ${topic.trim()}`
-      }, {
-        time: '3-8s',
-        visual: 'Medium shot',
-        dialogue: language.trim() === 'Hindi' ? 'आपको यह जानना चाहिए' : 
-                  language.trim() === 'Hinglish' ? 'Aapko yeh jaanna chahiye' : 
-                  'This is something you need to know'
-      }, {
-        time: '8-12s',
-        visual: 'Wide shot',
-        dialogue: language.trim() === 'Hindi' ? 'यह आपकी जिंदगी बदल देगा' : 
-                  language.trim() === 'Hinglish' ? 'Yeh aapki life badal dega' : 
-                  'This will change your life'
-      }, {
-        time: '12-15s',
-        visual: 'Selfie',
-        dialogue: language.trim() === 'Hindi' ? 'इस पोस्ट को सेव करें' : 
-                  language.trim() === 'Hinglish' ? 'Is post ko save karein' : 
-                  'Save this post for later'
-      }],
-      cta: language.trim() === 'Hindi' ? 'इस पोस्ट को सेव करें' : 
-           language.trim() === 'Hinglish' ? 'Is post ko save karein' : 
-           'Save this post',
-      caption: language.trim() === 'Hindi' ? `यह ${topic.trim()} के बारे में महत्वपूर्ण जानकारी है` : 
-               language.trim() === 'Hinglish' ? `Yeh ${topic.trim()} ke baare mein important info hai` : 
-               `Check out this amazing content about ${topic.trim()}`,
-      hashtags: ['#reels', '#viral', '#instagram', '#content', '#trending', '#fyp', '#explore', '#growth', '#success', '#motivation']
-    };
-    
-    // Generate full script text for basic data
-    basicData.fullScript = generateFullScriptText(basicData, null, language.trim());
-    
-    updateJob(jobId, 'completed', { data: basicData });
-    console.log(`[generateReelsScript] ✅ Returning basic fallback data for job ${jobId}`);
-    res.json({
-      success: true,
-      jobId: jobId,
-      data: basicData
-    });
-  }
 }
 
 /**
@@ -2492,16 +2445,13 @@ function getJobStatus(req, res) {
           response.data = {};
           break;
         case 'reels-script':
-          const fallbackScript = getFallbackReelsScript(job.language || 'English', job.topic || 'motivation', job.duration || '15s');
-          const fallbackTransformed = transformScriptData(
-            fallbackScript,
-            job.language || 'English',
-            job.topic || 'motivation',
-            job.duration || '15s'
-          );
-          // Generate full script text
-          fallbackTransformed.fullScript = generateFullScriptText(fallbackTransformed, null, job.language || 'English');
-          response.data = fallbackTransformed;
+          // NO FALLBACK - If job failed, return error
+          if (response.status === 'failed' || !response.data) {
+            console.log(`[getJobStatus] Job ${jobId} failed or missing data - returning error (NO FALLBACK)`);
+            response.status = 'failed';
+            response.error = response.error || 'AI generation failed';
+            response.data = null;
+          }
           break;
         case 'post-ideas':
           response.data = [];
