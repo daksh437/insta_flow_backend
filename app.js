@@ -1,14 +1,45 @@
+console.log("🔥 MAIN APP.JS RUNNING");
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const bodyParser = require('body-parser');
 
 const authRoutes = require('./routes/auth');
 const geminiRoutes = require('./routes/gemini');
+const aiAccessRoutes = require('./routes/aiAccess');
 const calendarRoutes = require('./routes/calendar');
+const dailyDropRoutes = require('./routes/dailyDrop');
+const whatsappBotRoutes = require('./routes/whatsappBot');
+const { generateDailyDrop } = require('./services/dailyDropGenerator');
+const cron = require('node-cron');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+// --- Webhook: single handler, registered before all other middleware (no /api, no router) ---
+app.get('/webhook', (req, res) => {
+  console.log('🔥 WEBHOOK HIT');
+
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === 'instaflow_verify_123') {
+    console.log('✅ VERIFIED');
+    return res.status(200).send(challenge);
+  }
+
+  return res.status(403).send('Failed');
+});
+
+// JSON parser must run before POST /webhook so req.body is populated (Meta sends JSON)
+app.use(express.json({ limit: '10mb' }));
+
+app.post('/webhook', (req, res) => {
+  console.log('📩 Incoming:', req.body);
+  res.sendStatus(200);
+});
+
+console.log('[Webhook] GET + POST /webhook registered (single handler, no duplicates)');
 
 // CORS for Flutter/web - Enable for all origins in production
 const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').filter(Boolean);
@@ -17,7 +48,7 @@ app.use(
     origin: corsOrigins.length ? corsOrigins : '*', // Allow all origins if CORS_ORIGINS not set
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'x-user-uid', 'X-User-UID', 'X-Request-Time', 'Cache-Control', 'Pragma', 'Expires'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'x-user-uid', 'X-User-UID', 'X-Request-Time', 'X-Idempotency-Key', 'Cache-Control', 'Pragma', 'Expires'],
   })
 );
 
@@ -29,11 +60,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// Body parsing - increased limit for image uploads
-app.use(bodyParser.json({ limit: '10mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Request logging middleware (before routes)
+// Request logging middleware
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   if (req.body && Object.keys(req.body).length > 0) {
@@ -42,17 +71,20 @@ app.use((req, res, next) => {
   next();
 });
 
-// Routes
+// ROOT
+app.get('/', (req, res) => {
+  res.json({ success: true, message: 'InstaFlow Backend API' });
+});
+
 app.use('/auth', authRoutes);
+app.use('/', aiAccessRoutes); // GET /check-ai-access
 app.use('/ai', geminiRoutes);
 app.use('/calendar', calendarRoutes);
+app.use('/daily-drop', dailyDropRoutes);
+app.use('/', whatsappBotRoutes); // /whatsapp-bot/* — no /webhook here
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', success: true, message: 'OK' });
-});
-
-app.get('/', (_req, res) => {
-  res.json({ success: true, message: 'InstaFlow Backend API' });
 });
 
 // Error handler
@@ -61,31 +93,59 @@ app.use((err, req, res, next) => {
   console.error(`[ERROR] ${new Date().toISOString()} ${req.method} ${req.path}`);
   console.error('[ERROR Details]', err);
   console.error('[ERROR Stack]', err.stack);
-  res.status(500).json({ 
-    success: false, 
+  res.status(500).json({
+    success: false,
     error: 'Internal Server Error',
-    message: err.message || 'Unknown error'
+    message: err.message || 'Unknown error',
   });
 });
 
 // Listen on all network interfaces (0.0.0.0) for cloud deployment
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log('🚀 Server running on port', PORT);
   const env = process.env.NODE_ENV || 'development';
   const apiKey = process.env.GEMINI_API_KEY;
   const modelName = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
   const geminiMode = (apiKey && apiKey.trim() !== '') ? 'REAL MODE' : 'MOCK MODE';
-  
-  console.log(`🚀 InstaFlow backend running on port ${PORT}`);
+  const devSkipLimits = process.env.DEV_SKIP_LIMITS === 'true' || process.env.DEV_SKIP_LIMITS === '1';
+
+  if (env === 'production' && devSkipLimits) {
+    console.error('[FATAL] DEV_SKIP_LIMITS must not be enabled in production. Aborting.');
+    server.close();
+    process.exit(1);
+  }
+
+  // Runtime enforcement audit: every POST /ai/* must have requireAiAccess
+  const { auditAiRoutes } = require('./scripts/auditAiRoutes');
+  try {
+    auditAiRoutes(app);
+  } catch (err) {
+    console.error(err.message);
+    server.close();
+    process.exit(1);
+  }
+
+  console.log('Server running on', PORT);
+  console.log(`🚀 InstaFlow backend running on port ${PORT} (process.env.PORT)`);
+  console.log(`📲 WhatsApp webhook: GET/POST http://0.0.0.0:${PORT}/webhook`);
   console.log(`🌍 Environment: ${env}`);
   console.log(`🤖 Gemini AI: ${geminiMode}`);
   console.log(`🤖 Gemini Model: ${modelName}`);
   console.log(`✅ Server ready for requests!`);
   console.log(`📊 Health check: http://0.0.0.0:${PORT}/health`);
-  
+  console.log(`📅 Daily drop: GET http://0.0.0.0:${PORT}/daily-drop/today`);
+
   if (env === 'production') {
     console.log(`☁️  Production mode: Server accessible from all network interfaces`);
   } else {
     console.log(`💻 Development mode: http://localhost:${PORT}`);
   }
-});
 
+  // Daily Viral Drop: run at 00:00 every day (server time)
+  cron.schedule('0 0 * * *', () => {
+    generateDailyDrop().catch((err) => {
+      console.error('[DailyDrop] Cron job failed:', err);
+    });
+  });
+  console.log('⏰ Daily Viral Drop cron scheduled (00:00 daily)');
+});

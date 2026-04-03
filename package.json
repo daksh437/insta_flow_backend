@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node app.js",
     "dev": "node app.js",
-    "production": "NODE_ENV=production node app.js"
+    "production": "NODE_ENV=production node app.js",
+    "audit:ai-routes": "node scripts/audit-ai-routes.js",
+    "fix:ai-users": "node scripts/fix-ai-user-fields.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
@@ -16,7 +18,9 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "firebase-admin": "^13.6.1",
     "googleapis": "^144.0.0",
+    "node-cron": "^3.0.3",
     "sharp": "^0.34.5",
     "uuid": "^9.0.1"
   },

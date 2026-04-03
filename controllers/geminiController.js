@@ -2,6 +2,18 @@ const { runGemini, runGeminiWithImage } = require('../utils/geminiClient');
 const { processImageForGemini } = require('../utils/imageProcessor');
 const { v4: uuidv4 } = require('uuid');
 const { createJob, updateJob, generateJobId, getJob } = require('../utils/jobStore');
+const { recordAiUsage } = require('../middleware/aiAccess');
+
+/** Only record AI usage when job completes successfully. Request lock: never double-count same job. */
+function completeJobAndRecordUsage(jobId, status, data = {}) {
+  const job = getJob(jobId);
+  const isSuccess = (status === 'completed' || status === 'done') && !data.error;
+  if (job && job.uid && isSuccess && !job.usageRecorded) {
+    job.usageRecorded = true;
+    recordAiUsage(job.uid, jobId);
+  }
+  updateJob(jobId, status, data);
+}
 
 /**
  * Extract JSON from text that may contain markdown wrappers or extra text
@@ -864,13 +876,13 @@ async function processCaptions(jobId, userInput, regenerate, requestId) {
     captions = captions.slice(0, 3);
     
     // Update job with completed status - return 3 captions
-    updateJob(jobId, 'done', { data: captions });
+    completeJobAndRecordUsage(jobId, 'done', { data: captions });
     console.log(`[processCaptions] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
     console.error(`[processCaptions] Error processing job ${jobId}:`, error);
     console.error(`[processCaptions] Error details:`, error.stack);
     const fallback = getFallbackCaptions('English', userInput);
-    updateJob(jobId, 'done', { data: [fallback[0] || { style: 'general', text: 'Ready to create amazing content? Let\'s go! 🚀', hashtags: ['#motivation'] }], error: error.message });
+    completeJobAndRecordUsage(jobId, 'done', { data: [fallback[0] || { style: 'general', text: 'Ready to create amazing content? Let\'s go! 🚀', hashtags: ['#motivation'] }], error: error.message });
   }
 }
 
@@ -884,6 +896,7 @@ async function processCaptions(jobId, userInput, regenerate, requestId) {
  * Non-blocking endpoint - returns jobId immediately, processes in background
  */
 async function generateCaptions(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/captions' }));
   const { userInput, regenerate, requestId } = req.body || {};
   
   // Validate required parameters
@@ -897,6 +910,7 @@ async function generateCaptions(req, res) {
   // Create job with pending status
   createJob(jobId, {
     type: 'captions',
+    uid: req.uid,
     userInput: userInput.trim(),
     regenerate,
   });
@@ -911,12 +925,12 @@ async function generateCaptions(req, res) {
       console.error(`[generateCaptions] Background processing failed for job ${jobId}:`, error);
       console.error(`[generateCaptions] Error stack:`, error.stack);
       const fallback = getFallbackCaptions('English', userInput.trim() || '');
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', {
         data: [fallback[0] || { style: 'general', text: 'Ready to create amazing content! Let\'s go! 🚀', hashtags: ['#motivation'] }],
         error: error.message || 'AI generation failed'
       });
     });
-  
+
   // Return immediately with jobId (NON-BLOCKING)
   console.log(`[generateCaptions] ✅ Returning jobId immediately: ${jobId}`);
   res.json({ 
@@ -959,7 +973,7 @@ async function processCalendar(jobId, topic, days) {
       throw new Error('Invalid calendar data from Gemini API');
     }
     
-    updateJob(jobId, 'completed', { data });
+    completeJobAndRecordUsage(jobId, 'completed', { data });
     console.log(`[processCalendar] ✅ Job ${jobId} completed successfully, data items: ${data.length}`);
   } catch (error) {
     console.error(`[processCalendar] ❌ Error processing job ${jobId}:`, error.message);
@@ -976,6 +990,7 @@ async function processCalendar(jobId, topic, days) {
  * Non-blocking endpoint - returns jobId immediately, processes in background
  */
 async function generateCalendar(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/calendar' }));
   const { topic = 'instagram growth', days = 7 } = req.body || {};
   
   // Generate unique job ID
@@ -984,6 +999,7 @@ async function generateCalendar(req, res) {
   // Create job with pending status
   createJob(jobId, {
     type: 'calendar',
+    uid: req.uid,
     topic: topic.trim(),
     days,
   });
@@ -997,7 +1013,7 @@ async function generateCalendar(req, res) {
     .catch((error) => {
       console.error(`[generateCalendar] Background processing failed for job ${jobId}:`, error);
       // On failure, store fallback result
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: [],
         error: error.message || 'AI generation failed'
       });
@@ -1043,12 +1059,12 @@ async function processStrategy(jobId, niche) {
       throw new Error('Invalid strategy data from Gemini API');
     }
     
-    updateJob(jobId, 'done', { data });
+    completeJobAndRecordUsage(jobId, 'done', { data });
     console.log(`[processStrategy] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
     console.error(`[processStrategy] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processStrategy] Error stack:`, error.stack);
-    updateJob(jobId, 'done', { data: {}, error: error.message || 'AI generation failed' });
+    completeJobAndRecordUsage(jobId, 'done', { data: {}, error: error.message || 'AI generation failed' });
   }
 }
 
@@ -1057,6 +1073,7 @@ async function processStrategy(jobId, niche) {
  * Non-blocking endpoint - returns jobId immediately, processes in background
  */
 async function generateStrategy(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/strategy' }));
   const { niche = 'instagram growth' } = req.body || {};
   
   // Generate unique job ID
@@ -1065,6 +1082,7 @@ async function generateStrategy(req, res) {
   // Create job with pending status
   createJob(jobId, {
     type: 'strategy',
+    uid: req.uid,
     niche: niche.trim(),
   });
   
@@ -1077,7 +1095,7 @@ async function generateStrategy(req, res) {
     .catch((error) => {
       console.error(`[generateStrategy] Background processing failed for job ${jobId}:`, error);
       // On failure, store fallback result
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: {},
         error: error.message || 'AI generation failed'
       });
@@ -1123,12 +1141,12 @@ async function processNicheAnalysis(jobId, topic) {
       throw new Error('Invalid analysis data from Gemini API');
     }
     
-    updateJob(jobId, 'done', { data });
+    completeJobAndRecordUsage(jobId, 'done', { data });
     console.log(`[processNicheAnalysis] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
     console.error(`[processNicheAnalysis] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processNicheAnalysis] Error stack:`, error.stack);
-    updateJob(jobId, 'done', { data: {}, error: error.message || 'AI generation failed' });
+    completeJobAndRecordUsage(jobId, 'done', { data: {}, error: error.message || 'AI generation failed' });
   }
 }
 
@@ -1137,6 +1155,7 @@ async function processNicheAnalysis(jobId, topic) {
  * Non-blocking endpoint - returns jobId immediately, processes in background
  */
 async function analyzeNiche(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/analyze' }));
   const { topic = 'instagram growth' } = req.body || {};
   
   // Generate unique job ID
@@ -1145,6 +1164,7 @@ async function analyzeNiche(req, res) {
   // Create job with pending status
   createJob(jobId, {
     type: 'analyze',
+    uid: req.uid,
     topic: topic.trim(),
   });
   
@@ -1157,7 +1177,7 @@ async function analyzeNiche(req, res) {
     .catch((error) => {
       console.error(`[analyzeNiche] Background processing failed for job ${jobId}:`, error);
       // On failure, store fallback result
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: {},
         error: error.message || 'AI generation failed'
       });
@@ -1172,6 +1192,7 @@ async function analyzeNiche(req, res) {
 }
 
 async function generateImageCaptions(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/image-captions' }));
   const { imageBase64, imageMimeType = 'image/jpeg' } = req.body || {};
   console.log(`[generateImageCaptions] Request received - image size: ${imageBase64?.length || 0} bytes, mimeType: ${imageMimeType}`);
   
@@ -1193,6 +1214,7 @@ async function generateImageCaptions(req, res) {
     console.log('[generateImageCaptions] Gemini response received, length:', output?.length || 0);
     const data = tryParseJson(output, { analysis: {}, captions: [] });
     console.log('[generateImageCaptions] Sending response');
+    if (req.uid) recordAiUsage(req.uid, null, req.idempotencyKey, { endpoint: req._aiEndpoint || req.path || (req.baseUrl ? req.baseUrl + (req.path || '') : '') });
     res.json({ success: true, data });
   } catch (error) {
     console.error('[generateImageCaptions] ERROR:', error.message);
@@ -1207,6 +1229,7 @@ async function generateImageCaptions(req, res) {
 }
 
 async function generateCaptionFromMedia(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/caption-from-media' }));
   const { imageBase64, imageMimeType = 'image/jpeg' } = req.body || {};
   const imageSizeKB = imageBase64 ? Math.round(imageBase64.length / 1024) : 0;
   console.log(`[generateCaptionFromMedia] Request received - image size: ${imageSizeKB} KB, mimeType: ${imageMimeType}`);
@@ -1292,7 +1315,7 @@ async function generateCaptionFromMedia(req, res) {
     const totalDuration = Date.now() - processStartTime;
     console.log(`[generateCaptionFromMedia] ✅ Total processing time: ${totalDuration}ms`);
     console.log(`[generateCaptionFromMedia] Generated ${data.captions.length} captions`);
-    
+    if (req.uid) recordAiUsage(req.uid, null, req.idempotencyKey, { endpoint: req._aiEndpoint || req.path || (req.baseUrl ? req.baseUrl + (req.path || '') : '') });
     res.json({ success: true, data });
   } catch (error) {
     console.error('[generateCaptionFromMedia] ERROR:', error.message);
@@ -2080,7 +2103,7 @@ async function processReelsScript(jobId, userInput, extractedParams, regenerate)
     transformedData.fullScript = fullScript;
     
     // Update job with completed status and data
-    updateJob(jobId, 'completed', { data: transformedData });
+    completeJobAndRecordUsage(jobId, 'completed', { data: transformedData });
     console.log(`[processReelsScript] ✅ Job ${jobId} status: processing → completed`);
   } catch (error) {
     console.error(`[processReelsScript] ❌ Job ${jobId} error:`, error.message);
@@ -2257,6 +2280,7 @@ function transformScriptData(scriptData, language, topic, duration) {
  * Frontend polls GET /ai/job-status/:jobId for completion
  */
 async function generateReelsScript(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/reels-script' }));
   // Accept either old format (topic, duration, etc.) or new format (userInput)
   const { userInput, topic, duration, tone, audience, language, regenerate = false } = req.body || {};
   
@@ -2314,6 +2338,7 @@ async function generateReelsScript(req, res) {
   // Create job with queued status in jobStore
   createJob(jobId, {
     type: 'reels-script',
+    uid: req.uid,
     status: 'queued',
     userInput: finalUserInput,
     topic: extractedParams.topic,
@@ -2479,6 +2504,7 @@ function getJobStatus(req, res) {
  * Generate post ideas using Gemini API
  */
 async function generatePostIdeas(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/post-ideas' }));
   const { topic, niche, count = 5 } = req.body || {};
   
   if (!topic || topic.trim() === '') {
@@ -2489,6 +2515,7 @@ async function generatePostIdeas(req, res) {
   
   createJob(jobId, {
     type: 'post-ideas',
+    uid: req.uid,
     topic: topic.trim(),
     niche: niche || '',
     count: parseInt(count) || 5,
@@ -2501,7 +2528,7 @@ async function generatePostIdeas(req, res) {
   processPostIdeas(jobId, topic.trim(), niche || '', parseInt(count) || 5)
     .catch((error) => {
       console.error(`[generatePostIdeas] Background processing failed for job ${jobId}:`, error);
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: [],
         error: error.message || 'AI generation failed'
       });
@@ -2578,7 +2605,7 @@ Return the ideas as a JSON array with this structure:
     // Ensure we have the requested count
     data = data.slice(0, count);
     
-    updateJob(jobId, 'completed', { data });
+    completeJobAndRecordUsage(jobId, 'completed', { data });
     console.log(`[processPostIdeas] ✅ Job ${jobId} completed successfully, ideas: ${data.length}`);
   } catch (error) {
     console.error(`[processPostIdeas] ❌ Error processing job ${jobId}:`, error.message);
@@ -2595,6 +2622,7 @@ Return the ideas as a JSON array with this structure:
  * Generate hashtags using Gemini API
  */
 async function generateHashtags(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/hashtags' }));
   const { topic, caption, count = 20 } = req.body || {};
   
   if (!topic && !caption) {
@@ -2605,6 +2633,7 @@ async function generateHashtags(req, res) {
   
   createJob(jobId, {
     type: 'hashtags',
+    uid: req.uid,
     topic: topic || '',
     caption: caption || '',
     count: parseInt(count) || 20,
@@ -2617,7 +2646,7 @@ async function generateHashtags(req, res) {
   processHashtags(jobId, topic || '', caption || '', parseInt(count) || 20)
     .catch((error) => {
       console.error(`[generateHashtags] Background processing failed for job ${jobId}:`, error);
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: [],
         error: error.message || 'AI generation failed'
       });
@@ -2694,7 +2723,7 @@ Return the hashtags as a JSON array of strings:
     // Ensure all hashtags start with #
     data = data.map(tag => tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`);
     
-    updateJob(jobId, 'completed', { data });
+    completeJobAndRecordUsage(jobId, 'completed', { data });
     console.log(`[processHashtags] ✅ Job ${jobId} completed successfully, hashtags: ${data.length}`);
   } catch (error) {
     console.error(`[processHashtags] ❌ Error processing job ${jobId}:`, error.message);
@@ -2711,6 +2740,7 @@ Return the hashtags as a JSON array of strings:
  * Generate Instagram bio using Gemini API
  */
 async function generateBio(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/bio' }));
   const { description, style = 'short' } = req.body || {};
   
   if (!description || description.trim() === '') {
@@ -2721,6 +2751,7 @@ async function generateBio(req, res) {
   
   createJob(jobId, {
     type: 'bio',
+    uid: req.uid,
     description: description.trim(),
     style: style,
   });
@@ -2732,7 +2763,7 @@ async function generateBio(req, res) {
   processBio(jobId, description.trim(), style)
     .catch((error) => {
       console.error(`[generateBio] Background processing failed for job ${jobId}:`, error);
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: null,
         error: error.message || 'AI generation failed'
       });
@@ -2810,7 +2841,7 @@ Return ONLY the bio text. No explanations. No labels. Just the bio.
       throw new Error('Invalid bio data from Gemini API - too short');
     }
     
-    updateJob(jobId, 'completed', { data: bio });
+    completeJobAndRecordUsage(jobId, 'completed', { data: bio });
     console.log(`[processBio] ✅ Job ${jobId} completed successfully, bio length: ${bio.length}`);
   } catch (error) {
     console.error(`[processBio] ❌ Error processing job ${jobId}:`, error.message);
@@ -2827,6 +2858,7 @@ Return ONLY the bio text. No explanations. No labels. Just the bio.
  * Generate viral hooks using Gemini API
  */
 async function generateHooks(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/hooks' }));
   const { topic, count = 5 } = req.body || {};
   
   if (!topic || topic.trim() === '') {
@@ -2837,6 +2869,7 @@ async function generateHooks(req, res) {
   
   createJob(jobId, {
     type: 'hooks',
+    uid: req.uid,
     topic: topic.trim(),
     count: count,
   });
@@ -2849,7 +2882,7 @@ async function generateHooks(req, res) {
   processHooks(jobId, topic.trim(), count)
     .catch((error) => {
       console.error(`[generateHooks] Background processing failed for job ${jobId}:`, error);
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: [],
         error: error.message || 'AI generation failed'
       });
@@ -2960,7 +2993,7 @@ Example format:
     // Limit to requested count
     const finalHooks = hooks.slice(0, count);
     
-    updateJob(jobId, 'completed', { data: finalHooks });
+    completeJobAndRecordUsage(jobId, 'completed', { data: finalHooks });
     console.log(`[processHooks] ✅ Job ${jobId} completed successfully with ${finalHooks.length} hooks`);
   } catch (error) {
     console.error(`[processHooks] ❌ Error processing job ${jobId}:`, error.message);
@@ -2977,6 +3010,7 @@ Example format:
  * Generate AI reply to a comment using Gemini API
  */
 async function generateCommentReply(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/comment-reply' }));
   const { comment, tone = 'friendly' } = req.body || {};
   
   if (!comment || comment.trim() === '') {
@@ -2987,6 +3021,7 @@ async function generateCommentReply(req, res) {
   
   createJob(jobId, {
     type: 'comment-reply',
+    uid: req.uid,
     comment: comment.trim(),
     tone: tone,
   });
@@ -2999,7 +3034,7 @@ async function generateCommentReply(req, res) {
   processCommentReply(jobId, comment.trim(), tone)
     .catch((error) => {
       console.error(`[generateCommentReply] Background processing failed for job ${jobId}:`, error);
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: null,
         error: error.message || 'AI generation failed'
       });
@@ -3091,7 +3126,7 @@ Just the reply.
       throw new Error('Invalid reply data from Gemini API - too short');
     }
     
-    updateJob(jobId, 'completed', { data: reply });
+    completeJobAndRecordUsage(jobId, 'completed', { data: reply });
     console.log(`[processCommentReply] ✅ Job ${jobId} completed successfully, reply length: ${reply.length}`);
   } catch (error) {
     console.error(`[processCommentReply] ❌ Error processing job ${jobId}:`, error.message);
@@ -3108,12 +3143,14 @@ Just the reply.
  * Get trending topics, hashtags, and content ideas using Gemini API
  */
 async function generateTrends(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/trends' }));
   const { niche, category = 'All' } = req.body || {};
   
   const jobId = generateJobId('TREND');
   
   createJob(jobId, {
     type: 'trends',
+    uid: req.uid,
     niche: niche || category,
     category: category,
   });
@@ -3125,7 +3162,7 @@ async function generateTrends(req, res) {
   processTrends(jobId, niche || category, category)
     .catch((error) => {
       console.error(`[generateTrends] Background processing failed for job ${jobId}:`, error);
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: { hashtags: [], topics: [], ideas: [] },
         error: error.message || 'AI generation failed'
       });
@@ -3224,7 +3261,7 @@ All should be CURRENT and RELEVANT to Instagram trends.
     trendsData.topics = trendsData.topics || [];
     trendsData.ideas = trendsData.ideas || [];
     
-    updateJob(jobId, 'completed', { data: trendsData });
+    completeJobAndRecordUsage(jobId, 'completed', { data: trendsData });
     console.log(`[processTrends] ✅ Job ${jobId} completed successfully - hashtags: ${trendsData.hashtags.length}, topics: ${trendsData.topics.length}, ideas: ${trendsData.ideas.length}`);
   } catch (error) {
     console.error(`[processTrends] ❌ Error processing job ${jobId}:`, error.message);
@@ -3275,6 +3312,7 @@ function extractTrendsFromText(text) {
  * Generate Instagram carousel post content using Gemini API
  */
 async function generateCarousel(req, res) {
+  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/carousel' }));
   const { topic, slides = 5 } = req.body || {};
   
   if (!topic || topic.trim() === '') {
@@ -3285,6 +3323,7 @@ async function generateCarousel(req, res) {
   
   createJob(jobId, {
     type: 'carousel',
+    uid: req.uid,
     topic: topic.trim(),
     slides: slides,
   });
@@ -3297,7 +3336,7 @@ async function generateCarousel(req, res) {
   processCarousel(jobId, topic.trim(), slides)
     .catch((error) => {
       console.error(`[generateCarousel] Background processing failed for job ${jobId}:`, error);
-      updateJob(jobId, 'done', { 
+      completeJobAndRecordUsage(jobId, 'done', { 
         data: null,
         error: error.message || 'AI generation failed'
       });
@@ -3417,7 +3456,7 @@ Return ONLY valid JSON. No explanations. No markdown code blocks.
       carouselData.caption = `Check out this carousel about ${topic}! 💫`;
     }
     
-    updateJob(jobId, 'completed', { data: carouselData });
+    completeJobAndRecordUsage(jobId, 'completed', { data: carouselData });
     console.log(`[processCarousel] ✅ Job ${jobId} completed successfully - slides: ${carouselData.slides.length}`);
   } catch (error) {
     console.error(`[processCarousel] ❌ Error processing job ${jobId}:`, error.message);
