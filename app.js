@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
+const facebookAuthRoutes = require('./routes/facebookAuth');
 const authRoutes = require('./routes/auth');
 const geminiRoutes = require('./routes/gemini');
 const aiAccessRoutes = require('./routes/aiAccess');
@@ -14,11 +15,6 @@ const cron = require('node-cron');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-
-const FACEBOOK_APP_ID = '918884500687686';
-const FACEBOOK_REDIRECT_URI =
-  'https://insta-flow-backend.onrender.com/auth/facebook/callback';
-const FACEBOOK_DIALOG = 'https://www.facebook.com/v19.0/dialog/oauth';
 
 app.get('/webhook', (req, res) => {
   console.log('🔥 WEBHOOK HIT');
@@ -74,30 +70,9 @@ app.get('/', (req, res) => {
   res.json({ success: true, message: 'InstaFlow Backend API' });
 });
 
-app.get('/auth/facebook', (req, res) => {
-  const redirect_uri = FACEBOOK_REDIRECT_URI.replace(/\/$/, '');
-  console.log('Redirect URI:', redirect_uri);
-  const params = new URLSearchParams({
-    client_id: FACEBOOK_APP_ID,
-    redirect_uri: redirect_uri,
-    response_type: 'code',
-    scope: 'email',
-  });
-  const url = `${FACEBOOK_DIALOG}?${params.toString()}`;
-  res.redirect(302, url);
-});
-
-app.get('/auth/facebook/callback', (req, res) => {
-  const redirect_uri = FACEBOOK_REDIRECT_URI.replace(/\/$/, '');
-  console.log('Redirect URI:', redirect_uri);
-  const code = req.query.code;
-  if (!code) {
-    return res.type('text/plain').send('No code received');
-  }
-  return res.type('text/plain').send(`Facebook Login Success ${code}`);
-});
-
+app.use('/auth', facebookAuthRoutes);
 app.use('/auth', authRoutes);
+
 app.use('/', aiAccessRoutes);
 app.use('/ai', geminiRoutes);
 app.use('/calendar', calendarRoutes);
@@ -143,10 +118,14 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     process.exit(1);
   }
 
+  const fbRedirect =
+    process.env.FACEBOOK_REDIRECT_URI ||
+    'https://insta-flow-backend.onrender.com/auth/facebook/callback';
+
   console.log('Server running on', PORT);
   console.log(`🚀 InstaFlow backend running on port ${PORT} (process.env.PORT)`);
   console.log(`📲 WhatsApp webhook: GET/POST http://0.0.0.0:${PORT}/webhook`);
-  console.log(`📘 Facebook OAuth: GET https://insta-flow-backend.onrender.com/auth/facebook`);
+  console.log(`📘 Facebook OAuth: GET /auth/facebook (scope=public_profile only) → redirect_uri ${fbRedirect}`);
   console.log(`🌍 Environment: ${env}`);
   console.log(`🤖 Gemini AI: ${geminiMode}`);
   console.log(`🤖 Gemini Model: ${modelName}`);

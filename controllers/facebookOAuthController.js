@@ -1,7 +1,6 @@
 /**
- * Facebook Login — OAuth 2.0 (authorization code).
- * GET /auth/facebook → redirect to dialog
- * GET /auth/facebook/callback → exchange code, return JSON
+ * Legacy Facebook OAuth helpers (not mounted by default — use routes/facebookAuth.js).
+ * Scope MUST stay public_profile only unless App Review adds permissions.
  */
 
 const axios = require('axios');
@@ -15,23 +14,9 @@ const DEFAULT_REDIRECT =
 function normalizeRedirectUri() {
   let u = (process.env.FACEBOOK_REDIRECT_URI || DEFAULT_REDIRECT).trim();
   u = u.replace(/\/$/, '');
-  if (!u.startsWith('https://')) {
-    console.warn('[Facebook OAuth] redirect URI should use HTTPS in production');
-  }
   return u;
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-/**
- * GET /auth/facebook — redirect browser to Facebook login
- */
 function facebookOAuthStart(req, res) {
   const redirect_uri = normalizeRedirectUri();
   console.log('Redirect URI:', redirect_uri);
@@ -44,47 +29,34 @@ function facebookOAuthStart(req, res) {
     });
   }
 
-  const scope = (
-    process.env.FACEBOOK_SCOPES || 'email,public_profile'
-  ).trim();
-
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirect_uri,
     response_type: 'code',
-    scope,
+    scope: 'public_profile',
   });
 
   const url = `${FB_DIALOG}?${params.toString()}`;
-  console.log('[Facebook OAuth] redirecting to dialog');
+  console.log('[Facebook OAuth] redirecting to dialog (scope=public_profile only)');
   return res.redirect(302, url);
 }
 
-/**
- * GET /auth/facebook/callback — ?code=... or ?error=...
- */
 async function facebookOAuthCallback(req, res) {
   const redirect_uri = normalizeRedirectUri();
   console.log('Redirect URI:', redirect_uri);
 
   const code = req.query.code;
   const oauthError = req.query.error;
-  const errorDescription = req.query.error_description;
 
   if (oauthError) {
-    console.log('[Facebook callback] OAuth error:', oauthError, errorDescription || '');
-    const msg = errorDescription
-      ? `${oauthError}: ${errorDescription}`
-      : String(oauthError);
     return res.status(400).json({
       success: false,
       error: 'facebook_oauth_failed',
-      message: msg,
+      message: String(oauthError),
     });
   }
 
   if (!code) {
-    console.error('[Facebook callback] missing code');
     return res.status(400).json({
       success: false,
       error: 'missing_code',
@@ -96,7 +68,6 @@ async function facebookOAuthCallback(req, res) {
   const clientSecret = (process.env.FACEBOOK_APP_SECRET || '').trim();
 
   if (!clientId || !clientSecret) {
-    console.error('[Facebook callback] FACEBOOK_APP_ID or FACEBOOK_APP_SECRET missing');
     return res.status(500).json({
       success: false,
       error: 'server_config',
@@ -116,14 +87,9 @@ async function facebookOAuthCallback(req, res) {
       timeout: 20000,
     });
 
-    console.log('[Facebook callback] token exchange OK');
-
     return res.status(200).json({
       success: true,
       message: 'Facebook login successful',
-      access_token: data.access_token
-        ? `${String(data.access_token).slice(0, 8)}…`
-        : undefined,
       token_type: data.token_type,
       expires_in: data.expires_in,
     });
