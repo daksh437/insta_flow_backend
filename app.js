@@ -15,7 +15,11 @@ const cron = require('node-cron');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// --- Webhook: single handler, registered before all other middleware (no /api, no router) ---
+const FACEBOOK_APP_ID = '918884500687686';
+const FACEBOOK_REDIRECT_URI =
+  'https://insta-flow-backend.onrender.com/auth/facebook/callback';
+const FACEBOOK_DIALOG = 'https://www.facebook.com/v19.0/dialog/oauth';
+
 app.get('/webhook', (req, res) => {
   console.log('🔥 WEBHOOK HIT');
 
@@ -31,8 +35,8 @@ app.get('/webhook', (req, res) => {
   return res.status(403).send('Failed');
 });
 
-// JSON parser must run before POST /webhook so req.body is populated (Meta sends JSON)
 app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.post('/webhook', (req, res) => {
   console.log('📩 Incoming:', req.body);
@@ -41,18 +45,16 @@ app.post('/webhook', (req, res) => {
 
 console.log('[Webhook] GET + POST /webhook registered (single handler, no duplicates)');
 
-// CORS for Flutter/web - Enable for all origins in production
 const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').filter(Boolean);
 app.use(
   cors({
-    origin: corsOrigins.length ? corsOrigins : '*', // Allow all origins if CORS_ORIGINS not set
+    origin: corsOrigins.length ? corsOrigins : '*',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'x-user-uid', 'X-User-UID', 'X-Request-Time', 'X-Idempotency-Key', 'Cache-Control', 'Pragma', 'Expires'],
   })
 );
 
-// Disable caching for all responses - ensure fresh AI responses every time
 app.use((req, res, next) => {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
@@ -60,9 +62,6 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Request logging middleware
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   if (req.body && Object.keys(req.body).length > 0) {
@@ -71,23 +70,44 @@ app.use((req, res, next) => {
   next();
 });
 
-// ROOT
 app.get('/', (req, res) => {
   res.json({ success: true, message: 'InstaFlow Backend API' });
 });
 
+app.get('/auth/facebook', (req, res) => {
+  const redirect_uri = FACEBOOK_REDIRECT_URI.replace(/\/$/, '');
+  console.log('Redirect URI:', redirect_uri);
+  const params = new URLSearchParams({
+    client_id: FACEBOOK_APP_ID,
+    redirect_uri: redirect_uri,
+    response_type: 'code',
+    scope: 'email',
+  });
+  const url = `${FACEBOOK_DIALOG}?${params.toString()}`;
+  res.redirect(302, url);
+});
+
+app.get('/auth/facebook/callback', (req, res) => {
+  const redirect_uri = FACEBOOK_REDIRECT_URI.replace(/\/$/, '');
+  console.log('Redirect URI:', redirect_uri);
+  const code = req.query.code;
+  if (!code) {
+    return res.type('text/plain').send('No code received');
+  }
+  return res.type('text/plain').send(`Facebook Login Success ${code}`);
+});
+
 app.use('/auth', authRoutes);
-app.use('/', aiAccessRoutes); // GET /check-ai-access
+app.use('/', aiAccessRoutes);
 app.use('/ai', geminiRoutes);
 app.use('/calendar', calendarRoutes);
 app.use('/daily-drop', dailyDropRoutes);
-app.use('/', whatsappBotRoutes); // /whatsapp-bot/* — no /webhook here
+app.use('/', whatsappBotRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', success: true, message: 'OK' });
 });
 
-// Error handler
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error(`[ERROR] ${new Date().toISOString()} ${req.method} ${req.path}`);
@@ -100,7 +120,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Listen on all network interfaces (0.0.0.0) for cloud deployment
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('🚀 Server running on port', PORT);
   const env = process.env.NODE_ENV || 'development';
@@ -115,7 +134,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     process.exit(1);
   }
 
-  // Runtime enforcement audit: every POST /ai/* must have requireAiAccess
   const { auditAiRoutes } = require('./scripts/auditAiRoutes');
   try {
     auditAiRoutes(app);
@@ -128,6 +146,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on', PORT);
   console.log(`🚀 InstaFlow backend running on port ${PORT} (process.env.PORT)`);
   console.log(`📲 WhatsApp webhook: GET/POST http://0.0.0.0:${PORT}/webhook`);
+  console.log(`📘 Facebook OAuth: GET https://insta-flow-backend.onrender.com/auth/facebook`);
   console.log(`🌍 Environment: ${env}`);
   console.log(`🤖 Gemini AI: ${geminiMode}`);
   console.log(`🤖 Gemini Model: ${modelName}`);
@@ -141,7 +160,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`💻 Development mode: http://localhost:${PORT}`);
   }
 
-  // Daily Viral Drop: run at 00:00 every day (server time)
   cron.schedule('0 0 * * *', () => {
     generateDailyDrop().catch((err) => {
       console.error('[DailyDrop] Cron job failed:', err);
