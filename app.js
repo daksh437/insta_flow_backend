@@ -118,14 +118,10 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     process.exit(1);
   }
 
-  const fbRedirect =
-    process.env.FACEBOOK_REDIRECT_URI ||
-    'https://insta-flow-backend.onrender.com/auth/facebook/callback';
-
   console.log('Server running on', PORT);
   console.log(`🚀 InstaFlow backend running on port ${PORT} (process.env.PORT)`);
   console.log(`📲 WhatsApp webhook: GET/POST http://0.0.0.0:${PORT}/webhook`);
-  console.log(`📘 Facebook OAuth: GET /auth/facebook (scope=public_profile only) → redirect_uri ${fbRedirect}`);
+  console.log(`📘 Facebook OAuth: GET /auth/facebook (FB_APP_ID) → https://insta-flow-backend.onrender.com/auth/facebook/callback`);
   console.log(`🌍 Environment: ${env}`);
   console.log(`🤖 Gemini AI: ${geminiMode}`);
   console.log(`🤖 Gemini Model: ${modelName}`);
