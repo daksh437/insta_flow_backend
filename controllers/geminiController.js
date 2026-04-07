@@ -438,174 +438,42 @@ Format:
 No explanations. No labels. Just 3 captions, one per line.`;
 }
 
-function calendarPrompt(topic, days) {
+/**
+ * @param {string} topic
+ * @param {number} days - clamped 1–30 on caller
+ * @param {string} [tone] - e.g. Professional, Casual, Funny
+ * @param {string} [goal] - e.g. engagement, followers, sales
+ */
+function calendarPrompt(topic, days, tone, goal) {
+  const d = Number.isFinite(days) ? Math.min(Math.max(Math.floor(days), 1), 30) : 7;
+  const toneStr = (tone && String(tone).trim()) ? String(tone).trim() : 'balanced / natural for the niche';
+  const goalStr = (goal && String(goal).trim()) ? String(goal).trim() : 'engagement and community growth';
   return `You are a professional Instagram strategist.
 
-Create a 7-day content calendar for: "${topic}".
+Create a ${d}-DAY content calendar for the niche/topic: "${topic}".
 
-For each day include:
+Constraints:
+- Writing tone (apply to every caption and CTA): ${toneStr}
+- Primary goal (shape CTAs and content mix): ${goalStr}
 
-- day_of_week
-- content_type (Reel / Carousel / Story / Static Image / Meme)
-- Use DIFFERENT hashtags for each caption (NO overlap)
-- Use DIFFERENT angles and perspectives (first person vs second person vs third person)
-- Use DIFFERENT vocabulary - avoid repeating the same words across captions
-- Use DIFFERENT emotional tones even within the same mood category
-- Think of each caption as written by a DIFFERENT person with a DIFFERENT voice
+Return EXACTLY ${d} objects in ONE JSON array (no markdown, no code fences).
 
-CRITICAL UNIQUENESS INSTRUCTIONS (MANDATORY - NO EXCEPTIONS):
+Each object MUST use these keys (same names for parsing):
+- "day" (number 1..${d}, or day label)
+- "day_of_week" (e.g. Monday)
+- "content_type" (Reel / Carousel / Story / Static Image / Meme)
+- "hook" (strong first line)
+- "caption" (ready-to-post; human, on-brand for the tone above)
+- "hashtags" (array of 10-15 strings; may include # or plain words — be consistent)
+- "hashtag_set" (optional: same as hashtags if you need a second field)
+- "best_post_time" (IST, e.g. "7:00 PM IST") — also acceptable: "best_posting_time"
+- "content_brief" (what to film or design)
+- "viral_angle" (one line why it could perform)
+- "cta" (call to action aligned with the goal)
 
-1. UNIQUE CREATIVE SEED: ${creativeSeed}
-   - This seed is UNIQUE to this request and ensures different output every time
-   - Use this seed to generate varied, creative, non-repetitive captions
-   - Think like ChatGPT - every response is unique based on context and seed
-
-2. UNIQUE REQUEST ID: ${requestId || generationId}
-   - This ID ensures this generation is COMPLETELY DIFFERENT from any previous generation
-   - Even if topic/mood/audience/language are identical, output MUST be different
-   - This is like ChatGPT generating a fresh response to the same question
-
-3. NEVER REUSE POLICY (STRICT):
-   - NEVER reuse captions, phrases, words, hashtags, or sentence structures from previous generations
-   - NEVER use the same sentence structure, word choice, emoji pattern, or hashtag combination twice
-   - Even if the topic is the same, generate COMPLETELY DIFFERENT captions
-   - Think like ChatGPT generating a fresh response every time
-
-4. GENERATE FRESH, NON-REPETITIVE, CREATIVE CAPTIONS:
-   - Avoid generic phrases like "Living my best life", "Good vibes only", "Making memories"
-   - Avoid "Sunshine and good times", "Vibes", "Mood", "Feeling blessed", "Another day"
-   - Use creative, original, human-like expressions that feel AI-generated and dynamic
-   - Each caption must feel like it was written by a different person or at a different time
-
-5. UNIQUE IN EVERY WAY:
-   - Each caption must be unique in wording, tone, structure, and hashtags
-   - NO template-based responses - every caption must feel fresh and original
-   - Maximum diversity in length, structure, and approach
-
-Generate 5-7 UNIQUE Instagram captions under 120 characters.
-Each caption MUST be completely different from any previous generation.
-Think like ChatGPT - every response is unique, creative, and context-aware.
-
-USER INPUTS (MANDATORY - MUST BE STRICTLY FOLLOWED):
-- Topic: "${topic}"
-- Language: "${language}" (STRICT - write ONLY in this language, no mixing unless Hinglish)
-- Mood/Tone: "${tone}" (STRICT - this mood MUST be visible in every word, emoji, and sentence structure)
-- Audience Type: "${audience}" (STRICT - this audience MUST affect CTA, tone, and intent completely)
-
-CRITICAL ENFORCEMENT (NO EXCEPTIONS):
-1. Language "${language}" MUST be strictly followed:
-   - English → Pure English only, English hashtags, no Hindi/other languages
-   - Hinglish → Natural mix of Hindi and English (e.g., "Kya baat hai! This is amazing"), both Hindi and English hashtags
-   - Hindi → Pure Hindi (Devanagari script), Hindi hashtags, natural Hindi expressions, NO English
-
-2. Mood "${tone}" MUST strongly affect EVERY aspect:
-   - Writing style, tone, words, emojis, sentence structure, and overall vibe
-   - If Funny → Must be playful, light, humorous, entertaining
-   - If Attitude → Must be bold, confident, assertive, unapologetic
-   - If Aesthetic → Must be calm, poetic, minimal, dreamy, artistic
-   - If Motivational → Must be inspiring, action-driven, empowering, uplifting
-   - If Romantic → Must be emotional, soft, heartfelt, intimate, tender
-
-3. Audience "${audience}" MUST affect intent and CTA completely:
-   - Creator → Engagement CTAs (Save this, Share with a friend, Comment below), community-focused, interactive
-   - Business → Professional tone, value-focused CTA (Learn more, Visit link, Get started), results-oriented, authoritative
-   - Personal → Casual, diary-style, no marketing tone, authentic voice, no CTAs, genuine, relatable
-
-4. Generate 5-7 captions with COMPLETELY DIFFERENT writing styles and approaches:
-   - Story-based / Narrative (tell a story) - Use different story angles, different characters, different scenarios
-   - Question / Curiosity hook (ask engaging questions) - Ask DIFFERENT questions, use different question words (What, Why, How, When, Where)
-   - Bold statement / Assertion (make strong statements) - Use DIFFERENT power words, different assertions, different perspectives
-   - Emotional / Feeling-focused (express feelings) - Express DIFFERENT emotions, use different feeling words, different emotional angles
-   - Action-oriented / Call-to-action (encourage action) - Use DIFFERENT action verbs, different CTAs, different urgency levels
-   - Aesthetic / Visual description (describe visuals) - Describe DIFFERENT visual elements, use different descriptive words
-   - Short punchline / One-liner (quick, witty) - Use DIFFERENT humor styles, different punchline structures
-   
-   🚨 CRITICAL: Each caption must use a DIFFERENT approach, DIFFERENT words, DIFFERENT structure - NO similarity between captions
-
-5. Generate COMPLETELY DIFFERENT hashtags for each caption:
-   - Each caption must have DIFFERENT hashtags (NO overlap between captions)
-   - NO repetition within this response
-   - NO reuse from previous generations
-   - Mix of niche-specific, trending, and evergreen tags
-   - Use the creative seed to generate varied hashtag combinations
-   - Think creatively - don't use obvious hashtags, use unique combinations
-
-6. Avoid generic Instagram phrases completely:
-   - NO "Living my best life", "Good vibes only", "Making memories", "Sunshine and good times"
-   - NO "Vibes", "Mood", "Feeling blessed", "Another day", "Here we go"
-   - Use creative, original, human-like expressions
-
-7. Each caption must feel fresh, original, and AI-generated (like ChatGPT):
-   - Dynamic, context-aware, and unique
-   - No template-based responses
-   - Creative and engaging
-
-## OUTPUT FORMAT (CRITICAL - STRICT - NO EXCEPTIONS):
-Generate exactly 5-7 distinct captions following these rules:
-1. Each caption on a separate line
-2. Start each line with "• " (bullet point)
-3. No numbering (1., 2., etc.)
-4. ABSOLUTELY NO JSON format:
-   - NO curly braces { }
-   - NO square brackets [ ]
-   - NO quotes around entire caption "text"
-   - NO "captions": keyword anywhere
-   - NO "hashtags": keyword anywhere
-   - NO "text": keyword anywhere
-   - NO "style": keyword anywhere
-   - NO colons after words (like "captions:" or "hashtags:")
-   - Just plain text with bullet points
-5. Each caption should be distinct in approach but equally effective
-
-🚨 CRITICAL: DO NOT write "captions": or "hashtags": anywhere in your response.
-🚨 CRITICAL: DO NOT use JSON structure markers like {, }, [, ].
-🚨 CRITICAL: Just write plain captions with bullet points, nothing else.
-
-## CAPTION GUIDELINES:
-1. **Length Mix**: Include short (50-100 chars), medium (100-200), long (200-300)
-2. **Hashtags**: Add 3-5 relevant hashtags at the end of each caption
-3. **Engagement**: Include questions, CTAs, or interactive elements based on audience type
-4. **Emojis**: Use 1-3 relevant emojis per caption
-5. **Platform**: Optimize for Instagram (character limits, trends)
-6. **Tone**: Match the requested mood "${tone}" precisely
-7. **Audience**: Tailor language to "${audience}" audience type
-8. **Authenticity**: Match creator type's voice
-
-## EXAMPLE OUTPUT FORMAT:
-• Caption text here with relevant hashtags #tag1 #tag2 #tag3
-• Another caption text here with hashtags #tag4 #tag5
-• Third caption here with hashtags #tag6 #tag7 #tag8
-• Fourth caption here with hashtags #tag9 #tag10
-• Fifth caption here with hashtags #tag11 #tag12
-
-## IMPORTANT:
-- Return ONLY the 5-7 captions in bullet point format
-- No additional explanations or text
-- Each caption must be complete and ready to post
-- Ensure variety in approach while maintaining quality
-- NO JSON, NO brackets, NO quotes, NO structure markers`;
-}
-
-function calendarPrompt(topic, days) {
-  return `You are a professional Instagram strategist.
-
-Create a 7-day content calendar for: "${topic}".
-
-For each day include:
-
-- day_of_week
-- content_type (Reel / Carousel / Story / Static Image / Meme)
-- hook (strong first line)
-- caption (high-quality human-like writing)
-- hashtag_set (15 optimized tags)
-- best_post_time (IST)
-- content_brief (what visuals to create)
-- viral_angle (why it will perform well)
-- cta (call to action)
-
-Use real IG analytics logic (trends, engagement patterns, niche signals).
-
-Return STRICT JSON array.`;
+Rules:
+- Use different angles, hooks, and hashtag sets each day; no copy-paste across days.
+- JSON only: a single array [...] of ${d} items.`;
 }
 
 function strategyPrompt(niche) {
@@ -943,15 +811,16 @@ async function generateCaptions(req, res) {
  * Background processing function for calendar generation
  * Runs Gemini API call asynchronously and updates job status
  */
-async function processCalendar(jobId, topic, days) {
+async function processCalendar(jobId, topic, days, tone, goal) {
   console.log(`[processCalendar] Starting background processing for job: ${jobId}`);
   
   try {
     updateJob(jobId, 'processing', {});
+    const targetDays = Math.min(Math.max(Number.isFinite(days) ? Math.floor(days) : 7, 1), 30);
     
     const timestamp = Date.now();
     const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
-    const uniquePrompt = `${calendarPrompt(topic, days)}\n\n🎲 UNIQUE_SEED: ${uniqueSeed}\n📅 TIMESTAMP: ${timestamp}\n🔄 REQUEST_ID: ${jobId}`;
+    const uniquePrompt = `${calendarPrompt(topic, days, tone, goal)}\n\n🎲 UNIQUE_SEED: ${uniqueSeed}\n📅 TIMESTAMP: ${timestamp}\n🔄 REQUEST_ID: ${jobId}`;
     
     console.log('[processCalendar] Calling Gemini API with unique prompt...');
     const output = await runGemini(uniquePrompt, { 
@@ -972,9 +841,67 @@ async function processCalendar(jobId, topic, days) {
     if (!Array.isArray(data) || data.length === 0) {
       throw new Error('Invalid calendar data from Gemini API');
     }
-    
-    completeJobAndRecordUsage(jobId, 'completed', { data });
-    console.log(`[processCalendar] ✅ Job ${jobId} completed successfully, data items: ${data.length}`);
+
+    const parsedLength = data.length;
+    console.log(`[processCalendar] requestedDays=${targetDays} parsedLength=${parsedLength}`);
+
+    const contentTypeFallback = ['Reel', 'Carousel', 'Story', 'Static Image', 'Meme'];
+    const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const toneSafe = (tone && String(tone).trim()) ? String(tone).trim() : 'Balanced';
+    const goalSafe = (goal && String(goal).trim()) ? String(goal).trim() : 'engagement';
+
+    const normalizeItem = (raw, index) => {
+      const item = raw && typeof raw === 'object' ? raw : {};
+      const dayIndex = index + 1;
+      const caption = String(item.caption ?? item.text ?? '').trim();
+      let hashtags = item.hashtags ?? item.hashtag_set ?? [];
+      if (!Array.isArray(hashtags)) {
+        if (typeof hashtags === 'string') {
+          hashtags = hashtags.split(/\s+/).filter(Boolean);
+        } else {
+          hashtags = [];
+        }
+      }
+      if (hashtags.length === 0) {
+        hashtags = ['#instagram', '#content', '#creator'];
+      }
+      return {
+        day: item.day ?? dayIndex,
+        day_of_week: item.day_of_week ?? dayNames[index % dayNames.length],
+        content_type: item.content_type ?? item.post_type ?? contentTypeFallback[index % contentTypeFallback.length],
+        hook: String(item.hook ?? `Day ${dayIndex}: ${topic} idea`).trim(),
+        caption: caption || `${topic} content plan for day ${dayIndex}.`,
+        hashtags: hashtags,
+        hashtag_set: Array.isArray(item.hashtag_set) ? item.hashtag_set : hashtags,
+        best_post_time: String(item.best_post_time ?? item.best_posting_time ?? '7:00 PM IST'),
+        content_brief: String(item.content_brief ?? item.creative_brief ?? `${toneSafe} post focused on ${topic}.`).trim(),
+        viral_angle: String(item.viral_angle ?? `Designed for ${goalSafe} with a clear niche hook.`).trim(),
+        cta: String(item.cta ?? 'Save and share if this helps!').trim(),
+      };
+    };
+
+    let normalized = data.map((item, idx) => normalizeItem(item, idx));
+    if (normalized.length > targetDays) {
+      normalized = normalized.slice(0, targetDays);
+    } else if (normalized.length < targetDays) {
+      const seedItem = normalized.length > 0 ? normalized[normalized.length - 1] : null;
+      for (let i = normalized.length; i < targetDays; i++) {
+        const fallback = normalizeItem(seedItem || {}, i);
+        fallback.day = i + 1;
+        fallback.day_of_week = dayNames[i % dayNames.length];
+        fallback.hook = `Day ${i + 1}: ${topic} content angle`;
+        fallback.caption = `${topic} content for day ${i + 1} (${toneSafe.toLowerCase()} tone, ${goalSafe} goal).`;
+        fallback.content_brief = `Create a ${fallback.content_type.toLowerCase()} around ${topic} with a ${toneSafe.toLowerCase()} style.`;
+        fallback.viral_angle = `Optimized for ${goalSafe} and consistency in your ${targetDays}-day plan.`;
+        fallback.hashtags = [`#${topic.toString().replace(/\s+/g, '').toLowerCase()}`, '#instagramtips', '#creator'];
+        fallback.hashtag_set = fallback.hashtags;
+        normalized.push(fallback);
+      }
+    }
+
+    console.log(`[processCalendar] finalLength=${normalized.length} (requested=${targetDays})`);
+    completeJobAndRecordUsage(jobId, 'completed', { data: normalized });
+    console.log(`[processCalendar] ✅ Job ${jobId} completed successfully, data items: ${normalized.length}`);
   } catch (error) {
     console.error(`[processCalendar] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processCalendar] Error stack:`, error.stack);
@@ -991,7 +918,12 @@ async function processCalendar(jobId, topic, days) {
  */
 async function generateCalendar(req, res) {
   console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/calendar' }));
-  const { topic = 'instagram growth', days = 7 } = req.body || {};
+  const body = req.body || {};
+  const topic = (body.topic != null ? String(body.topic) : 'instagram growth') || 'instagram growth';
+  const rawDays = body.days != null ? parseInt(body.days, 10) : 7;
+  const days = Math.min(Math.max(Number.isFinite(rawDays) ? rawDays : 7, 1), 30);
+  const tone = body.tone != null ? String(body.tone).trim() : '';
+  const goal = body.goal != null ? String(body.goal).trim() : '';
   
   // Generate unique job ID
   const jobId = generateJobId('CALENDAR');
@@ -1002,14 +934,16 @@ async function generateCalendar(req, res) {
     uid: req.uid,
     topic: topic.trim(),
     days,
+    tone: tone || undefined,
+    goal: goal || undefined,
   });
   
   console.log(`[generateCalendar] ===== NEW ASYNC REQUEST =====`);
   console.log(`[generateCalendar] Job ID: ${jobId}`);
-  console.log(`[generateCalendar] Topic: ${topic}, Days: ${days}`);
+  console.log(`[generateCalendar] Topic: ${topic}, Days: ${days}, tone: ${tone || '(default)'}, goal: ${goal || '(default)'}`);
   
   // Start background processing (non-blocking)
-  processCalendar(jobId, topic.trim(), days)
+  processCalendar(jobId, topic.trim(), days, tone, goal)
     .catch((error) => {
       console.error(`[generateCalendar] Background processing failed for job ${jobId}:`, error);
       // On failure, store fallback result

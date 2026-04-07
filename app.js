@@ -9,37 +9,15 @@ const geminiRoutes = require('./routes/gemini');
 const aiAccessRoutes = require('./routes/aiAccess');
 const calendarRoutes = require('./routes/calendar');
 const dailyDropRoutes = require('./routes/dailyDrop');
-const whatsappBotRoutes = require('./routes/whatsappBot');
+const ttsRoutes = require('./routes/tts');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const cron = require('node-cron');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.get('/webhook', (req, res) => {
-  console.log('🔥 WEBHOOK HIT');
-
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  if (mode === 'subscribe' && token === 'instaflow_verify_123') {
-    console.log('✅ VERIFIED');
-    return res.status(200).send(challenge);
-  }
-
-  return res.status(403).send('Failed');
-});
-
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-app.post('/webhook', (req, res) => {
-  console.log('📩 Incoming:', req.body);
-  res.sendStatus(200);
-});
-
-console.log('[Webhook] GET + POST /webhook registered (single handler, no duplicates)');
 
 const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').filter(Boolean);
 app.use(
@@ -77,7 +55,7 @@ app.use('/', aiAccessRoutes);
 app.use('/ai', geminiRoutes);
 app.use('/calendar', calendarRoutes);
 app.use('/daily-drop', dailyDropRoutes);
-app.use('/', whatsappBotRoutes);
+app.use('/api', ttsRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', success: true, message: 'OK' });
@@ -120,7 +98,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
   console.log('Server running on', PORT);
   console.log(`🚀 InstaFlow backend running on port ${PORT} (process.env.PORT)`);
-  console.log(`📲 WhatsApp webhook: GET/POST http://0.0.0.0:${PORT}/webhook`);
   console.log(`📘 Facebook OAuth: GET /auth/facebook (FB_APP_ID) → https://insta-flow-backend.onrender.com/auth/facebook/callback`);
   console.log(`🌍 Environment: ${env}`);
   console.log(`🤖 Gemini AI: ${geminiMode}`);

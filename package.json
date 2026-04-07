@@ -9,6 +9,8 @@
     "dev": "node app.js",
     "production": "NODE_ENV=production node app.js",
     "audit:ai-routes": "node scripts/audit-ai-routes.js",
+    "audit:premium-fields": "node scripts/audit-user-premium-fields.js",
+    "backfill:premium-subscription": "node scripts/backfill-premium-from-subscription.js",
     "fix:ai-users": "node scripts/fix-ai-user-fields.js"
   },
   "dependencies": {
