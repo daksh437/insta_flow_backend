@@ -1,4 +1,5 @@
 const express = require('express');
+const { getInitStatus } = require('../utils/firestoreAdmin');
 const {
   missionToday,
   missionView,
@@ -11,9 +12,13 @@ const router = express.Router();
 
 /** No auth — use to verify deployed build exposes retention routes (Render / health checks). */
 router.get('/health', (_req, res) => {
+  const init = getInitStatus();
   res.json({
     success: true,
     service: 'retention',
+    firestoreReady: init.firestoreReady,
+    firestoreInitError: init.initError,
+    requiredHeaders: ['x-user-uid', 'X-User-UID'],
     routes: [
       'GET /retention/health',
       'GET /retention/mission/today',

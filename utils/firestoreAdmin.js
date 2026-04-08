@@ -4,6 +4,27 @@
  */
 let admin;
 let db;
+let initError = null;
+
+function normalizeServiceAccount(raw) {
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON must be a valid JSON object');
+  }
+  if (!parsed.project_id) {
+    throw new Error('Service account missing project_id');
+  }
+  if (!parsed.client_email) {
+    throw new Error('Service account missing client_email');
+  }
+  if (!parsed.private_key) {
+    throw new Error('Service account missing private_key');
+  }
+  if (typeof parsed.private_key === 'string') {
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  }
+  return parsed;
+}
 
 function getAdmin() {
   if (admin) return admin;
@@ -12,7 +33,7 @@ function getAdmin() {
     if (!admin.apps.length) {
       const key = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
       if (key && key.trim()) {
-        const cred = JSON.parse(key);
+        const cred = normalizeServiceAccount(key);
         const projectId = cred.project_id || process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT;
         admin.initializeApp({
           credential: admin.credential.cert(cred),
@@ -25,8 +46,10 @@ function getAdmin() {
         });
       }
     }
+    initError = null;
     return admin;
   } catch (e) {
+    initError = e;
     console.warn('[FirestoreAdmin] init failed:', e.message);
     return null;
   }
@@ -39,4 +62,15 @@ function getDb() {
   return db;
 }
 
-module.exports = { getAdmin, getDb };
+function getInitStatus() {
+  const serviceAccountPresent =
+    typeof process.env.FIREBASE_SERVICE_ACCOUNT_JSON === 'string' &&
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON.trim().length > 0;
+  return {
+    firestoreReady: !!getDb(),
+    serviceAccountPresent,
+    initError: initError ? String(initError.message || initError) : null,
+  };
+}
+
+module.exports = { getAdmin, getDb, getInitStatus };

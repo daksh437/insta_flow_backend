@@ -515,6 +515,145 @@ Return JSON with these keys:
 Write everything as if you are consulting a real creator.`;
 }
 
+function advisorPrompt(feature, context, sampleOutput, strictRetry = false) {
+  const stricter = strictRetry
+    ? '\nSTRICT RETRY: previous advice was generic. Make it more specific to user context and measurable.'
+    : '';
+  return `You are an honest Instagram growth advisor.
+
+Feature: ${feature}
+User context:
+${JSON.stringify(context)}
+
+AI output sample:
+${typeof sampleOutput === 'string' ? sampleOutput : JSON.stringify(sampleOutput)}
+
+Return ONLY valid JSON with keys:
+{
+  "diagnosis": "",
+  "why_it_matters": "",
+  "action_steps": ["", "", ""],
+  "expected_outcome": "",
+  "avoid_this": "",
+  "confidence_note": "",
+  "quick_win": ""
+}
+
+Rules:
+- Keep it practical and concise.
+- No fake promises, no guaranteed viral claims.
+- 3-5 action steps, imperative and measurable.
+- If uncertain, use likely/safe language.${stricter}`;
+}
+
+function fallbackAdvice(feature, context) {
+  const topic = String(context?.topic || context?.input || 'your content').trim();
+  return {
+    diagnosis: `Your ${feature} output likely needs a sharper first hook and a clearer CTA for ${topic}.`,
+    why_it_matters: 'Hook quality affects stop-rate, and CTA clarity improves saves, shares, and actions.',
+    action_steps: [
+      'Keep the first line under 9 words and benefit-led.',
+      'Add one specific CTA (Save this / Comment keyword / Share).',
+      'Use niche-specific phrasing instead of broad generic wording.',
+    ],
+    expected_outcome: 'Likely better watch-through and higher engagement quality over the next few posts.',
+    avoid_this: 'Avoid generic lines and over-promising language like guaranteed viral.',
+    confidence_note: 'Medium confidence based on provided context; test 2 variants and compare saves/comments.',
+    quick_win: 'Rewrite your first line into a benefit + curiosity hook before posting.',
+  };
+}
+
+function normalizeAdvice(raw, feature, context) {
+  const base = fallbackAdvice(feature, context);
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const toText = (v, fb) => (typeof v === 'string' && v.trim() ? v.trim() : fb);
+  const actionStepsRaw = Array.isArray(src.action_steps) ? src.action_steps : [];
+  let action_steps = actionStepsRaw
+    .map((s) => String(s || '').trim())
+    .filter(Boolean)
+    .slice(0, 5);
+  if (action_steps.length < 3) {
+    action_steps = [...action_steps, ...base.action_steps].slice(0, 3);
+  }
+  const cleanFake = (text) =>
+    String(text || '')
+      .replace(/\b(guaranteed?|100%|definitely viral|instant viral|sure-shot)\b/gi, 'likely')
+      .trim();
+  return {
+    diagnosis: cleanFake(toText(src.diagnosis, base.diagnosis)),
+    why_it_matters: cleanFake(toText(src.why_it_matters, base.why_it_matters)),
+    action_steps: action_steps.map(cleanFake),
+    expected_outcome: cleanFake(toText(src.expected_outcome, base.expected_outcome)),
+    avoid_this: cleanFake(toText(src.avoid_this, base.avoid_this)),
+    confidence_note: cleanFake(toText(src.confidence_note, base.confidence_note)),
+    quick_win: cleanFake(toText(src.quick_win, base.quick_win)),
+  };
+}
+
+function scoreAdvice(advice, context) {
+  let score = 0;
+  const diagnosis = String(advice?.diagnosis || '').toLowerCase();
+  const ctxText = JSON.stringify(context || {}).toLowerCase();
+  if (diagnosis.length >= 20 && (ctxText.length < 5 || diagnosis.includes(String(context?.topic || '').toLowerCase()) || diagnosis.includes('you'))) score += 1;
+  if (Array.isArray(advice?.action_steps) && advice.action_steps.length >= 3 && advice.action_steps.some((s) => /\d|under|at least|per|daily|weekly/i.test(String(s)))) score += 1;
+  if (String(advice?.expected_outcome || '').length >= 20) score += 1;
+  if (String(advice?.avoid_this || '').length >= 10) score += 1;
+  if (!/\b(guaranteed?|100%|definitely viral|instant viral|sure-shot)\b/i.test(JSON.stringify(advice || {}))) score += 1;
+  return score;
+}
+
+async function buildAdvisor(feature, context, sampleOutput) {
+  let normalized = false;
+  let regenerated = false;
+  try {
+    const first = await runGemini(advisorPrompt(feature, context, sampleOutput, false), {
+      maxTokens: 900,
+      temperature: 0.5,
+      topP: 0.9,
+    });
+    let advice = normalizeAdvice(tryParseJson(first, {}), feature, context);
+    normalized = true;
+    let score = scoreAdvice(advice, context);
+    if (score < 4) {
+      regenerated = true;
+      const second = await runGemini(advisorPrompt(feature, context, sampleOutput, true), {
+        maxTokens: 900,
+        temperature: 0.45,
+        topP: 0.9,
+      });
+      advice = normalizeAdvice(tryParseJson(second, {}), feature, context);
+      score = scoreAdvice(advice, context);
+      if (score < 4) {
+        advice = normalizeAdvice(advice, feature, context);
+      }
+      const withMeta = {
+        ...advice,
+        _meta_score: score,
+        _meta_regenerated: regenerated,
+        _meta_low_confidence: score < 4,
+      };
+      console.log(`[AIAdvice] feature=${feature} score=${score} normalized=${normalized} regenerated=${regenerated}`);
+      return withMeta;
+    }
+    const withMeta = {
+      ...advice,
+      _meta_score: score,
+      _meta_regenerated: regenerated,
+      _meta_low_confidence: score < 4,
+    };
+    console.log(`[AIAdvice] feature=${feature} score=${score} normalized=${normalized} regenerated=${regenerated}`);
+    return withMeta;
+  } catch (e) {
+    console.warn(`[AIAdvice] feature=${feature} fallback used:`, e.message);
+    return {
+      ...fallbackAdvice(feature, context),
+      _meta_score: 0,
+      _meta_regenerated: false,
+      _meta_low_confidence: true,
+    };
+  }
+}
+
 function nicheAnalysisPrompt(topic) {
   return `Analyze the Instagram niche "${topic}" and return:
 
@@ -742,6 +881,12 @@ async function processCaptions(jobId, userInput, regenerate, requestId) {
     
     // Ensure we have exactly 3 captions
     captions = captions.slice(0, 3);
+    const advice = await buildAdvisor(
+      'captions',
+      { input: userInput, captionCount: captions.length },
+      captions
+    );
+    captions = captions.map((c, i) => (i === 0 ? { ...c, ai_advice: advice } : c));
     
     // Update job with completed status - return 3 captions
     completeJobAndRecordUsage(jobId, 'done', { data: captions });
@@ -899,6 +1044,14 @@ async function processCalendar(jobId, topic, days, tone, goal) {
       }
     }
 
+    const advice = await buildAdvisor(
+      'calendar',
+      { topic, days: targetDays, tone: toneSafe, goal: goalSafe },
+      normalized.slice(0, 3)
+    );
+    if (normalized.length > 0) {
+      normalized[0] = { ...normalized[0], ai_advice: advice };
+    }
     console.log(`[processCalendar] finalLength=${normalized.length} (requested=${targetDays})`);
     completeJobAndRecordUsage(jobId, 'completed', { data: normalized });
     console.log(`[processCalendar] ✅ Job ${jobId} completed successfully, data items: ${normalized.length}`);
@@ -993,6 +1146,8 @@ async function processStrategy(jobId, niche) {
       throw new Error('Invalid strategy data from Gemini API');
     }
     
+    const advice = await buildAdvisor('strategy', { niche }, data);
+    data.ai_advice = advice;
     completeJobAndRecordUsage(jobId, 'done', { data });
     console.log(`[processStrategy] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
@@ -2656,8 +2811,13 @@ Return the hashtags as a JSON array of strings:
     
     // Ensure all hashtags start with #
     data = data.map(tag => tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`);
-    
-    completeJobAndRecordUsage(jobId, 'completed', { data });
+    const advice = await buildAdvisor(
+      'hashtags',
+      { topic, caption, requestedCount: count },
+      { hashtags: data.slice(0, 12) }
+    );
+    const payload = { hashtags: data, ai_advice: advice };
+    completeJobAndRecordUsage(jobId, 'completed', { data: payload });
     console.log(`[processHashtags] ✅ Job ${jobId} completed successfully, hashtags: ${data.length}`);
   } catch (error) {
     console.error(`[processHashtags] ❌ Error processing job ${jobId}:`, error.message);
@@ -3194,6 +3354,14 @@ All should be CURRENT and RELEVANT to Instagram trends.
     // Ensure we have arrays
     trendsData.topics = trendsData.topics || [];
     trendsData.ideas = trendsData.ideas || [];
+    trendsData.ai_advice = await buildAdvisor(
+      'growth_suggestions',
+      { niche, category },
+      {
+        topics: trendsData.topics.slice(0, 5),
+        ideas: trendsData.ideas.slice(0, 5),
+      }
+    );
     
     completeJobAndRecordUsage(jobId, 'completed', { data: trendsData });
     console.log(`[processTrends] ✅ Job ${jobId} completed successfully - hashtags: ${trendsData.hashtags.length}, topics: ${trendsData.topics.length}, ideas: ${trendsData.ideas.length}`);
