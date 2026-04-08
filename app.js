@@ -10,6 +10,8 @@ const aiAccessRoutes = require('./routes/aiAccess');
 const calendarRoutes = require('./routes/calendar');
 const dailyDropRoutes = require('./routes/dailyDrop');
 const ttsRoutes = require('./routes/tts');
+const adminNotificationsRoutes = require('./routes/adminNotifications');
+const retentionRoutes = require('./routes/retention');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const cron = require('node-cron');
 
@@ -56,6 +58,8 @@ app.use('/ai', geminiRoutes);
 app.use('/calendar', calendarRoutes);
 app.use('/daily-drop', dailyDropRoutes);
 app.use('/api', ttsRoutes);
+app.use('/admin', adminNotificationsRoutes);
+app.use('/retention', retentionRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', success: true, message: 'OK' });
@@ -105,6 +109,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server ready for requests!`);
   console.log(`📊 Health check: http://0.0.0.0:${PORT}/health`);
   console.log(`📅 Daily drop: GET http://0.0.0.0:${PORT}/daily-drop/today`);
+  console.log('[Retention] Mounted at /retention — GET /retention/health (no auth), mission, recommendations, weekly-report');
 
   if (env === 'production') {
     console.log(`☁️  Production mode: Server accessible from all network interfaces`);
