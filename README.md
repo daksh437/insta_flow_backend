@@ -1,6 +1,6 @@
 # InstaFlow Backend
 
-Backend API for InstaFlow - Google OAuth + Calendar + Gemini AI
+Backend API for InstaFlow - Google OAuth + Instagram Business Login + Calendar + Gemini AI
 
 ## 📁 Folder Structure
 
@@ -135,6 +135,15 @@ CORS_ORIGINS=*
 - `GET /auth/callback` - OAuth callback
 - `GET /auth/status` - Check connection status
 
+### Instagram Business
+- `GET /auth/instagram/callback` - Instagram OAuth callback
+- `GET /auth/instagram/status?state=<uid>` - Instagram connection status
+- `POST /instagram-connect` - Build Instagram auth URL for app users
+- `GET /instagram-stats` - Fetch live followers/posts from Instagram
+- `POST /instagram/media` - Create media container
+- `POST /instagram/media/publish` - Publish created media
+- `GET /instagram/insights` - Fetch basic profile insights
+
 ### AI Endpoints
 - `POST /ai/captions` - Generate Instagram captions
 - `POST /ai/calendar` - Generate content calendar
@@ -157,6 +166,9 @@ CORS_ORIGINS=*
 | `GEMINI_API_KEY` | Google Gemini API key | `AIzaSy...` |
 | `NODE_ENV` | Environment mode | `production` or `development` |
 | `CORS_ORIGINS` | Allowed CORS origins (optional, defaults to `*`) | `*` or `https://example.com` |
+| `INSTAGRAM_APP_ID` | Instagram app id | `685238157720367` |
+| `INSTAGRAM_APP_SECRET` | Instagram app secret | `***` |
+| `INSTAGRAM_REDIRECT_URI` | Instagram OAuth callback URI | `https://insta-flow-backend.onrender.com/auth/instagram/callback` |
 
 ### Port Configuration
 

@@ -3,7 +3,6 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
-const facebookAuthRoutes = require('./routes/facebookAuth');
 const authRoutes = require('./routes/auth');
 const geminiRoutes = require('./routes/gemini');
 const aiAccessRoutes = require('./routes/aiAccess');
@@ -12,6 +11,7 @@ const dailyDropRoutes = require('./routes/dailyDrop');
 const ttsRoutes = require('./routes/tts');
 const adminNotificationsRoutes = require('./routes/adminNotifications');
 const retentionRoutes = require('./routes/retention');
+const instagramRoutes = require('./routes/instagram');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const cron = require('node-cron');
 
@@ -39,9 +39,8 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  if (req.body && Object.keys(req.body).length > 0) {
-    console.log(`[Request Body]`, JSON.stringify(req.body));
+  if ((process.env.NODE_ENV || 'development') !== 'production') {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   }
   next();
 });
@@ -50,11 +49,11 @@ app.get('/', (req, res) => {
   res.json({ success: true, message: 'InstaFlow Backend API' });
 });
 
-app.use('/auth', facebookAuthRoutes);
 app.use('/auth', authRoutes);
 
 app.use('/', aiAccessRoutes);
 app.use('/ai', geminiRoutes);
+app.use('/', instagramRoutes);
 app.use('/calendar', calendarRoutes);
 app.use('/daily-drop', dailyDropRoutes);
 app.use('/api', ttsRoutes);
@@ -102,7 +101,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
   console.log('Server running on', PORT);
   console.log(`🚀 InstaFlow backend running on port ${PORT} (process.env.PORT)`);
-  console.log(`📘 Facebook OAuth: GET /auth/facebook (FB_APP_ID) → https://insta-flow-backend.onrender.com/auth/facebook/callback`);
+  console.log(`📘 Instagram Business OAuth: GET /auth/instagram/callback`);
   console.log(`🌍 Environment: ${env}`);
   console.log(`🤖 Gemini AI: ${geminiMode}`);
   console.log(`🤖 Gemini Model: ${modelName}`);
