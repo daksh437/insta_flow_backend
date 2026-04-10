@@ -12,7 +12,9 @@ const ttsRoutes = require('./routes/tts');
 const adminNotificationsRoutes = require('./routes/adminNotifications');
 const retentionRoutes = require('./routes/retention');
 const instagramRoutes = require('./routes/instagram');
+const schedulerRoutes = require('./routes/scheduler');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
+const { processPendingScheduledPosts } = require('./services/scheduler_service');
 const cron = require('node-cron');
 
 const app = express();
@@ -59,6 +61,7 @@ app.use('/daily-drop', dailyDropRoutes);
 app.use('/api', ttsRoutes);
 app.use('/admin', adminNotificationsRoutes);
 app.use('/retention', retentionRoutes);
+app.use('/scheduler', schedulerRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', success: true, message: 'OK' });
@@ -122,4 +125,11 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     });
   });
   console.log('⏰ Daily Viral Drop cron scheduled (00:00 daily)');
+
+  cron.schedule('* * * * *', () => {
+    processPendingScheduledPosts().catch((err) => {
+      console.error('[Scheduler] Cron publish failed:', err?.message || err);
+    });
+  });
+  console.log('⏰ Instagram scheduler cron scheduled (every minute)');
 });
