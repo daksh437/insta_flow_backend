@@ -95,7 +95,7 @@ async function createMedia(req, res) {
     const caption = String(req.body?.caption || '');
     const isReel = req.body?.isReel === true;
 
-    const created = await instagramService.createMedia({
+    const creationId = await instagramService.createMedia({
       accessToken: token,
       imageUrl: imageUrl || null,
       videoUrl: videoUrl || null,
@@ -105,7 +105,7 @@ async function createMedia(req, res) {
 
     return res.json({
       success: true,
-      creationId: created.id,
+      creationId,
     });
   } catch (error) {
     return sendError(res, error);

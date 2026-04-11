@@ -1,4 +1,5 @@
 const { getDb, getInitStatus } = require('../utils/firestoreAdmin');
+const { isIndexMissingError, logIndexRequirement } = require('../utils/firestoreIndexGuard');
 
 function getUid(req) {
   return String(req.headers['x-user-uid'] || req.headers['X-User-UID'] || '').trim();
@@ -218,12 +219,13 @@ async function recommendations(req, res) {
         .limit(5)
         .get();
     } catch (queryError) {
-      const code = String(queryError?.code || '');
-      if (code.includes('failed-precondition') || code.includes('FAILED_PRECONDITION')) {
-        console.warn(
-          '[Retention] recommendations fallback query (likely missing index):',
-          queryError.message
-        );
+      if (isIndexMissingError(queryError)) {
+        logIndexRequirement({
+          queryName: 'retention.recommendations',
+          collection: 'ai_history',
+          fields: ['userId ASC', 'createdAt DESC'],
+          error: queryError,
+        });
         histSnap = await db.collection('ai_history').where('userId', '==', uid).limit(50).get();
       } else {
         throw queryError;
@@ -284,12 +286,13 @@ async function weeklyReport(req, res) {
         .where('createdAt', '>=', since)
         .get();
     } catch (queryError) {
-      const code = String(queryError?.code || '');
-      if (code.includes('failed-precondition') || code.includes('FAILED_PRECONDITION')) {
-        console.warn(
-          '[Retention] weeklyReport fallback query (likely missing index):',
-          queryError.message
-        );
+      if (isIndexMissingError(queryError)) {
+        logIndexRequirement({
+          queryName: 'retention.weeklyReport',
+          collection: 'ai_history',
+          fields: ['userId ASC', 'createdAt ASC'],
+          error: queryError,
+        });
         const fallback = await db.collection('ai_history').where('userId', '==', uid).limit(200).get();
         const sinceMs = since.getTime();
         hist = {

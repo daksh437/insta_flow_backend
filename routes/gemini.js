@@ -20,6 +20,8 @@ const {
   getJobStatus
 } = require('../controllers/geminiController');
 
+const { fullAssist, viralCaption, postAnalyze } = require('../controllers/aiGrowthController');
+
 const router = express.Router();
 
 // Job status polling (no AI access check)
@@ -49,6 +51,11 @@ router.post('/hooks', wrapAiHandler(generateHooks));
 router.post('/comment-reply', wrapAiHandler(generateCommentReply));
 router.post('/trends', wrapAiHandler(generateTrends));
 router.post('/carousel', wrapAiHandler(generateCarousel));
+
+/** Instagram growth pack: full pipeline, viral caption, post insights */
+router.post('/full-assist', wrapAiHandler(fullAssist));
+router.post('/caption', wrapAiHandler(viralCaption));
+router.post('/analyze-post', wrapAiHandler(postAnalyze));
 
 module.exports = router;
 

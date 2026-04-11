@@ -1,6 +1,7 @@
 const axios = require('axios');
 
 const GRAPH_BASE = 'https://graph.instagram.com';
+const GRAPH_FB_BASE = 'https://graph.facebook.com/v18.0';
 
 function sanitizeToken(value) {
   return String(value || '').trim();
@@ -11,6 +12,15 @@ function toApiError(message, status = 500, code = 'instagram_api_error') {
   err.status = status;
   err.code = code;
   return err;
+}
+
+function isValidUrl(url) {
+  const u = String(url || '').trim();
+  return (
+    u.startsWith('https://') &&
+    (u.startsWith('https://firebasestorage.googleapis.com') ||
+      u.startsWith('https://storage.googleapis.com'))
+  );
 }
 
 async function graphGet(path, params = {}) {
@@ -68,26 +78,68 @@ async function getUserProfile(accessToken) {
   });
 }
 
-async function createMedia({ accessToken, imageUrl, videoUrl, caption, isReel }) {
+async function createMedia({ accessToken, imageUrl, videoUrl, caption, isReel, isCarousel, children, isCarouselItem }) {
   const token = sanitizeToken(accessToken);
   if (!token) throw toApiError('Missing Instagram access token', 401, 'missing_token');
-  if (!imageUrl && !videoUrl) {
-    throw toApiError('imageUrl or videoUrl is required', 400, 'invalid_media_input');
+  const mediaUrl = String(videoUrl || imageUrl || '').trim();
+  const childIds = Array.isArray(children) ? children.map((c) => String(c || '').trim()).filter(Boolean) : [];
+  if (!isCarousel) {
+    if (!mediaUrl) {
+      throw toApiError('imageUrl or videoUrl is required', 400, 'invalid_media_input');
+    }
+    if (!isValidUrl(mediaUrl)) {
+      throw toApiError('INVALID_IMAGE_URL', 400, 'invalid_media_url');
+    }
+  } else if (childIds.length < 2) {
+    throw toApiError('Carousel requires at least 2 children', 400, 'invalid_media_input');
   }
 
-  const payload = {
-    access_token: token,
-    caption: caption || '',
-  };
+  try {
+    const profile = await getUserProfile(token);
+    const igUserId = String(profile?.id || '').trim();
+    if (!igUserId) {
+      throw toApiError('Instagram user id not found', 400, 'missing_ig_user_id');
+    }
 
-  if (videoUrl) {
-    payload.media_type = isReel ? 'REELS' : 'VIDEO';
-    payload.video_url = videoUrl;
-  } else {
-    payload.image_url = imageUrl;
+    console.log('Image URL:', mediaUrl);
+    console.log('Caption:', caption || '');
+    console.log('Creating media with:', {
+      image_url: mediaUrl,
+      caption: caption || '',
+      ig_user_id: igUserId,
+    });
+
+    const body = { caption: caption || '', access_token: token };
+    if (isCarousel) {
+      body.media_type = 'CAROUSEL';
+      body.children = childIds.join(',');
+    } else if (isCarouselItem) {
+      body.is_carousel_item = true;
+    } else if (videoUrl) {
+      body.media_type = isReel ? 'REELS' : 'VIDEO';
+      body.video_url = mediaUrl;
+    }
+    if (!videoUrl && !isCarousel) {
+      body.image_url = mediaUrl;
+    }
+
+    const res = await axios.post(`${GRAPH_FB_BASE}/${igUserId}/media`, body, {
+      timeout: 25000,
+    });
+
+    console.log('CREATE MEDIA RESPONSE:', res.data);
+
+    const mediaId = String(res.data?.id || '').trim();
+    if (!mediaId) {
+      console.error('CREATE MEDIA ERROR: Instagram did not return media ID', res.data);
+      throw new Error('Instagram did not return media ID');
+    }
+
+    return mediaId;
+  } catch (err) {
+    console.error('CREATE MEDIA ERROR:', err.response?.data || err.message);
+    throw new Error('Media creation failed');
   }
-
-  return graphPost('/me/media', payload);
 }
 
 async function publishMedia({ accessToken, creationId }) {
