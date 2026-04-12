@@ -1,46 +1,70 @@
-const fs = require('fs');
-const path = require('path');
+/**
+ * Google OAuth tokens in Firestore `google_tokens/{userId}` (persistent across restarts).
+ */
+const { getDb, getAdmin } = require('./firestoreAdmin');
 
-const storePath = process.env.TOKEN_STORE_PATH || './data/tokens.json';
+const COLLECTION = 'google_tokens';
 
-function ensureStore() {
-  const dir = path.dirname(storePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(storePath)) {
-    fs.writeFileSync(storePath, JSON.stringify({}), 'utf-8');
+const TOKEN_KEYS = ['access_token', 'refresh_token', 'expiry_date', 'token_type', 'scope', 'id_token'];
+
+function buildCredentialObject(data) {
+  if (!data || typeof data !== 'object') return null;
+  const out = {};
+  for (const k of TOKEN_KEYS) {
+    if (data[k] !== undefined && data[k] !== null) out[k] = data[k];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+async function getTokens(userId) {
+  if (!userId) return null;
+  const db = getDb();
+  if (!db) {
+    console.warn('[tokenStore] getTokens: Firestore not initialized');
+    return null;
+  }
+  try {
+    const snap = await db.collection(COLLECTION).doc(String(userId)).get();
+    if (!snap.exists) return null;
+    return buildCredentialObject(snap.data());
+  } catch (e) {
+    console.error('[tokenStore] getTokens error:', e.message);
+    return null;
   }
 }
 
-function readStore() {
-  ensureStore();
-  const raw = fs.readFileSync(storePath, 'utf-8');
-  return raw ? JSON.parse(raw) : {};
+async function saveTokens(userId, tokens) {
+  if (!userId) throw new Error('saveTokens: missing userId');
+  const db = getDb();
+  if (!db) throw new Error('Firestore unavailable — cannot save OAuth tokens');
+
+  const admin = getAdmin();
+  const FieldValue = admin.firestore.FieldValue;
+
+  const patch = {};
+  for (const k of TOKEN_KEYS) {
+    if (tokens[k] !== undefined) patch[k] = tokens[k];
+  }
+
+  await db
+    .collection(COLLECTION)
+    .doc(String(userId))
+    .set(
+      {
+        ...patch,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
 }
 
-function writeStore(data) {
-  ensureStore();
-  fs.writeFileSync(storePath, JSON.stringify(data, null, 2), 'utf-8');
-}
-
-function saveTokens(userId, tokens) {
-  const store = readStore();
-  store[userId] = tokens;
-  writeStore(store);
-}
-
-function getTokens(userId) {
-  const store = readStore();
-  return store[userId] || null;
-}
-
-function hasTokens(userId) {
-  const store = readStore();
-  return !!store[userId];
+async function hasTokens(userId) {
+  const t = await getTokens(userId);
+  return !!(t && t.refresh_token);
 }
 
 module.exports = {
-  saveTokens,
   getTokens,
+  saveTokens,
   hasTokens,
 };
-

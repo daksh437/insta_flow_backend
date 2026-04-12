@@ -103,7 +103,7 @@ async function handleCallback(req, res) {
     }
     
     console.log('[handleCallback] Tokens received, saving for userId:', userId);
-    saveTokens(userId, tokens);
+    await saveTokens(userId, tokens);
     
     // Return success page that can be displayed in browser
     res.send(`
@@ -202,7 +202,7 @@ async function getStatus(req, res) {
   try {
     const userId = getUserId(req);
     if (!userId) return res.status(400).json({ success: false, error: 'Missing userId/Firebase UID' });
-    const connected = hasTokens(userId);
+    const connected = await hasTokens(userId);
     res.json({ success: true, data: { connected } });
   } catch (error) {
     console.error('getStatus error', error);
@@ -210,9 +210,31 @@ async function getStatus(req, res) {
   }
 }
 
+/**
+ * GET /auth/google?userId= — browser redirect to Google OAuth (state = userId).
+ */
+async function redirectGoogleOAuth(req, res) {
+  try {
+    const userId = req.query.userId || getUserId(req);
+    if (!userId) {
+      return res
+        .status(400)
+        .send(
+          '<!DOCTYPE html><html><body><p>Missing userId. Open this link from the InstaFlow app after signing in.</p></body></html>'
+        );
+    }
+    const url = generateAuthUrl(userId);
+    return res.redirect(302, url);
+  } catch (error) {
+    console.error('[redirectGoogleOAuth]', error.message);
+    return res.status(500).send(`<html><body><p>${error.message || 'OAuth redirect failed'}</p></body></html>`);
+  }
+}
+
 module.exports = {
   getAuthUrl,
   handleCallback,
   getStatus,
+  redirectGoogleOAuth,
 };
 

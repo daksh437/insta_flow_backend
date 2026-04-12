@@ -23,7 +23,11 @@ function getUserId(req) {
 
 async function createCalendarEvent(req, res) {
   try {
-    const { title, description, startDateTime, endDateTime } = req.body || {};
+    const body = req.body || {};
+    const title = body.title;
+    const description = body.description;
+    const startDateTime = body.startDateTime || body.startTime;
+    const endDateTime = body.endDateTime || body.endTime;
     const userId = getUserId(req);
 
     console.log('[createCalendarEvent] Request received - userId:', userId || 'missing');
@@ -47,7 +51,7 @@ async function createCalendarEvent(req, res) {
     }
 
     console.log('[createCalendarEvent] Getting tokens for userId:', userId);
-    const tokens = getTokens(userId);
+    const tokens = await getTokens(userId);
     if (!tokens) {
       console.error('[createCalendarEvent] No tokens found for userId:', userId);
       return res.status(401).json({ 
@@ -58,13 +62,19 @@ async function createCalendarEvent(req, res) {
 
     console.log('[createCalendarEvent] Creating OAuth client and setting credentials');
     const client = createOAuthClient();
-    client.setCredentials(tokens);
+    let credentials = { ...tokens };
+    client.setCredentials(credentials);
 
-    // Handle token refresh
-    client.on('tokens', (newTokens) => {
+    // Handle token refresh (merge so refresh-only updates don't drop refresh_token)
+    client.on('tokens', async (newTokens) => {
       if (newTokens.refresh_token || newTokens.access_token) {
         console.log('[createCalendarEvent] Tokens refreshed, saving...');
-        saveTokens(userId, { ...tokens, ...newTokens });
+        credentials = { ...credentials, ...newTokens };
+        try {
+          await saveTokens(userId, credentials);
+        } catch (e) {
+          console.error('[createCalendarEvent] saveTokens after refresh failed:', e.message);
+        }
       }
     });
 
