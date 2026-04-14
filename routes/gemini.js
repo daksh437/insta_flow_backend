@@ -17,6 +17,9 @@ const {
   generateCommentReply,
   generateTrends,
   generateCarousel,
+  contentEngine,
+  getGrowthCoach,
+  viralScore,
   getJobStatus
 } = require('../controllers/geminiController');
 
@@ -26,6 +29,7 @@ const router = express.Router();
 
 // Job status polling (no AI access check)
 router.get('/job-status/:jobId', getJobStatus);
+router.get('/growth-coach', getGrowthCoach);
 
 // All POST AI endpoints require access check (sets req._aiEndpoint for logging)
 const aiAccessMiddleware = (req, res, next) => {
@@ -51,6 +55,8 @@ router.post('/hooks', wrapAiHandler(generateHooks));
 router.post('/comment-reply', wrapAiHandler(generateCommentReply));
 router.post('/trends', wrapAiHandler(generateTrends));
 router.post('/carousel', wrapAiHandler(generateCarousel));
+router.post('/content-engine', wrapAiHandler(contentEngine));
+router.post('/viral-score', wrapAiHandler(viralScore));
 
 /** Instagram growth pack: full pipeline, viral caption, post insights */
 router.post('/full-assist', wrapAiHandler(fullAssist));

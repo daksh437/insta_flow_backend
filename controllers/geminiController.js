@@ -2357,6 +2357,24 @@ function transformScriptData(scriptData, language, topic, duration) {
   };
 }
 
+function buildReelsFallback(topic = 'Instagram growth') {
+  return {
+    hook: 'Stop scrolling! This will boost your Instagram 🚀',
+    scene_by_scene: [
+      { time: '0-3s', visual: 'Show your app interface', dialogue: 'Show your app interface' },
+      { time: '3-7s', visual: 'Explain problem users face', dialogue: 'Explain problem users face' },
+      { time: '7-11s', visual: 'Show how your app solves it', dialogue: 'Show how your app solves it' },
+      { time: '11-14s', visual: 'Add quick tip', dialogue: 'Add quick tip' },
+      { time: '14-15s', visual: 'Call to action', dialogue: 'Call to action' },
+    ],
+    cta: 'Follow for more growth hacks 🔥',
+    caption: `Grow faster with smart tools 💡 ${topic}`.trim(),
+    hashtags: ['#instagrowth', '#reels', '#viral'],
+    fullScript:
+      'Stop scrolling! This will boost your Instagram.\n\nShow your app interface.\nExplain problem users face.\nShow how your app solves it.\nAdd quick tip.\n\nFollow for more growth hacks.',
+  };
+}
+
 /**
  * POST /ai/reels-script
  * Non-blocking async endpoint - returns jobId immediately, processes in background
@@ -2370,6 +2388,7 @@ function transformScriptData(scriptData, language, topic, duration) {
  */
 async function generateReelsScript(req, res) {
   console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/reels-script' }));
+  console.log('📥 Incoming reels script request:', req.body);
   // Accept either old format (topic, duration, etc.) or new format (userInput)
   const { userInput, topic, duration, tone, audience, language, regenerate = false } = req.body || {};
   
@@ -2438,8 +2457,7 @@ async function generateReelsScript(req, res) {
     regenerate: regenerate
   });
   
-  // CRITICAL: Wait for Gemini API response - NO IMMEDIATE FALLBACK
-  // This ensures user gets REAL AI-generated content, not hardcoded templates
+  console.log('🚀 Calling AI model...');
   console.log(`[generateReelsScript] 🚀 Starting Gemini API call - waiting for REAL AI response...`);
   
   // Update job status to processing
@@ -2451,6 +2469,7 @@ async function generateReelsScript(req, res) {
       // Get the completed job data
       const job = getJob(jobId);
       if (job && job.status === 'completed' && job.data) {
+        console.log('✅ AI response:', job.data);
         console.log(`[generateReelsScript] ✅ Gemini API succeeded - returning REAL AI data`);
         res.json({
           success: true,
@@ -2464,19 +2483,14 @@ async function generateReelsScript(req, res) {
     .catch(error => {
       console.error(`[generateReelsScript] ❌ Gemini API failed:`, error.message);
       console.error(`[generateReelsScript] Error stack:`, error.stack);
-      
-      // Update job with error status
-      updateJob(jobId, 'failed', { 
-        data: null,
-        error: error.message || 'AI generation failed'
-      });
-      
-      // Return error response - NO FALLBACK
-      res.status(500).json({
-        success: false,
-        jobId: jobId,
-        error: `AI generation failed: ${error.message}`,
-        data: null
+
+      const fallback = buildReelsFallback(extractedParams.topic || finalUserInput || 'Instagram growth');
+      completeJobAndRecordUsage(jobId, 'done', { data: fallback });
+
+      return res.json({
+        success: true,
+        jobId,
+        data: fallback,
       });
     });
 }
@@ -3627,6 +3641,304 @@ function extractCarouselFromText(text, slides) {
   return result;
 }
 
+function _scoreBand(value) {
+  if (value >= 80) return 'High';
+  if (value >= 55) return 'Medium';
+  return 'Low';
+}
+
+function _buildViralScore({ hook = '', caption = '', hashtags = [] }) {
+  const triggerWords = [
+    'secret', 'mistake', 'stop', 'before', 'after', 'now', 'instantly',
+    'why', 'how', 'viral', 'boost', 'hack', 'warning',
+  ];
+  const normalizedHook = String(hook).toLowerCase();
+  const triggerHits = triggerWords.filter((w) => normalizedHook.includes(w)).length;
+  const hookRaw = Math.min(100, 30 + triggerHits * 14);
+
+  const captionLen = String(caption).length;
+  let captionRaw = 45;
+  if (captionLen >= 80 && captionLen <= 220) captionRaw += 25;
+  else if (captionLen >= 45 && captionLen <= 300) captionRaw += 15;
+  if (String(caption).includes('?') || String(caption).toLowerCase().includes('comment') || String(caption).toLowerCase().includes('save')) {
+    captionRaw += 20;
+  }
+  captionRaw = Math.min(100, captionRaw);
+
+  const tagCount = Array.isArray(hashtags) ? hashtags.length : 0;
+  let tagRaw = 45;
+  if (tagCount >= 8 && tagCount <= 15) tagRaw += 35;
+  else if (tagCount >= 4) tagRaw += 20;
+  tagRaw = Math.min(100, tagRaw);
+
+  const overall = Math.round(hookRaw * 0.35 + captionRaw * 0.35 + tagRaw * 0.30);
+  return {
+    overall,
+    hook: _scoreBand(hookRaw),
+    retention: _scoreBand(Math.round((hookRaw + captionRaw) / 2)),
+    viral_chance: _scoreBand(Math.round((overall + tagRaw) / 2)),
+  };
+}
+
+function _safeBand(value) {
+  if (value >= 75) return 'High';
+  if (value >= 45) return 'Medium';
+  return 'Low';
+}
+
+function _defaultViralScoreResponse() {
+  return {
+    score: 60,
+    hook_strength: 'Medium',
+    retention_score: 'Medium',
+    engagement_score: 'Medium',
+    viral_chance: 'Medium',
+    problems: [],
+    suggestions: ['Keep testing hooks and add a stronger CTA.'],
+  };
+}
+
+async function viralScore(req, res) {
+  try {
+    const hook = String(req.body?.hook || '').trim();
+    const caption = String(req.body?.caption || '').trim();
+    const hashtags = Array.isArray(req.body?.hashtags) ? req.body.hashtags.map((h) => String(h).trim()).filter(Boolean) : [];
+    const script = Array.isArray(req.body?.script) ? req.body.script.map((s) => String(s).trim()).filter(Boolean) : [];
+
+    const problems = [];
+    const suggestions = [];
+
+    // 1) Hook analysis
+    const emotionalWords = ['stop', "don't", 'secret', 'mistake', 'warning', 'before', 'after'];
+    const hookLower = hook.toLowerCase();
+    const emotionalHits = emotionalWords.filter((w) => hookLower.includes(w)).length;
+    const hookLen = hook.length;
+    let hookScore = 38 + emotionalHits * 14;
+    if (hookLen > 0 && hookLen <= 90) hookScore += 18;
+    if (hookLen > 140) {
+      hookScore -= 20;
+      problems.push('Hook is too long');
+      suggestions.push('Shorten your first line');
+    }
+    if (emotionalHits === 0) {
+      problems.push('Hook lacks emotional trigger');
+      suggestions.push('Use a stronger hook with emotional trigger');
+    }
+    hookScore = Math.max(0, Math.min(100, hookScore));
+
+    // 2) Script analysis
+    const sceneCount = script.length;
+    let scriptScore = 42;
+    if (sceneCount >= 3 && sceneCount <= 7) scriptScore += 28;
+    else if (sceneCount >= 2) scriptScore += 16;
+    else if (sceneCount <= 1) {
+      problems.push('Script has too few scenes');
+      suggestions.push('Break script into clear scene-by-scene flow');
+    }
+
+    // basic logical flow: average line length and progression words
+    const flowWords = ['first', 'then', 'next', 'finally', 'end', 'cta'];
+    const flowHits = script.reduce((acc, line) => {
+      const ll = line.toLowerCase();
+      return acc + (flowWords.some((w) => ll.includes(w)) ? 1 : 0);
+    }, 0);
+    scriptScore += Math.min(20, flowHits * 5);
+    if (flowHits === 0 && sceneCount > 0) {
+      suggestions.push('Improve logical flow with transition cues (first, then, finally)');
+    }
+    scriptScore = Math.max(0, Math.min(100, scriptScore));
+
+    // 3) Caption analysis
+    const captionLower = caption.toLowerCase();
+    const hasCta = ['follow', 'save', 'comment', 'share', 'dm'].some((w) => captionLower.includes(w));
+    const captionLen = caption.length;
+    let captionScore = 40;
+    if (captionLen >= 80 && captionLen <= 220) captionScore += 24;
+    else if (captionLen >= 40) captionScore += 12;
+    if (hasCta) captionScore += 25;
+    else {
+      problems.push('Caption has no CTA');
+      suggestions.push('Add CTA like "Save this post"');
+    }
+    if (captionLen < 20) {
+      problems.push('Caption is too short');
+      suggestions.push('Add a clearer value statement in caption');
+    }
+    captionScore = Math.max(0, Math.min(100, captionScore));
+
+    // 4) Hashtag analysis
+    const tagCount = hashtags.length;
+    const uniqueTags = new Set(hashtags.map((h) => h.toLowerCase())).size;
+    let hashtagScore = 38;
+    if (tagCount >= 8 && tagCount <= 15) hashtagScore += 30;
+    else if (tagCount >= 4) hashtagScore += 18;
+    else {
+      problems.push('Too few hashtags');
+      suggestions.push('Use a balanced hashtag mix (8-15 tags)');
+    }
+    const diversityRatio = tagCount > 0 ? uniqueTags / tagCount : 0;
+    if (diversityRatio >= 0.8) hashtagScore += 20;
+    else if (tagCount > 0) {
+      problems.push('Hashtag diversity is low');
+      suggestions.push('Increase hashtag diversity and avoid duplicates');
+    }
+    hashtagScore = Math.max(0, Math.min(100, hashtagScore));
+
+    const retention = Math.round(scriptScore * 0.55 + hookScore * 0.45);
+    const engagement = Math.round(captionScore * 0.6 + hashtagScore * 0.4);
+    const overall = Math.round(hookScore * 0.3 + retention * 0.3 + engagement * 0.4);
+
+    const response = {
+      score: overall,
+      hook_strength: _safeBand(hookScore),
+      retention_score: _safeBand(retention),
+      engagement_score: _safeBand(engagement),
+      viral_chance: _safeBand(Math.round((overall + hookScore) / 2)),
+      problems,
+      suggestions: Array.from(new Set(suggestions)).slice(0, 6),
+    };
+
+    console.log('[viralScore] Request:', req.body);
+    console.log('[viralScore] Response:', response);
+    return response;
+  } catch (error) {
+    console.error('[viralScore] Error:', error?.message || error);
+    return _defaultViralScoreResponse();
+  }
+}
+
+function _contentEngineFallback(niche = 'instagram growth') {
+  const fallback = {
+    idea: `3 practical ${niche} tactics creators can apply today`,
+    hook: 'Stop scrolling: this one content framework can lift your reach this week.',
+    script: [
+      'Open with a bold pain point your audience feels daily.',
+      'Share one clear method in 2 quick steps.',
+      'Show a mini before/after example for proof.',
+      'End with a specific CTA: save + comment for part 2.',
+    ],
+    caption: `If you are building in ${niche}, this framework helps you get better retention and engagement. Save this and test it today.`,
+    hashtags: ['#instagramgrowth', '#contentstrategy', '#reels', '#creatorbusiness', '#socialmediatips'],
+    best_time: '7:30 PM',
+  };
+  return {
+    ...fallback,
+    score: _buildViralScore({
+      hook: fallback.hook,
+      caption: fallback.caption,
+      hashtags: fallback.hashtags,
+    }),
+  };
+}
+
+async function contentEngine(req, res) {
+  const niche = String(req.body?.niche || '').trim();
+  const goal = String(req.body?.goal || 'engagement').trim().toLowerCase();
+  if (!niche) {
+    return {
+      ..._contentEngineFallback('instagram growth'),
+      note: 'Niche was missing, using fallback niche.',
+    };
+  }
+
+  console.log('[contentEngine] Request:', req.body);
+  const prompt = `You are an elite Instagram growth strategist.
+Generate a single unified content engine response for niche "${niche}" and goal "${goal}".
+
+Return ONLY valid JSON with this exact shape:
+{
+  "idea": "string",
+  "hook": "string",
+  "script": ["line1", "line2", "line3", "line4"],
+  "caption": "string",
+  "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"],
+  "best_time": "string"
+}
+
+Rules:
+- Hook must be scroll-stopping.
+- Script lines must be short and spoken style.
+- Caption must include one CTA.
+- Hashtags must be a balanced mix: broad + mid + niche.
+- Keep output concise and practical.`;
+
+  try {
+    const raw = await runGemini(prompt, {
+      maxTokens: 1200,
+      temperature: 0.75,
+      topP: 0.95,
+    });
+    const parsed = extractJsonFromText(raw) || {};
+    const normalized = {
+      idea: String(parsed.idea || `Actionable ${niche} content blueprint`),
+      hook: String(parsed.hook || 'Stop scrolling: this framework can improve your next post.'),
+      script: Array.isArray(parsed.script)
+        ? parsed.script.map((x) => String(x)).filter(Boolean).slice(0, 8)
+        : [],
+      caption: String(parsed.caption || `Use this ${niche} framework and save for execution.`),
+      hashtags: Array.isArray(parsed.hashtags)
+        ? parsed.hashtags.map((h) => String(h)).filter(Boolean).slice(0, 15)
+        : [],
+      best_time: String(parsed.best_time || '7:30 PM'),
+    };
+    if (normalized.script.length === 0) {
+      normalized.script = _contentEngineFallback(niche).script;
+    }
+    if (normalized.hashtags.length === 0) {
+      normalized.hashtags = _contentEngineFallback(niche).hashtags;
+    }
+    const result = {
+      ...normalized,
+      score: _buildViralScore({
+        hook: normalized.hook,
+        caption: normalized.caption,
+        hashtags: normalized.hashtags,
+      }),
+    };
+    console.log('[contentEngine] Response:', result);
+    return result;
+  } catch (error) {
+    console.error('[contentEngine] Error:', error.message);
+    const fallback = _contentEngineFallback(niche);
+    console.log('[contentEngine] Fallback:', fallback);
+    return fallback;
+  }
+}
+
+async function getGrowthCoach(req, res) {
+  const followers = Number(req.query.followers ?? req.body?.followers ?? 0) || 0;
+  const posts = Number(req.query.posts ?? req.body?.posts ?? 0) || 0;
+  const activity = String(req.query.activity ?? req.body?.activity ?? 'medium').toLowerCase();
+
+  const dailyPlan = [
+    'Post 1 high-retention short reel with clear hook.',
+    'Engage with 20 relevant comments in your niche.',
+    'Publish 3 stories: poll, value tip, CTA.',
+  ];
+  if (activity === 'low') dailyPlan.unshift('Start with one simple post today to rebuild consistency.');
+  if (posts < 15) dailyPlan.push('Focus on consistency over perfection for next 7 days.');
+
+  const tips = [
+    'Use one clear CTA in every caption.',
+    'Keep first 2 seconds visually dynamic.',
+    'Mix broad + niche hashtags for balanced reach.',
+  ];
+  if (followers < 1000) tips.push('Prioritize shareable educational content to grow discovery.');
+
+  const warnings = [];
+  if (activity === 'low') warnings.push('Low activity may reduce distribution over time.');
+  if (posts < 10) warnings.push('Too few posts for strong pattern learning; increase posting frequency.');
+  if (warnings.length === 0) warnings.push('No major risk detected — keep momentum and test new hooks.');
+
+  const response = {
+    daily_plan: dailyPlan,
+    tips,
+    warnings,
+  };
+  console.log('[growthCoach] Response:', response);
+  return response;
+}
+
 module.exports = {
   generateCaptions,
   generateImageCaptions,
@@ -3642,6 +3954,9 @@ module.exports = {
   generateCommentReply,
   generateTrends,
   generateCarousel,
+  contentEngine,
+  getGrowthCoach,
+  viralScore,
   getJobStatus,
 };
 

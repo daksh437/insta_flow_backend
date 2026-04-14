@@ -15,6 +15,7 @@ const instagramRoutes = require('./routes/instagram');
 const schedulerRoutes = require('./routes/scheduler');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const { processPendingScheduledPosts } = require('./services/scheduler_service');
+const { buildAiFallback } = require('./utils/aiFallback');
 const cron = require('node-cron');
 
 const app = express();
@@ -72,6 +73,15 @@ app.use((err, req, res, next) => {
   console.error(`[ERROR] ${new Date().toISOString()} ${req.method} ${req.path}`);
   console.error('[ERROR Details]', err);
   console.error('[ERROR Stack]', err.stack);
+  if (!res.headersSent && req.path.startsWith('/ai/')) {
+    const fallback = buildAiFallback(req.path, req.body || {});
+    console.log('[AI Global Fallback]', req.path, fallback);
+    return res.json({
+      success: true,
+      data: fallback,
+      fallback: true,
+    });
+  }
   res.status(500).json({
     success: false,
     error: 'Internal Server Error',

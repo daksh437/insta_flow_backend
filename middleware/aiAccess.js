@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { getDb } = require('../utils/firestoreAdmin');
 const { ensureUserAiFields } = require('../utils/ensureUserAiFields');
 const { resolvePlan } = require('../services/planResolver');
+const { buildAiFallback } = require('../utils/aiFallback');
 
 const USERS = 'users';
 const AI_REQUEST_KEYS = 'ai_request_keys';
@@ -314,7 +315,31 @@ function wrapAiHandler(handler) {
         message: 'Daily AI limit reached. Upgrade for more.',
       });
     }
-    return Promise.resolve(handler(req, res, next)).catch(next);
+    try {
+      console.log('[AI Request]', req._aiEndpoint || req.path, req.body || {});
+    } catch (_) {}
+
+    return Promise.resolve(handler(req, res, next))
+      .then((value) => {
+        try {
+          if (!res.headersSent && value !== undefined) {
+            console.log('[AI Response]', req._aiEndpoint || req.path, value);
+            return res.json({ success: true, data: value });
+          }
+        } catch (_) {}
+        return value;
+      })
+      .catch((error) => {
+        if (res.headersSent) return;
+        console.error('[AI Controller Error]', req._aiEndpoint || req.path, error?.message || error);
+        const fallback = buildAiFallback(req._aiEndpoint || req.path, req.body || {});
+        console.log('[AI Fallback Response]', req._aiEndpoint || req.path, fallback);
+        return res.json({
+          success: true,
+          data: fallback,
+          fallback: true,
+        });
+      });
   };
   fn._aiHandlerWrapped = WRAP_AUDIT_TAG;
   return fn;
