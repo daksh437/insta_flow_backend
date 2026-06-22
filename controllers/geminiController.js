@@ -89,6 +89,46 @@ function tryParseJson(text, fallback) {
 }
 
 /**
+ * Salvage complete top-level JSON objects from a possibly TRUNCATED array
+ * response (e.g. when the model hits maxOutputTokens mid-array). Brace-counts
+ * while respecting strings, returning every fully-closed `{...}` object and
+ * discarding an incomplete trailing one. Used as a fallback for list endpoints
+ * (e.g. multi-day calendars) so a cut-off response still yields usable items.
+ */
+function salvageJsonObjects(text) {
+  if (!text || typeof text !== 'string') return [];
+  const cleaned = text.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '');
+  const objects = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          try { objects.push(JSON.parse(cleaned.substring(start, i + 1))); } catch (_) { /* skip */ }
+          start = -1;
+        }
+      }
+    }
+  }
+  return objects;
+}
+
+/**
  * Extract captions from plain text response (when JSON parsing fails)
  * Treats Gemini output as RAW TEXT and extracts captions using robust logic
  * @param {string} text - Raw text from Gemini
@@ -967,22 +1007,36 @@ async function processCalendar(jobId, topic, days, tone, goal) {
     const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
     const uniquePrompt = `${calendarPrompt(topic, days, tone, goal)}\n\n🎲 UNIQUE_SEED: ${uniqueSeed}\n📅 TIMESTAMP: ${timestamp}\n🔄 REQUEST_ID: ${jobId}`;
     
-    console.log('[processCalendar] Calling Gemini API with unique prompt...');
-    const output = await runGemini(uniquePrompt, { 
-      maxTokens: 4096, 
+    // Scale output budget with the number of days so 14/30-day calendars are
+    // not truncated mid-JSON (4096 only fit ~7 full day objects). Capped at 8192.
+    const maxTokens = Math.min(8192, Math.max(2048, targetDays * 320 + 512));
+    console.log(`[processCalendar] Calling Gemini API (maxTokens=${maxTokens} for ${targetDays} days)...`);
+    const output = await runGemini(uniquePrompt, {
+      maxTokens,
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
       randomSeed: uniqueSeed
     });
     console.log('[processCalendar] Gemini response received, length:', output?.length || 0);
-    
+
     if (!output || output.trim().length === 0) {
       throw new Error('Empty response from Gemini API');
     }
-    
+
     let data = tryParseJson(output, []);
-    
+
+    // If the array was truncated (model hit the token cap), the strict parser
+    // returns nothing — salvage whatever complete day objects we can. The
+    // normalize/pad step below then tops it up to the requested day count.
+    if (!Array.isArray(data) || data.length === 0) {
+      const salvaged = salvageJsonObjects(output);
+      if (salvaged.length > 0) {
+        console.log(`[processCalendar] strict parse empty; salvaged ${salvaged.length} day object(s) from truncated output`);
+        data = salvaged;
+      }
+    }
+
     if (!Array.isArray(data) || data.length === 0) {
       throw new Error('Invalid calendar data from Gemini API');
     }
