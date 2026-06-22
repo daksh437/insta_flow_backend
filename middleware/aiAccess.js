@@ -333,11 +333,14 @@ function wrapAiHandler(handler) {
         if (res.headersSent) return;
         console.error('[AI Controller Error]', req._aiEndpoint || req.path, error?.message || error);
         const fallback = buildAiFallback(req._aiEndpoint || req.path, req.body || {});
+        const errorCode = String(error?.code || 'AI_HANDLER_FALLBACK');
         console.log('[AI Fallback Response]', req._aiEndpoint || req.path, fallback);
         return res.json({
           success: true,
           data: fallback,
           fallback: true,
+          meta: { errorCode },
+          ok: true,
         });
       });
   };

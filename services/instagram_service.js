@@ -165,9 +165,109 @@ async function getInsights(accessToken) {
   };
 }
 
+/**
+ * Recent media for the connected account (real engagement signal).
+ * Requires a Business/Creator IG account; like_count/comments_count may be
+ * absent on some account types — callers must treat them as optional.
+ */
+async function getRecentMedia(accessToken, limit = 25) {
+  const token = sanitizeToken(accessToken);
+  if (!token) throw toApiError('Missing Instagram access token', 401, 'missing_token');
+  const data = await graphGet('/me/media', {
+    fields: 'id,caption,media_type,like_count,comments_count,timestamp,permalink',
+    limit,
+    access_token: token,
+  });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+/**
+ * Build a compact "creator context" from the user's REAL account: their
+ * best-performing format, the IST hours their top posts were published,
+ * hashtags that worked, and themes from their best captions. Used to ground
+ * AI generation in what already works for THIS creator. Network-safe: if media
+ * can't be read, returns profile-only context (counts may be 0).
+ */
+async function buildCreatorContext(accessToken) {
+  const token = sanitizeToken(accessToken);
+  if (!token) throw toApiError('Missing Instagram access token', 401, 'missing_token');
+  const profile = await getUserProfile(token);
+
+  let media = [];
+  try {
+    media = await getRecentMedia(token, 25);
+  } catch (e) {
+    console.warn('[buildCreatorContext] media read failed:', e.message);
+    media = [];
+  }
+
+  const scored = media
+    .map((m) => ({
+      ...m,
+      eng: Number(m.like_count || 0) + Number(m.comments_count || 0),
+    }))
+    .sort((a, b) => b.eng - a.eng);
+  const top = scored.slice(0, 8);
+
+  // Best-performing format by total engagement.
+  const formatEng = {};
+  for (const m of scored) {
+    const t = String(m.media_type || 'IMAGE');
+    formatEng[t] = (formatEng[t] || 0) + m.eng;
+  }
+  const bestFormat = Object.keys(formatEng).sort((a, b) => formatEng[b] - formatEng[a])[0] || null;
+
+  // Audience-active hours (IST = UTC+5:30) inferred from top posts' publish times.
+  const hourCount = {};
+  for (const m of top) {
+    if (!m.timestamp) continue;
+    const d = new Date(m.timestamp);
+    if (Number.isNaN(d.getTime())) continue;
+    const istMinutes = (d.getUTCHours() * 60 + d.getUTCMinutes() + 330) % 1440;
+    const istHour = Math.floor(istMinutes / 60);
+    hourCount[istHour] = (hourCount[istHour] || 0) + 1;
+  }
+  const bestHoursIST = Object.keys(hourCount)
+    .sort((a, b) => hourCount[b] - hourCount[a])
+    .slice(0, 3)
+    .map(Number);
+
+  // Hashtags that appeared in the best posts.
+  const tagCount = {};
+  for (const m of top) {
+    const tags = String(m.caption || '').match(/#[\wऀ-ॿ]+/g) || [];
+    for (const tag of tags) {
+      const key = tag.toLowerCase();
+      tagCount[key] = (tagCount[key] || 0) + 1;
+    }
+  }
+  const topHashtags = Object.keys(tagCount)
+    .sort((a, b) => tagCount[b] - tagCount[a])
+    .slice(0, 12);
+
+  // Short theme snippets from the best captions.
+  const topThemes = top
+    .slice(0, 4)
+    .map((m) => String(m.caption || '').replace(/\s+/g, ' ').trim().slice(0, 80))
+    .filter(Boolean);
+
+  return {
+    followers: Number(profile.followers_count || 0),
+    username: profile.username || '',
+    accountType: profile.account_type || '',
+    sampleCount: media.length,
+    bestFormat,
+    bestHoursIST,
+    topHashtags,
+    topThemes,
+  };
+}
+
 module.exports = {
   getUserProfile,
   createMedia,
   publishMedia,
   getInsights,
+  getRecentMedia,
+  buildCreatorContext,
 };

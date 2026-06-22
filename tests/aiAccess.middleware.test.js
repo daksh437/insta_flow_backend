@@ -10,6 +10,8 @@
  * - wrapAiHandler allows when req.aiAccessAllowed === true
  */
 
+process.env.NODE_ENV = 'test';
+
 const { requireAiAccess, wrapAiHandler, DAILY_CREDITS_FREE } = require('../middleware/aiAccess');
 
 async function runTest(name, fn) {

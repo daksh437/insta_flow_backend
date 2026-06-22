@@ -1,5 +1,8 @@
 const { createOAuthClient, generateAuthUrl } = require('../utils/oauthClient');
 const { saveTokens, hasTokens } = require('../utils/tokenStore');
+const { escapeHtml } = require('../utils/html');
+const { createOAuthState, verifyOAuthState } = require('../utils/oauthState');
+const { apiSuccess, apiError, toSafeError } = require('../utils/response');
 
 function getUserId(req) {
   // Try multiple header name variations (case-insensitive)
@@ -25,7 +28,7 @@ async function getAuthUrl(req, res) {
     const userId = getUserId(req);
     if (!userId) {
       console.error('[getAuthUrl] Missing userId/Firebase UID');
-      return res.status(400).json({ success: false, error: 'Missing userId/Firebase UID. Please login first.' });
+      return apiError(res, 400, 'MISSING_USER_ID', 'Missing userId/Firebase UID. Please login first.');
     }
     
     // Check if Google OAuth is configured (check for missing or empty values)
@@ -38,56 +41,62 @@ async function getAuthUrl(req, res) {
       console.error('[getAuthUrl] GOOGLE_CLIENT_ID:', clientId ? '***set***' : 'MISSING');
       console.error('[getAuthUrl] GOOGLE_CLIENT_SECRET:', clientSecret ? '***set***' : 'MISSING');
       console.error('[getAuthUrl] GOOGLE_REDIRECT_URI:', redirectUri ? redirectUri : 'MISSING');
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Google OAuth not configured. Please set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI in Render.com environment variables.' 
-      });
+      return apiError(
+        res,
+        500,
+        'GOOGLE_OAUTH_NOT_CONFIGURED',
+        'Google OAuth not configured. Please set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI in environment variables.'
+      );
     }
     
     if (clientId === 'YOUR_GOOGLE_CLIENT_ID' || 
         clientSecret === 'YOUR_GOOGLE_CLIENT_SECRET' ||
         redirectUri === 'YOUR_GOOGLE_REDIRECT_URI') {
       console.error('[getAuthUrl] Google OAuth using placeholder values');
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Google OAuth not configured. Please set real GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI values in Render.com environment variables.' 
-      });
+      return apiError(
+        res,
+        500,
+        'GOOGLE_OAUTH_PLACEHOLDER_CONFIG',
+        'Google OAuth not configured. Please set real GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI values.'
+      );
     }
     
     console.log('[getAuthUrl] Generating auth URL for userId:', userId);
-    const url = generateAuthUrl(userId); // Pass userId to include in state parameter
+    const state = createOAuthState(userId, 'google');
+    const url = generateAuthUrl(state);
     console.log('[getAuthUrl] Auth URL generated successfully');
-    res.json({ success: true, data: { url } });
+    return apiSuccess(res, { url });
   } catch (error) {
     console.error('[getAuthUrl] Error:', error.message);
     console.error('[getAuthUrl] Stack:', error.stack);
-    res.status(500).json({ 
-      success: false, 
-      error: `Failed to generate auth URL: ${error.message}` 
-    });
+    const safe = toSafeError(error, 'Failed to generate auth URL', 'OAUTH_URL_FAILED');
+    return apiError(res, safe.status, safe.code, safe.message);
   }
 }
 
 async function handleCallback(req, res) {
   try {
     const code = req.query.code;
-    // Get userId from state parameter (passed in OAuth URL) or from headers/query
-    const userId = req.query.state || getUserId(req);
+    const state = req.query.state;
+    const stateResult = verifyOAuthState(state, 'google');
+    const userId = stateResult.ok ? stateResult.uid : null;
     
     console.log('[handleCallback] Received callback - code:', code ? 'present' : 'missing', 'userId:', userId || 'missing');
     console.log('[handleCallback] Query params:', { code: code ? 'present' : 'missing', state: req.query.state });
     
     if (!code) {
       console.error('[handleCallback] Missing OAuth code');
-      return res.status(400).json({ success: false, error: 'Missing OAuth authorization code' });
+      return apiError(res, 400, 'MISSING_OAUTH_CODE', 'Missing OAuth authorization code');
     }
     
     if (!userId) {
       console.error('[handleCallback] Missing userId - state param:', req.query.state, 'headers:', Object.keys(req.headers).filter(k => k.toLowerCase().includes('user')));
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Missing userId/Firebase UID. Please ensure you are logged in and try connecting again.' 
-      });
+      return apiError(
+        res,
+        400,
+        stateResult.code || 'INVALID_OAUTH_STATE',
+        stateResult.message || 'Missing userId/Firebase UID. Please ensure you are logged in and try connecting again.'
+      );
     }
 
     console.log('[handleCallback] Exchanging code for tokens for userId:', userId);
@@ -96,10 +105,7 @@ async function handleCallback(req, res) {
     
     if (!tokens?.refresh_token) {
       console.error('[handleCallback] No refresh_token received');
-      return res.status(400).json({
-        success: false,
-        error: 'No refresh_token returned. Ensure access_type=offline & prompt=consent',
-      });
+      return apiError(res, 400, 'MISSING_REFRESH_TOKEN', 'No refresh_token returned. Ensure access_type=offline & prompt=consent');
     }
     
     console.log('[handleCallback] Tokens received, saving for userId:', userId);
@@ -156,6 +162,7 @@ async function handleCallback(req, res) {
   } catch (error) {
     console.error('[handleCallback] OAuth callback error:', error.message);
     console.error('[handleCallback] Stack:', error.stack);
+    const safeErrorMessage = escapeHtml(error.message || 'An error occurred while connecting to Google Calendar.');
     res.status(500).send(`
       <!DOCTYPE html>
       <html>
@@ -189,7 +196,7 @@ async function handleCallback(req, res) {
           <div class="container">
             <div class="error">❌</div>
             <h1>Connection Failed</h1>
-            <p>${error.message || 'An error occurred while connecting to Google Calendar.'}</p>
+            <p>${safeErrorMessage}</p>
             <p>Please try again from the app.</p>
           </div>
         </body>
@@ -201,12 +208,12 @@ async function handleCallback(req, res) {
 async function getStatus(req, res) {
   try {
     const userId = getUserId(req);
-    if (!userId) return res.status(400).json({ success: false, error: 'Missing userId/Firebase UID' });
+    if (!userId) return apiError(res, 400, 'MISSING_USER_ID', 'Missing userId/Firebase UID');
     const connected = await hasTokens(userId);
-    res.json({ success: true, data: { connected } });
+    return apiSuccess(res, { connected });
   } catch (error) {
     console.error('getStatus error', error);
-    res.status(500).json({ success: false, error: 'Status check failed' });
+    return apiError(res, 500, 'STATUS_CHECK_FAILED', 'Status check failed');
   }
 }
 
@@ -223,7 +230,8 @@ async function redirectGoogleOAuth(req, res) {
           '<!DOCTYPE html><html><body><p>Missing userId. Open this link from the InstaFlow app after signing in.</p></body></html>'
         );
     }
-    const url = generateAuthUrl(userId);
+    const state = createOAuthState(userId, 'google');
+    const url = generateAuthUrl(state);
     return res.redirect(302, url);
   } catch (error) {
     console.error('[redirectGoogleOAuth]', error.message);

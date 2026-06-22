@@ -1,5 +1,6 @@
 const { getDb } = require('../utils/firestoreAdmin');
 const instagramService = require('../services/instagram_service');
+const { createOAuthState } = require('../utils/oauthState');
 
 function getUid(req) {
   return String(
@@ -157,7 +158,7 @@ async function connectInstagram(req, res) {
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
     '&scope=instagram_business_basic,instagram_business_content_publish,instagram_business_manage_messages,instagram_business_manage_comments' +
     '&response_type=code' +
-    `&state=${encodeURIComponent(uid)}`;
+    `&state=${encodeURIComponent(createOAuthState(uid, 'instagram'))}`;
 
   return res.json({ success: true, authUrl });
 }

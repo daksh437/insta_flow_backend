@@ -3,6 +3,7 @@ const instagramService = require('./instagram_service');
 const { isIndexMissingError, logIndexRequirement } = require('../utils/firestoreIndexGuard');
 const axios = require('axios');
 const sharp = require('sharp');
+const CLAIM_TTL_MS = 2 * 60 * 1000;
 
 function getUserInstagramAuth(userData = {}) {
   const instagram = userData.instagram || {};
@@ -25,6 +26,39 @@ function isValidUrl(url) {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldClaimPost(data, nowMs = Date.now()) {
+  const status = String(data?.status || '');
+  if (status !== 'pending') return false;
+  const lockedUntilRaw = data?.processing?.lockedUntilMs;
+  const lockedUntilMs = Number(lockedUntilRaw || 0);
+  return !lockedUntilMs || lockedUntilMs <= nowMs;
+}
+
+async function claimScheduledPost(ref, workerId, nowMs = Date.now()) {
+  const db = getDb();
+  if (!db) return false;
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return false;
+    const data = snap.data() || {};
+    if (!shouldClaimPost(data, nowMs)) return false;
+    tx.set(
+      ref,
+      {
+        status: 'processing',
+        processing: {
+          workerId,
+          lockedAtMs: nowMs,
+          lockedUntilMs: nowMs + CLAIM_TTL_MS,
+        },
+        updatedAt: new Date(nowMs),
+      },
+      { merge: true }
+    );
+    return true;
+  });
 }
 
 /** Short code for clients/logs; keep lastError as human-readable string. */
@@ -149,6 +183,7 @@ async function markFailed(ref, message) {
     await ref.set(
       {
         status: 'pending',
+        processing: null,
         retryCount: retryCount + 1,
         lastRetryAt: serverTimestamp ? serverTimestamp() : new Date(),
         updatedAt: serverTimestamp ? serverTimestamp() : new Date(),
@@ -164,6 +199,7 @@ async function markFailed(ref, message) {
   await ref.set(
     {
       status: 'failed',
+      processing: null,
       updatedAt: serverTimestamp ? serverTimestamp() : new Date(),
       lastError: errMsg,
       lastErrorCode: errCode,
@@ -179,6 +215,7 @@ async function markPosted(ref, mediaId) {
   await ref.set(
     {
       status: 'posted',
+      processing: null,
       mediaId: mediaId || null,
       postedAt: serverTimestamp ? serverTimestamp() : new Date(),
       updatedAt: serverTimestamp ? serverTimestamp() : new Date(),
@@ -190,15 +227,19 @@ async function markPosted(ref, mediaId) {
   console.log(`[Scheduler] ${ref.id} -> posted${mediaId ? ` (mediaId=${mediaId})` : ''}`);
 }
 
-async function processDuePost(doc) {
+async function processDuePost(ref, workerId) {
   const db = getDb();
   if (!db) throw new Error('Firestore unavailable');
 
-  const data = doc.data() || {};
-    console.log(`[Scheduler] Processing scheduled post ${doc.id}`);
+  const snap = await ref.get();
+  if (!snap.exists) return;
+  const data = snap.data() || {};
+  const owner = String(data?.processing?.workerId || '');
+  if (owner && owner !== workerId) return;
+  console.log(`[Scheduler] Processing scheduled post ${snap.id}`);
   const userId = String(data.userId || '').trim();
   if (!userId) {
-    await markFailed(doc.ref, 'Missing userId in scheduled post');
+    await markFailed(ref, 'Missing userId in scheduled post');
     return;
   }
 
@@ -206,11 +247,11 @@ async function processDuePost(doc) {
   const user = userSnap.data() || {};
   const { token, expiresAt } = getUserInstagramAuth(user);
   if (!token) {
-    await markFailed(doc.ref, 'Instagram token missing. Reconnect Instagram.');
+    await markFailed(ref, 'Instagram token missing. Reconnect Instagram.');
     return;
   }
   if (expiresAt && expiresAt.getTime() <= Date.now()) {
-    await markFailed(doc.ref, 'Instagram token expired. Reconnect Instagram.');
+    await markFailed(ref, 'Instagram token expired. Reconnect Instagram.');
     return;
   }
 
@@ -222,7 +263,7 @@ async function processDuePost(doc) {
   const mediaType = String(data.mediaType || 'image').toLowerCase();
   const scheduledAt = data.scheduledAt?.toDate ? data.scheduledAt.toDate() : data.scheduledAt;
   console.log('[Scheduler] 📅 Scheduled Post Data:', {
-    docId: doc.id,
+    docId: snap.id,
     userId,
     imageUrl,
     captionLength: caption.length,
@@ -230,12 +271,12 @@ async function processDuePost(doc) {
     mediaType,
   });
   if (!imageUrl && imageUrls.length === 0) {
-    await markFailed(doc.ref, 'imageUrl/imageUrls missing');
+    await markFailed(ref, 'imageUrl/imageUrls missing');
     return;
   }
   const allUrls = imageUrls.length > 0 ? imageUrls : [imageUrl];
   if (allUrls.some((u) => !isValidUrl(u))) {
-    await markFailed(doc.ref, 'INVALID_IMAGE_URL');
+    await markFailed(ref, 'INVALID_IMAGE_URL');
     return;
   }
   console.log('Image URL:', imageUrl);
@@ -250,7 +291,7 @@ async function processDuePost(doc) {
         const resizedBuffer = await fixImageRatio(allUrls[i]);
         const processedUrl = await uploadProcessedImage({
           userId,
-          docId: `${doc.id}_${i}`,
+          docId: `${snap.id}_${i}`,
           imageBuffer: resizedBuffer,
         });
         processedUrls.push(processedUrl);
@@ -260,7 +301,7 @@ async function processDuePost(doc) {
       console.log('[Scheduler] Image(s) resized to 4:5 and uploaded:', publishImageUrls.length);
     } catch (error) {
       console.error('[Scheduler] Failed to preprocess image ratio:', error?.message || error);
-      await markFailed(doc.ref, `Image preprocessing failed: ${error?.message || 'unknown error'}`);
+      await markFailed(ref, `Image preprocessing failed: ${error?.message || 'unknown error'}`);
       return;
     }
   }
@@ -297,12 +338,12 @@ async function processDuePost(doc) {
     }
   } catch (error) {
     console.error('Instagram error:', error?.response?.data || error?.message);
-    await markFailed(doc.ref, 'Media creation failed (invalid image)');
+    await markFailed(ref, 'Media creation failed (invalid image)');
     return;
   }
   mediaId = String(mediaId || '').trim();
   if (!mediaId) {
-    console.log(`[Scheduler] ⏳ Retrying media creation for ${doc.id}...`);
+    console.log(`[Scheduler] ⏳ Retrying media creation for ${snap.id}...`);
     await wait(5000);
     try {
       mediaId = await createMediaWithRetry({
@@ -314,14 +355,14 @@ async function processDuePost(doc) {
       });
     } catch (error) {
       console.error('Instagram error:', error?.response?.data || error?.message);
-      await markFailed(doc.ref, 'Media creation failed (invalid image)');
+      await markFailed(ref, 'Media creation failed (invalid image)');
       return;
     }
     mediaId = String(mediaId || '').trim();
   }
   const creationId = mediaId;
   if (!creationId) {
-    await markFailed(doc.ref, 'Instagram rejected media');
+    await markFailed(ref, 'Instagram rejected media');
     return;
   }
   console.log('Image URL:', publishImageUrl);
@@ -335,8 +376,8 @@ async function processDuePost(doc) {
     creationId,
   });
 
-  await markPosted(doc.ref, String(published?.id || ''));
-  console.log(`[Scheduler] Publish success doc=${doc.id} mediaId=${String(published?.id || '')}`);
+  await markPosted(ref, String(published?.id || ''));
+  console.log(`[Scheduler] Publish success doc=${snap.id} mediaId=${String(published?.id || '')}`);
 }
 
 async function processPendingScheduledPosts() {
@@ -374,9 +415,12 @@ async function processPendingScheduledPosts() {
       return;
     }
 
+    const workerId = `worker-${process.pid}-${Date.now()}`;
     for (const doc of pendingSnap.docs) {
       try {
-        await processDuePost(doc);
+        const claimed = await claimScheduledPost(doc.ref, workerId);
+        if (!claimed) continue;
+        await processDuePost(doc.ref, workerId);
       } catch (error) {
         await markFailed(doc.ref, error?.message || 'Failed to publish scheduled post');
       }
@@ -388,4 +432,8 @@ async function processPendingScheduledPosts() {
 
 module.exports = {
   processPendingScheduledPosts,
+  __test: {
+    shouldClaimPost,
+    claimScheduledPost,
+  },
 };

@@ -1,6 +1,7 @@
 const axios = require('axios');
 const { getDb } = require('../utils/firestoreAdmin');
 const instagramService = require('../services/instagram_service');
+const { verifyOAuthState } = require('../utils/oauthState');
 
 function sanitize(value) {
   return String(value || '').trim();
@@ -48,7 +49,14 @@ function callbackHtml(ok, message) {
 }
 
 function getUid(req) {
-  return sanitize(req.query.state || req.query.userId || req.headers['x-user-uid']);
+  const verified = verifyOAuthState(req.query.state, 'instagram');
+  if (verified.ok) return sanitize(verified.uid);
+  // Backward compatibility for old clients still sending plain UID in non-production.
+  const env = (process.env.NODE_ENV || 'development').toLowerCase();
+  if (env !== 'production') {
+    return sanitize(req.query.userId || req.headers['x-user-uid'] || req.query.state);
+  }
+  return '';
 }
 
 async function exchangeCodeForShortToken({ code, appId, appSecret, redirectUri }) {

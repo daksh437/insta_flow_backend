@@ -13,7 +13,7 @@ const ADMIN_KEY = process.env.ADMIN_SECRET || process.env.ADMIN_KEY || '';
 function requireAdmin(req, res, next) {
   const key = (req.headers['x-admin-key'] || req.headers['X-Admin-Key'] || req.body?.adminKey || req.query?.adminKey) || '';
   if (!ADMIN_KEY || key !== ADMIN_KEY) {
-    return res.status(403).json({ ok: false, error: 'FORBIDDEN', message: 'Invalid or missing admin key' });
+    return res.status(403).json({ success: false, ok: false, error: 'FORBIDDEN', message: 'Invalid or missing admin key' });
   }
   next();
 }
@@ -22,11 +22,12 @@ function requireAdmin(req, res, next) {
 router.get('/debug/ai-usage/:uid', async (req, res) => {
   const uid = (req.params.uid || '').trim();
   if (!uid) {
-    return res.status(400).json({ ok: false, error: 'Missing uid', message: 'Provide uid in path, e.g. /debug/ai-usage/USER_UID' });
+    return res.status(400).json({ success: false, ok: false, error: 'Missing uid', message: 'Provide uid in path, e.g. /debug/ai-usage/USER_UID' });
   }
   try {
     const access = await getAiAccess(uid);
     const response = {
+      success: true,
       ok: true,
       uid,
       allowed: access.allowed,
@@ -51,6 +52,7 @@ router.get('/debug/ai-usage/:uid', async (req, res) => {
   } catch (e) {
     console.error('[debug/ai-usage]', e);
     res.status(500).json({
+      success: false,
       ok: false,
       uid,
       error: 'SERVER_ERROR',
@@ -63,6 +65,7 @@ router.get('/check-ai-access', async (req, res) => {
   const uid = (req.headers['x-user-uid'] || req.headers['X-User-UID'])?.trim();
   if (!uid) {
     return res.status(401).json({
+      success: false,
       ok: false,
       allowed: false,
       error: 'UNAUTHORIZED',
@@ -77,6 +80,7 @@ router.get('/check-ai-access', async (req, res) => {
 
     if (planType === 'trial') {
       return res.json({
+        success: true,
         ok: true,
         allowed: true,
         planType: 'trial',
@@ -91,6 +95,7 @@ router.get('/check-ai-access', async (req, res) => {
     }
     if (planType === 'premium') {
       return res.json({
+        success: true,
         ok: true,
         allowed: true,
         planType: 'premium',
@@ -106,6 +111,7 @@ router.get('/check-ai-access', async (req, res) => {
     }
 
     res.json({
+      success: true,
       ok: true,
       allowed: access.allowed,
       planType: 'free',
@@ -120,6 +126,7 @@ router.get('/check-ai-access', async (req, res) => {
   } catch (e) {
     console.error('[check-ai-access]', e);
     res.status(500).json({
+      success: false,
       ok: false,
       allowed: false,
       error: 'SERVER_ERROR',
@@ -131,24 +138,24 @@ router.get('/check-ai-access', async (req, res) => {
 // Admin: manual upgrade to premium
 router.post('/admin/set-premium', requireAdmin, async (req, res) => {
   const uid = (req.body?.uid || req.query?.uid || '').trim();
-  if (!uid) return res.status(400).json({ ok: false, error: 'Missing uid', message: 'Provide uid in body or query' });
+  if (!uid) return res.status(400).json({ success: false, ok: false, error: 'Missing uid', message: 'Provide uid in body or query' });
   try {
     const done = await setPremium(uid, true);
-    return res.json({ ok: true, success: done, message: done ? 'User set to premium' : 'Update failed' });
+    return res.json({ success: done, ok: true, message: done ? 'User set to premium' : 'Update failed' });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: 'SERVER_ERROR', message: e.message });
+    return res.status(500).json({ success: false, ok: false, error: 'SERVER_ERROR', message: e.message });
   }
 });
 
 // Admin: reset daily credits / AI usage for a user (support/debug)
 router.post('/admin/reset-credits', requireAdmin, async (req, res) => {
   const uid = (req.body?.uid || req.query?.uid || '').trim();
-  if (!uid) return res.status(400).json({ ok: false, error: 'Missing uid', message: 'Provide uid in body or query' });
+  if (!uid) return res.status(400).json({ success: false, ok: false, error: 'Missing uid', message: 'Provide uid in body or query' });
   try {
     const done = await resetCredits(uid);
-    return res.json({ ok: true, success: done, message: done ? 'Credits reset' : 'Update failed' });
+    return res.json({ success: done, ok: true, message: done ? 'Credits reset' : 'Update failed' });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: 'SERVER_ERROR', message: e.message });
+    return res.status(500).json({ success: false, ok: false, error: 'SERVER_ERROR', message: e.message });
   }
 });
 
@@ -156,13 +163,13 @@ router.post('/admin/reset-credits', requireAdmin, async (req, res) => {
 router.post('/admin/set-plan-type', requireAdmin, async (req, res) => {
   const uid = (req.body?.uid || req.query?.uid || '').trim();
   const planType = (req.body?.planType || req.query?.planType || '').toLowerCase();
-  if (!uid) return res.status(400).json({ ok: false, error: 'Missing uid' });
-  if (!['trial', 'free', 'premium'].includes(planType)) return res.status(400).json({ ok: false, error: 'Invalid planType', message: 'Use trial, free, or premium' });
+  if (!uid) return res.status(400).json({ success: false, ok: false, error: 'Missing uid' });
+  if (!['trial', 'free', 'premium'].includes(planType)) return res.status(400).json({ success: false, ok: false, error: 'Invalid planType', message: 'Use trial, free, or premium' });
   try {
     const done = await setPlanType(uid, planType);
-    return res.json({ ok: true, success: done, message: done ? `Plan set to ${planType}` : 'Update failed' });
+    return res.json({ success: done, ok: true, message: done ? `Plan set to ${planType}` : 'Update failed' });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: 'SERVER_ERROR', message: e.message });
+    return res.status(500).json({ success: false, ok: false, error: 'SERVER_ERROR', message: e.message });
   }
 });
 
@@ -176,15 +183,16 @@ function toIsoOrNull(v) {
 }
 router.post('/admin/debug-user-ai', requireAdmin, async (req, res) => {
   const uid = (req.body?.uid || req.query?.uid || '').trim();
-  if (!uid) return res.status(400).json({ ok: false, error: 'Missing uid', message: 'Provide uid in body or query' });
+  if (!uid) return res.status(400).json({ success: false, ok: false, error: 'Missing uid', message: 'Provide uid in body or query' });
   const firestore = getDb();
-  if (!firestore) return res.status(503).json({ ok: false, error: 'FIRESTORE_UNAVAILABLE', message: 'Firestore not initialized' });
+  if (!firestore) return res.status(503).json({ success: false, ok: false, error: 'FIRESTORE_UNAVAILABLE', message: 'Firestore not initialized' });
   try {
     const snap = await firestore.collection('users').doc(uid).get();
     const serverNow = new Date().toISOString();
     const todayUtc = todayDateStr();
     if (!snap.exists) {
       return res.json({
+        success: true,
         ok: true,
         uid,
         exists: false,
@@ -200,6 +208,7 @@ router.post('/admin/debug-user-ai', requireAdmin, async (req, res) => {
     }
     const data = snap.data();
     res.json({
+      success: true,
       ok: true,
       uid,
       exists: true,
@@ -214,7 +223,7 @@ router.post('/admin/debug-user-ai', requireAdmin, async (req, res) => {
     });
   } catch (e) {
     console.error('[admin/debug-user-ai]', e);
-    res.status(500).json({ ok: false, uid, error: 'SERVER_ERROR', message: e.message });
+    res.status(500).json({ success: false, ok: false, uid, error: 'SERVER_ERROR', message: e.message });
   }
 });
 

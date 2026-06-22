@@ -1,18 +1,18 @@
 /**
- * Find users with subscription.verified == true + purchaseToken but missing root premiumExpiry
- * (or inconsistent plan fields). Dry-run by default.
+ * Find users with a Play purchase token but missing active premiumExpiry.
+ * Dry-run by default.
  *
  * Usage:
  *   node scripts/backfill-premium-from-subscription.js           # JSON list only
  *   node scripts/backfill-premium-from-subscription.js --apply   # writes Firestore (use with care)
  *
- * Requires: FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS (see utils/firestoreAdmin).
+ * Requires Firebase Admin credentials — see backend/.env.example
  */
 
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
-const { getDb } = require('../utils/firestoreAdmin');
+const { getDb, getInitStatus, DEFAULT_PROJECT_ID } = require('../utils/firestoreAdmin');
 
 const DAYS = 30;
 
@@ -25,13 +25,41 @@ function toDate(v) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function extractPurchaseToken(data) {
+  const sub = data.subscription;
+  const nested = sub && typeof sub === 'object'
+    ? (sub.purchaseToken || sub.purchase_token)
+    : null;
+  const root = data.subscriptionPurchaseToken;
+  const token = nested || root;
+  if (!token || String(token).trim() === '') return null;
+  return String(token).trim();
+}
+
 async function main() {
   const apply = process.argv.includes('--apply');
-  const firestore = getDb();
-  if (!firestore) {
-    console.error('Firestore not initialized.');
+  const status = getInitStatus();
+
+  if (!status.hasCredentialEnv) {
+    console.error('Firestore credentials missing.\n');
+    console.error('Option A — backend/.env:');
+    console.error('  FIREBASE_PROJECT_ID=instaflow-f65a0');
+    console.error('  FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"instaflow-f65a0",...}');
+    console.error('\nOption B — PowerShell (path to downloaded JSON key):');
+    console.error('  $env:GOOGLE_APPLICATION_CREDENTIALS="C:\\path\\to\\instaflow-f65a0-firebase-adminsdk.json"');
+    console.error(`  $env:FIREBASE_PROJECT_ID="${DEFAULT_PROJECT_ID}"`);
+    console.error('  node scripts/backfill-premium-from-subscription.js');
+    console.error('\nGet key: Firebase Console → instaflow-f65a0 → ⚙ Settings → Service accounts → Generate new private key');
     process.exit(1);
   }
+
+  const firestore = getDb();
+  if (!firestore) {
+    console.error('Firestore not initialized:', status.initError || 'unknown error');
+    process.exit(1);
+  }
+
+  console.error(`Using project: ${status.projectId}`);
 
   const now = new Date();
   const snap = await firestore.collection('users').get();
@@ -39,11 +67,8 @@ async function main() {
 
   snap.forEach((doc) => {
     const data = doc.data();
-    const sub = data.subscription;
-    if (!sub || typeof sub !== 'object') return;
-    if (sub.verified !== true) return;
-    const token = sub.purchaseToken || sub.purchase_token;
-    if (!token || String(token).trim() === '') return;
+    const token = extractPurchaseToken(data);
+    if (!token) return;
 
     const pe = toDate(data.premiumExpiry);
     const expiryOk = pe != null && pe > now;
@@ -51,10 +76,12 @@ async function main() {
 
     candidates.push({
       uid: doc.id,
+      email: data.email || null,
       premiumExpiry: pe ? pe.toISOString() : null,
       subscriptionPlan: data.subscriptionPlan,
       planType: data.planType,
       isPremium: data.isPremium,
+      hasSubscriptionVerified: data.subscription?.verified === true,
     });
   });
 
@@ -62,6 +89,11 @@ async function main() {
 
   if (!apply) {
     console.error('\nDry-run only. Re-run with --apply to set premiumExpiry (+30d), planType, subscriptionPlan, isPremium.');
+    return;
+  }
+
+  if (candidates.length === 0) {
+    console.error('No candidates to update.');
     return;
   }
 

@@ -27,14 +27,14 @@ function createOAuthClient() {
   return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
 }
 
-function generateAuthUrl(userId) {
+function generateAuthUrl(stateValue) {
   try {
     const client = createOAuthClient();
     return client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
       scope: SCOPES,
-      state: userId || '', // Pass userId in state parameter for callback
+      state: String(stateValue || '').trim(),
     });
   } catch (error) {
     console.error('[generateAuthUrl] Error:', error.message);

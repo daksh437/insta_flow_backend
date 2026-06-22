@@ -16,23 +16,23 @@ const schedulerRoutes = require('./routes/scheduler');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const { processPendingScheduledPosts } = require('./services/scheduler_service');
 const { buildAiFallback } = require('./utils/aiFallback');
+const { apiError } = require('./utils/response');
+const { parseCorsOrigins, buildCorsOptions } = require('./utils/corsConfig');
 const cron = require('node-cron');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const IS_PROD = NODE_ENV === 'production';
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').filter(Boolean);
-app.use(
-  cors({
-    origin: corsOrigins.length ? corsOrigins : '*',
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'x-user-uid', 'X-User-UID', 'X-Request-Time', 'X-Idempotency-Key', 'Cache-Control', 'Pragma', 'Expires'],
-  })
-);
+const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
+if (IS_PROD && corsOrigins.length === 0) {
+  throw new Error('CORS_ORIGINS is required in production when credentials are enabled.');
+}
+app.use(cors(buildCorsOptions(corsOrigins, IS_PROD)));
 
 app.use((req, res, next) => {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -42,7 +42,7 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  if ((process.env.NODE_ENV || 'development') !== 'production') {
+  if (!IS_PROD) {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   }
   next();
@@ -75,47 +75,44 @@ app.use((err, req, res, next) => {
   console.error('[ERROR Stack]', err.stack);
   if (!res.headersSent && req.path.startsWith('/ai/')) {
     const fallback = buildAiFallback(req.path, req.body || {});
-    console.log('[AI Global Fallback]', req.path, fallback);
+    const errorCode = String(err?.code || 'AI_FALLBACK');
+    console.warn('[AI Global Fallback]', req.path, { code: errorCode, message: err?.message || 'unknown' });
     return res.json({
       success: true,
       data: fallback,
       fallback: true,
+      meta: {
+        errorCode,
+      },
+      ok: true,
     });
   }
-  res.status(500).json({
-    success: false,
-    error: 'Internal Server Error',
-    message: err.message || 'Unknown error',
-  });
+  return apiError(res, 500, 'INTERNAL_SERVER_ERROR', 'Internal Server Error');
 });
 
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log('🚀 Server running on port', PORT);
-  const env = process.env.NODE_ENV || 'development';
+function validateRuntimeGuards() {
   const apiKey = process.env.GEMINI_API_KEY;
   const modelName = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
   const geminiMode = (apiKey && apiKey.trim() !== '') ? 'REAL MODE' : 'MOCK MODE';
   const devSkipLimits = process.env.DEV_SKIP_LIMITS === 'true' || process.env.DEV_SKIP_LIMITS === '1';
 
-  if (env === 'production' && devSkipLimits) {
-    console.error('[FATAL] DEV_SKIP_LIMITS must not be enabled in production. Aborting.');
-    server.close();
-    process.exit(1);
+  if (IS_PROD && devSkipLimits) {
+    throw new Error('DEV_SKIP_LIMITS must not be enabled in production.');
   }
 
   const { auditAiRoutes } = require('./scripts/auditAiRoutes');
-  try {
-    auditAiRoutes(app);
-  } catch (err) {
-    console.error(err.message);
-    server.close();
-    process.exit(1);
-  }
+  auditAiRoutes(app);
+  return { modelName, geminiMode };
+}
 
+function startServer() {
+  const { modelName, geminiMode } = validateRuntimeGuards();
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log('🚀 Server running on port', PORT);
   console.log('Server running on', PORT);
   console.log(`🚀 InstaFlow backend running on port ${PORT} (process.env.PORT)`);
   console.log(`📘 Instagram Business OAuth: GET /auth/instagram/callback`);
-  console.log(`🌍 Environment: ${env}`);
+  console.log(`🌍 Environment: ${NODE_ENV}`);
   console.log(`🤖 Gemini AI: ${geminiMode}`);
   console.log(`🤖 Gemini Model: ${modelName}`);
   console.log(`✅ Server ready for requests!`);
@@ -123,7 +120,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`📅 Daily drop: GET http://0.0.0.0:${PORT}/daily-drop/today`);
   console.log('[Retention] Mounted at /retention — GET /retention/health (no auth), mission, recommendations, weekly-report');
 
-  if (env === 'production') {
+  if (IS_PROD) {
     console.log(`☁️  Production mode: Server accessible from all network interfaces`);
   } else {
     console.log(`💻 Development mode: http://localhost:${PORT}`);
@@ -142,4 +139,15 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     });
   });
   console.log('⏰ Instagram scheduler cron scheduled (every minute)');
-});
+  });
+  return server;
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = {
+  app,
+  startServer,
+};

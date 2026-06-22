@@ -15,11 +15,13 @@ router.get('/today', (req, res) => {
   const drop = getTodayDrop();
   if (!drop) {
     return res.status(404).json({
+      success: false,
       ok: false,
       error: 'Today\'s drop not yet generated. Try again later.',
     });
   }
   res.json({
+    success: true,
     ok: true,
     drop,
   });

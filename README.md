@@ -47,6 +47,7 @@ GOOGLE_REDIRECT_URI=http://localhost:3000/auth/callback
 GEMINI_API_KEY=your_gemini_api_key
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 NODE_ENV=development
+OAUTH_STATE_SECRET=replace_with_long_random_secret
 ```
 
 ### 3. Start Server
@@ -93,14 +94,15 @@ GOOGLE_CLIENT_SECRET=your_google_client_secret_here
 GOOGLE_REDIRECT_URI=https://your-app-name.onrender.com/auth/callback
 GEMINI_API_KEY=your_gemini_api_key_here
 NODE_ENV=production
-CORS_ORIGINS=*
+CORS_ORIGINS=https://your-frontend.example.com
+OAUTH_STATE_SECRET=replace_with_long_random_secret
 ```
 
 **Important Notes:**
 - `PORT` is automatically set by Render (usually `10000`), but you can keep it as fallback
 - Replace `your-app-name.onrender.com` with your actual Render service URL
 - Update `GOOGLE_REDIRECT_URI` in Google Cloud Console to match your Render URL
-- `CORS_ORIGINS=*` allows all origins (or specify your Flutter app's domain)
+- In production, set explicit `CORS_ORIGINS` values (comma-separated); wildcard is not allowed when credentials are enabled
 
 #### 4. Update Google OAuth Redirect URI
 
@@ -165,7 +167,8 @@ CORS_ORIGINS=*
 | `GOOGLE_REDIRECT_URI` | OAuth callback URL | `https://your-app.onrender.com/auth/callback` |
 | `GEMINI_API_KEY` | Google Gemini API key | `AIzaSy...` |
 | `NODE_ENV` | Environment mode | `production` or `development` |
-| `CORS_ORIGINS` | Allowed CORS origins (optional, defaults to `*`) | `*` or `https://example.com` |
+| `CORS_ORIGINS` | Allowed CORS origins (required in production) | `https://example.com,https://app.example.com` |
+| `OAUTH_STATE_SECRET` | HMAC secret used to sign OAuth state payloads | long random string |
 | `INSTAGRAM_APP_ID` | Instagram app id | `685238157720367` |
 | `INSTAGRAM_APP_SECRET` | Instagram app secret | `***` |
 | `INSTAGRAM_REDIRECT_URI` | Instagram OAuth callback URI | `https://insta-flow-backend.onrender.com/auth/instagram/callback` |
@@ -178,11 +181,8 @@ CORS_ORIGINS=*
 
 ### CORS Configuration
 
-- If `CORS_ORIGINS` is not set, all origins are allowed (`*`)
-- For production, you can restrict to specific domains:
-  ```env
-  CORS_ORIGINS=https://your-flutter-app.com,https://your-web-app.com
-  ```
+- Development: if `CORS_ORIGINS` is empty, all origins are allowed for local testing.
+- Production: `CORS_ORIGINS` must be explicitly configured (comma-separated), otherwise startup fails.
 
 ## 📝 Notes
 
@@ -200,6 +200,13 @@ CORS_ORIGINS=*
 5. **Rotate API keys** regularly
 
 ## 🐛 Troubleshooting
+
+### Run tests locally
+
+```bash
+cd backend
+npm test
+```
 
 ### Backend not starting on Render
 

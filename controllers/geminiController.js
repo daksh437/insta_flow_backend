@@ -3,6 +3,7 @@ const { processImageForGemini } = require('../utils/imageProcessor');
 const { v4: uuidv4 } = require('uuid');
 const { createJob, updateJob, generateJobId, getJob } = require('../utils/jobStore');
 const { recordAiUsage } = require('../middleware/aiAccess');
+const { loadCreatorContext, formatForPrompt } = require('../utils/creatorContext');
 
 /** Only record AI usage when job completes successfully. Request lock: never double-count same job. */
 function completeJobAndRecordUsage(jobId, status, data = {}) {
@@ -2157,7 +2158,7 @@ IMPORTANT:
  * Background processing function for reels script (handles errors with fallback)
  * Wraps the main processing logic to ensure fallback on any error
  */
-async function processReelsScript(jobId, userInput, extractedParams, regenerate) {
+async function processReelsScript(jobId, userInput, extractedParams, regenerate, uid) {
   try {
     // Main processing logic (moved inline to avoid duplicate function)
     console.log(`[processReelsScript] Starting background processing for job: ${jobId}`);
@@ -2177,7 +2178,21 @@ async function processReelsScript(jobId, userInput, extractedParams, regenerate)
     
     console.log(`[processReelsScript] Job ${jobId} - Calling Gemini API...`);
     // Use ChatGPT-style prompt with free text input
-    const prompt = reelsScriptPromptChatGPT(userInput, extractedParams, generationId, creativeSeed, regenerate);
+    let prompt = reelsScriptPromptChatGPT(userInput, extractedParams, generationId, creativeSeed, regenerate);
+
+    // Ground the script in the creator's REAL Instagram account when connected.
+    // Network-safe: null context = generic prompt (no behavior change for unconnected users).
+    try {
+      const ctx = await loadCreatorContext(uid);
+      const ctxBlock = formatForPrompt(ctx);
+      if (ctxBlock) {
+        prompt = `${ctxBlock}\n\n${prompt}`;
+        console.log(`[processReelsScript] Job ${jobId} - injected real creator context (${ctx.sampleCount} posts analyzed)`);
+      }
+    } catch (e) {
+      console.warn(`[processReelsScript] creator context skipped: ${e.message}`);
+    }
+
     console.log(`[processReelsScript] Job ${jobId} - Prompt length: ${prompt.length} characters`);
     console.log(`[processReelsScript] Job ${jobId} - Using model: ${process.env.GEMINI_MODEL || 'gemini-3-flash-preview'}`);
     
@@ -2518,7 +2533,7 @@ async function generateReelsScript(req, res) {
   updateJob(jobId, 'processing');
   
   // Process with Gemini API (blocking - wait for response)
-  processReelsScript(jobId, finalUserInput, extractedParams, regenerate)
+  processReelsScript(jobId, finalUserInput, extractedParams, regenerate, req.uid)
     .then(() => {
       // Get the completed job data
       const job = getJob(jobId);
