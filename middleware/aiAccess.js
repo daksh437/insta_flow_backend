@@ -105,6 +105,60 @@ async function loadUser(uid) {
   }
 }
 
+// Duration (days) for each product / base plan. Monthly = 30 (weekly intro is
+// still part of the monthly subscription, so 30 days is correct).
+const PRODUCT_DAYS = { premium_monthly: 30, premium_3month: 90, premium_6month: 180, premium_12month: 365 };
+
+/**
+ * Self-healing premium activation. The client saves the Play purchase receipt
+ * (`subscription.{purchaseToken,productId}`) reliably, but its follow-up write
+ * of `premiumExpiry` can fail — leaving a paid user without premium. Here the
+ * SERVER activates premium from that receipt when it's missing/expired, so a
+ * completed payment always results in premium (source of truth = premiumExpiry).
+ * Mutates [user] in place. Returns true if it activated.
+ */
+async function activatePremiumFromReceiptIfNeeded(ref, user, now) {
+  const sub = user.subscription;
+  if (!sub || typeof sub !== 'object' || !sub.productId) return false;
+  const productId = String(sub.productId);
+  if (!productId.startsWith('premium')) return false;
+
+  const currentExpiry = toDate(user.premiumExpiry || user.premium_expiry);
+  if (currentExpiry && currentExpiry > now) return false; // already premium
+
+  // A present receipt means Play recently confirmed the subscription as active
+  // (client only writes it on purchased/restored). Grant `days` from now — same
+  // as the client's own activation. (Proper Google Play token verification can
+  // refine the exact expiry later.)
+  const days = PRODUCT_DAYS[productId] || 30;
+  const start = now;
+  const expiry = new Date(start.getTime() + days * 24 * 60 * 60 * 1000);
+
+  try {
+    await ref.update({
+      isPremium: true,
+      planType: 'premium',
+      subscriptionPlan: 'pro',
+      premiumPlan: 'pro',
+      premiumProductId: productId,
+      premiumExpiry: expiry,
+      premiumStartDate: start,
+      premiumExpiryNotified: false,
+      isTrialActive: false,
+      lastPurchaseStatus: 'purchased',
+      lastUpdated: new Date(),
+    });
+    user.isPremium = true;
+    user.planType = 'premium';
+    user.premiumExpiry = expiry;
+    console.log(`[aiAccess] server-activated premium from receipt uid=${ref.id} product=${productId} exp=${expiry.toISOString()}`);
+    return true;
+  } catch (e) {
+    console.warn('[aiAccess] activatePremiumFromReceipt error:', e.message);
+    return false;
+  }
+}
+
 /**
  * Get AI access: load user, resolve plan from dates (planResolver), persist if changed.
  * Reset dailyAiUsed only when planType === 'free' (and date rollover).
@@ -130,6 +184,9 @@ async function getAiAccess(uid) {
   Object.assign(user, healed);
 
   const now = new Date();
+  // Payment safety net: if a purchase receipt exists but premium wasn't set
+  // (client write failed), activate premium here before resolving the plan.
+  await activatePremiumFromReceiptIfNeeded(ref, user, now);
   let planType = resolvePlan(user);
 
   const trialEnd = toDate(user.trialEndDate) || toDate(user.trialEnd);
@@ -449,9 +506,30 @@ async function setPremium(uid, premium = true) {
   const firestore = getDb();
   if (!firestore) return false;
   try {
-    await firestore.collection(USERS).doc(uid).update({
-      planType: premium ? 'premium' : 'free',
-    });
+    if (premium) {
+      // Plan is resolved from premiumExpiry (see planResolver.js) — writing only
+      // planType does NOT grant premium. Write a real future expiry + the fields
+      // the client UI reads, so an admin grant actually unlocks premium.
+      const now = new Date();
+      const expiry = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000); // 1-year manual grant
+      await firestore.collection(USERS).doc(uid).set({
+        planType: 'premium',
+        isPremium: true,
+        subscriptionPlan: 'pro',
+        premiumPlan: 'pro',
+        premiumStartDate: now,
+        premiumExpiry: expiry,
+        premiumExpiryNotified: false,
+      }, { merge: true });
+    } else {
+      await firestore.collection(USERS).doc(uid).set({
+        planType: 'free',
+        isPremium: false,
+        subscriptionPlan: 'free',
+        premiumPlan: 'none',
+        premiumExpiry: null,
+      }, { merge: true });
+    }
     return true;
   } catch (e) {
     console.warn('[aiAccess] setPremium error:', e.message);
@@ -490,7 +568,21 @@ async function setPlanType(uid, planType) {
   const allowed = ['trial', 'free', 'premium'];
   if (!allowed.includes(planType)) return false;
   try {
-    await firestore.collection(USERS).doc(uid).update({ planType });
+    // Plan is resolved from dates (premiumExpiry / trialEndDate), not the stored
+    // planType field — so write the matching dates or the change has no effect.
+    if (planType === 'premium') {
+      return await setPremium(uid, true);
+    }
+    const now = new Date();
+    const updates = { planType, isPremium: false, premiumExpiry: null };
+    if (planType === 'trial') {
+      updates.trialEndDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      updates.subscriptionPlan = 'trial';
+    } else {
+      updates.subscriptionPlan = 'free';
+      updates.premiumPlan = 'none';
+    }
+    await firestore.collection(USERS).doc(uid).set(updates, { merge: true });
     return true;
   } catch (e) {
     console.warn('[aiAccess] setPlanType error:', e.message);

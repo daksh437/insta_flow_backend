@@ -4,3 +4,9 @@ data/tokens.json
 *.log
 .DS_Store
 
+# Firebase Admin service account keys — NEVER commit (full admin access).
+serviceAccountKey.json
+serviceAccount*.json
+*-firebase-adminsdk-*.json
+*service-account*.json
+
