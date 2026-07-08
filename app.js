@@ -30,7 +30,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
 if (IS_PROD && corsOrigins.length === 0) {
-  throw new Error('CORS_ORIGINS is required in production when credentials are enabled.');
+  // Mobile app requests carry no Origin header, so buildCorsOptions always
+  // allows them. Warn (don't crash) when CORS_ORIGINS is unset — set it only if
+  // a browser/web client is added.
+  console.warn('[cors] CORS_ORIGINS not set in production — allowing no-origin (mobile) requests only.');
 }
 app.use(cors(buildCorsOptions(corsOrigins, IS_PROD)));
 
