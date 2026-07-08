@@ -13,6 +13,7 @@ const { getDb } = require('../utils/firestoreAdmin');
 const { ensureUserAiFields } = require('../utils/ensureUserAiFields');
 const { resolvePlan } = require('../services/planResolver');
 const { buildAiFallback } = require('../utils/aiFallback');
+const { verifySubscription } = require('../utils/playVerify');
 
 const USERS = 'users';
 const AI_REQUEST_KEYS = 'ai_request_keys';
@@ -124,34 +125,80 @@ async function activatePremiumFromReceiptIfNeeded(ref, user, now) {
   if (!productId.startsWith('premium')) return false;
 
   const currentExpiry = toDate(user.premiumExpiry || user.premium_expiry);
-  if (currentExpiry && currentExpiry > now) return false; // already premium
+  const hasActivePremium = currentExpiry && currentExpiry > now;
 
-  // A present receipt means Play recently confirmed the subscription as active
-  // (client only writes it on purchased/restored). Grant `days` from now — same
-  // as the client's own activation. (Proper Google Play token verification can
-  // refine the exact expiry later.)
-  const days = PRODUCT_DAYS[productId] || 30;
-  const start = now;
-  const expiry = new Date(start.getTime() + days * 24 * 60 * 60 * 1000);
-
-  try {
-    await ref.update({
-      isPremium: true,
-      planType: 'premium',
-      subscriptionPlan: 'pro',
-      premiumPlan: 'pro',
-      premiumProductId: productId,
-      premiumExpiry: expiry,
-      premiumStartDate: start,
-      premiumExpiryNotified: false,
-      isTrialActive: false,
-      lastPurchaseStatus: 'purchased',
-      lastUpdated: new Date(),
-    });
+  const premiumFields = (expiry) => ({
+    isPremium: true,
+    planType: 'premium',
+    subscriptionPlan: 'pro',
+    premiumPlan: 'pro',
+    premiumProductId: productId,
+    premiumExpiry: expiry,
+    premiumStartDate: now,
+    premiumExpiryNotified: false,
+    isTrialActive: false,
+    lastPurchaseStatus: 'purchased',
+    lastUpdated: new Date(),
+  });
+  const applyPremium = async (expiry) => {
+    await ref.update(premiumFields(expiry));
     user.isPremium = true;
     user.planType = 'premium';
     user.premiumExpiry = expiry;
-    console.log(`[aiAccess] server-activated premium from receipt uid=${ref.id} product=${productId} exp=${expiry.toISOString()}`);
+  };
+  const revoke = async () => {
+    await ref.update({
+      isPremium: false,
+      planType: 'free',
+      subscriptionPlan: 'free',
+      premiumExpiry: null,
+      lastPurchaseStatus: 'expired',
+      lastUpdated: new Date(),
+    });
+    user.isPremium = false;
+    user.planType = 'free';
+    user.premiumExpiry = null;
+  };
+
+  // Ask Google Play for the REAL status of this purchase token.
+  const v = await verifySubscription(productId, sub.purchaseToken);
+
+  if (v.verified) {
+    if (v.active) {
+      const realExpiry = new Date(v.expiryMillis);
+      // Only write when it actually changes (avoid churn on every call).
+      if (!hasActivePremium || Math.abs(realExpiry.getTime() - currentExpiry.getTime()) > 60000) {
+        try {
+          await applyPremium(realExpiry);
+          console.log(`[aiAccess] Play-verified premium uid=${ref.id} exp=${realExpiry.toISOString()}`);
+          return true;
+        } catch (e) {
+          console.warn('[aiAccess] applyPremium error:', e.message);
+        }
+      }
+      return false;
+    }
+    // Play says NOT active (cancelled / renewal failed / expired) — revoke any
+    // stale premium so a lapsed subscriber loses access.
+    if (hasActivePremium || user.isPremium === true) {
+      try {
+        await revoke();
+        console.log(`[aiAccess] Play says inactive — revoked premium uid=${ref.id}`);
+      } catch (e) {
+        console.warn('[aiAccess] revoke error:', e.message);
+      }
+    }
+    return false;
+  }
+
+  // Play API unavailable (not configured yet / transient) — fall back to the
+  // receipt so a paid user still gets premium. Grant `days` from now.
+  if (hasActivePremium) return false;
+  const days = PRODUCT_DAYS[productId] || 30;
+  const expiry = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+  try {
+    await applyPremium(expiry);
+    console.log(`[aiAccess] receipt-based premium (Play unverified) uid=${ref.id} exp=${expiry.toISOString()}`);
     return true;
   } catch (e) {
     console.warn('[aiAccess] activatePremiumFromReceipt error:', e.message);
