@@ -471,6 +471,11 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
   const now = Date.now();
   const endpoint = options.endpoint || null;
   let usageLog = null;
+  // Captured inside the transaction so we can log every AI use (all plans) to
+  // ai_usage_logs afterwards — that's what the admin panel reads.
+  let logEmail = null;
+  let logPlan = 'free';
+  let didRead = false;
   try {
     await firestore.runTransaction(async (tx) => {
       if (keyRef) {
@@ -487,8 +492,11 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
       const snap = await tx.get(ref);
       if (!snap.exists) return;
       const data = snap.data();
+      logEmail = data.email || data.gmail || null;
       const rawPt = data.planType ?? data.plan_type ?? 'free';
       const pt = String(rawPt || '').toLowerCase();
+      logPlan = pt || 'free';
+      didRead = true;
       if (pt === 'premium' || pt === 'trial') return; // Only increment when planType === 'free'
       const today = todayDateStr();
       const dailyAiDate = data.dailyAiDate ?? data.daily_ai_date ?? '';
@@ -522,6 +530,21 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
         endpoint: endpoint || undefined,
       };
     });
+    // Log this AI use for the admin panel — ALL plans (free/trial/premium), with
+    // the user's email and the tool name. Read by AdminAIUsageScreen.
+    if (didRead && endpoint) {
+      try {
+        await firestore.collection('ai_usage_logs').add({
+          uid,
+          email: logEmail || '',
+          toolName: endpoint,
+          plan: logPlan,
+          usedAt: new Date(),
+        });
+      } catch (e) {
+        console.warn('[aiAccess] ai_usage_log write error:', e.message);
+      }
+    }
     logAiAccess('info', { event: EVENTS.AI_USAGE_RECORDED, userId: uid, requestId: requestId || undefined, idempotency: !!idempotencyKey });
     if (usageLog) logAiAccess('info', usageLog);
   } catch (e) {
