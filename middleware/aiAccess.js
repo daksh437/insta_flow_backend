@@ -110,6 +110,40 @@ async function loadUser(uid) {
 // still part of the monthly subscription, so 30 days is correct).
 const PRODUCT_DAYS = { premium_monthly: 30, premium_3month: 90, premium_6month: 180, premium_12month: 365 };
 
+const PURCHASE_TOKENS = 'purchase_tokens';
+function tokenDocId(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+/**
+ * Bind a Play purchase token to the FIRST app account that presents it.
+ * A Google Play subscription is tied to the device's Play account, so
+ * restorePurchases() can surface the same purchase under a DIFFERENT Firebase
+ * account. To ensure "premium only for the account that bought it", the first
+ * account to claim a token owns it; any other account presenting the same token
+ * is denied premium.
+ * Returns { owned: true } if [uid] owns (or just claimed) the token,
+ * or { owned: false, ownerUid } if another account already owns it.
+ */
+async function resolveTokenOwner(db, token, uid) {
+  if (!token) return { owned: true }; // no token to bind
+  const ref = db.collection(PURCHASE_TOKENS).doc(tokenDocId(token));
+  try {
+    const ownerUid = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) {
+        tx.set(ref, { uid, claimedAt: new Date() });
+        return uid;
+      }
+      return snap.data().uid;
+    });
+    return ownerUid === uid ? { owned: true } : { owned: false, ownerUid };
+  } catch (e) {
+    // Fail-open: never block a legitimate paying user on a transient error.
+    console.warn('[aiAccess] resolveTokenOwner error:', e.message);
+    return { owned: true };
+  }
+}
+
 /**
  * Self-healing premium activation. The client saves the Play purchase receipt
  * (`subscription.{purchaseToken,productId}`) reliably, but its follow-up write
@@ -159,6 +193,17 @@ async function activatePremiumFromReceiptIfNeeded(ref, user, now) {
     user.planType = 'free';
     user.premiumExpiry = null;
   };
+
+  // Ownership binding: premium is ONLY for the account that bought this
+  // subscription. If a different account restored the same Play purchase, deny.
+  const ownership = await resolveTokenOwner(getDb(), sub.purchaseToken, ref.id);
+  if (!ownership.owned) {
+    if (hasActivePremium || user.isPremium === true) {
+      try { await revoke(); } catch (_) { /* best-effort */ }
+    }
+    console.log(`[aiAccess] purchase token owned by ${ownership.ownerUid} — denying premium uid=${ref.id}`);
+    return false;
+  }
 
   // Ask Google Play for the REAL status of this purchase token.
   const v = await verifySubscription(productId, sub.purchaseToken);
