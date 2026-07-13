@@ -2,7 +2,7 @@ const axios = require('axios');
 
 const apiKey = process.env.GEMINI_API_KEY;
 const PRIMARY_MODEL = 'gemini-3-flash-preview';
-const FALLBACK_MODEL = 'gemini-3-pro-preview';
+const FALLBACK_MODEL = 'gemini-3.1-pro-preview';
 const LEGACY_MODEL = 'gemini-pro';
 const envModel = process.env.GEMINI_MODEL;
 
@@ -277,7 +277,7 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
   }
   
   const baseUrl = 'https://generativelanguage.googleapis.com';
-  const modelName = 'gemini-3-pro-preview';
+  const modelName = 'gemini-3.1-pro-preview';
   const apiVersion = 'v1beta';
   const apiPath = `/${apiVersion}/models/${modelName}:generateContent`;
   const url = `${baseUrl}${apiPath}?key=${apiKey}`;
