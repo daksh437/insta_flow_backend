@@ -135,6 +135,55 @@ router.get('/check-ai-access', async (req, res) => {
   }
 });
 
+/**
+ * POST /activate-premium — server-authoritative subscription activation.
+ * Body: { purchaseToken, productId }. The client sends the Play purchase token
+ * (never writes premium itself). We persist the receipt, then reuse getAiAccess
+ * which verifies with Google Play, enforces one-account-per-token ownership, and
+ * writes premiumExpiry. Returns the resulting plan so the gate can open.
+ */
+router.post('/activate-premium', async (req, res) => {
+  const uid = (req.headers['x-user-uid'] || req.headers['X-User-UID'])?.trim();
+  if (!uid) {
+    return res.status(401).json({ success: false, ok: false, error: 'UNAUTHORIZED', message: 'Missing x-user-uid header' });
+  }
+  const purchaseToken = (req.body?.purchaseToken || '').trim();
+  const productId = (req.body?.productId || 'premium_monthly').trim();
+  if (!purchaseToken) {
+    return res.status(400).json({ success: false, ok: false, error: 'MISSING_TOKEN', message: 'purchaseToken is required' });
+  }
+  const firestore = getDb();
+  if (!firestore) {
+    return res.status(503).json({ success: false, ok: false, error: 'FIRESTORE_UNAVAILABLE' });
+  }
+  try {
+    // Persist the receipt (server writes it — the client no longer touches premium fields).
+    await firestore.collection('users').doc(uid).set({
+      subscription: {
+        productId,
+        purchaseToken,
+        purchaseTime: Date.now(),
+        updatedAt: new Date(),
+        platform: 'android',
+      },
+    }, { merge: true });
+
+    // Reuse the single activation path: verify with Play + token ownership + set premiumExpiry.
+    const access = await getAiAccess(uid);
+    return res.json({
+      success: true,
+      ok: true,
+      planType: access.planType || 'free',
+      allowed: access.allowed === true,
+      premiumExpiry: access.premiumExpiry ?? null,
+      message: access.planType === 'premium' ? 'Premium activated' : 'Not activated (payment not verified as active)',
+    });
+  } catch (e) {
+    console.error('[activate-premium]', e);
+    return res.status(500).json({ success: false, ok: false, error: 'SERVER_ERROR', message: e.message || 'Activation failed' });
+  }
+});
+
 // Admin: manual upgrade to premium
 router.post('/admin/set-premium', requireAdmin, async (req, res) => {
   const uid = (req.body?.uid || req.query?.uid || '').trim();
