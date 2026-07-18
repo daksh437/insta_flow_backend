@@ -392,43 +392,34 @@ function getFallbackCaptions(language = 'English', topic = '') {
 }
 
 function getSystemPrompt() {
-  return `You are an expert Instagram Reels caption writer.
+  return `You are a world-class Instagram Reels caption strategist who has written viral captions for creators with millions of followers. You know exactly what makes people STOP scrolling, feel something, and ENGAGE (save, share, comment).
 
-The user will type freely what kind of caption they want.
-You must automatically understand the topic, tone, language, audience, and intent.
+STEP 1 — ANALYZE SILENTLY (never output this analysis):
+Read the user's request and work out:
+- Topic & niche (what it's really about)
+- Target audience (who it's for + their mindset)
+- Goal (entertain / educate / inspire / sell / relate)
+- Core emotion to trigger (curiosity, FOMO, joy, aspiration, relatability)
+- Language & tone — WRITE IN THE SAME LANGUAGE the user used (English / Hindi / Hinglish). Match their vibe.
 
-CRITICAL RULES (FOLLOW STRICTLY):
-- Generate EXACTLY 3 completely DIFFERENT captions on every request
-- Each caption must be UNIQUE with different hooks, sentence structure, CTA, and phrasing
-- NEVER repeat hooks, sentence structure, CTA, or phrasing between the 3 captions
-- Even if the same user request is repeated, all 3 captions must be different every time
-- Use fresh creative angles, new words, and new emotional hooks for each caption
+STEP 2 — WRITE using proven virality craft. Each caption must have:
+- HOOK: the opening words must stop the scroll in under 1 second. Use ONE of: bold claim, curiosity gap, relatable pain, "POV", surprising fact, or a sharp question. Never a boring intro.
+- PAYOFF: 1 short beat that delivers value/emotion so they feel seen or intrigued.
+- CTA: a specific, creative call-to-action that drives SAVES / SHARES / COMMENTS (vary it: "Save this for later", "Tag someone who needs this", "Comment 🔥 if you relate"). Never generic.
+- Emojis: 1–3, natural, never spammy.
 
-CAPTION STYLE RULES (for each of the 3 captions):
-- Write in short, clean lines (not a single paragraph)
-- Start with a strong scroll-stopping hook
-- Add emotion, curiosity, or relatability
-- Use emojis naturally (do not overuse)
-- Add 3–6 relevant, non-generic hashtags
-- CTA must be creative and different for each caption
-- Avoid boring or generic lines like:
-  "Don't miss this"
-  "Follow for more"
-  "Like and share"
+RULES (STRICT):
+- Generate EXACTLY 3 captions, each a COMPLETELY different angle, hook type, wording, CTA, and hashtags.
+- Match the user's language exactly.
+- 3–6 specific, relevant hashtags per caption — mix niche + medium-reach tags. NEVER generic (#love #instagood #viral #followforfollow).
+- BANNED dead phrases: "Don't miss this", "Follow for more", "Like and share".
+- Even if the same request repeats, produce fresh captions every time.
 
-REGENERATION RULE:
-If this is a regenerate request, force completely fresh captions with new angles, tone shifts, and wording. Do not reuse any phrasing.
-
-OUTPUT FORMAT:
-Return EXACTLY 3 captions, each on a separate line.
-Start each caption with "• " (bullet point).
-No explanations.
-No labels.
-No numbering.
-Example format:
-• First unique caption with hashtags #tag1 #tag2
-• Second unique caption with hashtags #tag3 #tag4
-• Third unique caption with hashtags #tag5 #tag6`;
+OUTPUT FORMAT (strict — the app parses this):
+Return EXACTLY 3 captions. Each caption on ONE single line (NO line breaks inside a caption). Start each line with "• ". Put that caption's hashtags at the END of the same line. No analysis, no labels, no numbering.
+• [first caption, one line] #tag1 #tag2 #tag3
+• [second caption, one line] #tag4 #tag5 #tag6
+• [third caption, one line] #tag7 #tag8 #tag9`;
 }
 
 function getUserPrompt(userInput, generationId, creativeSeed, requestId, regenerate) {
@@ -1921,7 +1912,9 @@ function reelsScriptPromptChatGPT(userInput, extractedParams, generationId, crea
   const selectedHookStyle = hookStyles[Math.floor(Math.random() * hookStyles.length)];
   const selectedCTA = ctaVariations[Math.floor(Math.random() * ctaVariations.length)];
 
-  return `You are a professional Instagram Reels Script Writer.
+  return `You are an elite Instagram Reels scriptwriter behind viral reels for top creators. You understand retention curves, pattern interrupts, and what makes a viewer watch till the end.
+
+BEFORE writing, silently analyze the user's request (never output this): the exact topic, the audience and their mindset, the goal, the emotion to trigger, and the language/tone to match. Then write a script engineered to hook in the first second and hold attention to the CTA.
 
 Your task is to generate a reel script STRICTLY based on the user's request.
 
@@ -2845,18 +2838,24 @@ async function processHashtags(jobId, topic, caption, count) {
     
     const context = caption ? `Caption: "${caption}"` : `Topic: "${topic}"`;
     
-    const prompt = `Generate ${count} relevant and trending Instagram hashtags based on: ${context}
+    const prompt = `You are an Instagram hashtag strategist whose sets are engineered to maximize REACH and DISCOVERY — not just relevance.
 
-Requirements:
-- Mix of popular and niche hashtags
-- Relevant to the topic/caption
-- Include trending hashtags when appropriate
-- Mix of broad and specific hashtags
-- Include engagement-focused hashtags
-- Ensure hashtags are Instagram-friendly (no spaces, special characters)
+STEP 1 — ANALYZE SILENTLY (do not output): From this ${context}, identify the core niche, sub-topics, and the exact audience searching for this content.
 
-Return the hashtags as a JSON array of strings:
-["#hashtag1", "#hashtag2", "#hashtag3", ...]
+STEP 2 — Generate ${count} Instagram hashtags using a REACH-TIER mix (this ranks far better than random popular tags):
+- ~20% BIG reach (broad discovery)
+- ~40% MEDIUM reach (the sweet spot where a post can actually rank)
+- ~30% NICHE (highly targeted, easier to trend in)
+- ~10% MICRO / community tags (specific communities)
+
+Rules:
+- Every tag must be genuinely relevant to the ${context}.
+- Specific over generic. AVOID dead/overused tags: #love #instagood #viral #followforfollow #photooftheday #f4f #instadaily.
+- No spaces or special characters — Instagram-valid tags only.
+- Match the language of the topic if it's Hindi/Hinglish.
+
+Return ONLY a JSON array of exactly ${count} strings:
+["#tag1", "#tag2", "#tag3", ...]
 
 🎲 UNIQUE_SEED: ${uniqueSeed}
 📅 TIMESTAMP: ${timestamp}
@@ -3911,8 +3910,11 @@ async function contentEngine(req, res) {
   }
 
   console.log('[contentEngine] Request:', req.body);
-  const prompt = `You are an elite Instagram growth strategist.
-Generate a single unified content engine response for niche "${niche}" and goal "${goal}".
+  const prompt = `You are an elite Instagram growth strategist who has scaled creator accounts from 0 to 100k+. You think in hooks, retention, and shareability.
+
+STEP 1 — ANALYZE SILENTLY (do NOT output this): For niche "${niche}" with goal "${goal}", work out the target audience, their biggest pain or desire, the content format that performs best in this niche right now, and the emotion that drives saves/shares here.
+
+STEP 2 — Produce ONE ready-to-post content package a creator can film TODAY.
 
 Return ONLY valid JSON with this exact shape:
 {
@@ -3925,11 +3927,13 @@ Return ONLY valid JSON with this exact shape:
 }
 
 Rules:
-- Hook must be scroll-stopping.
-- Script lines must be short and spoken style.
-- Caption must include one CTA.
-- Hashtags must be a balanced mix: broad + mid + niche.
-- Keep output concise and practical.`;
+- IDEA: specific and tied to the niche + goal — never a vague "post a tip".
+- HOOK: the exact first line to say/show; must stop the scroll in 1 second (bold claim, curiosity gap, or relatable pain). Ban "Did you know", "Are you making this mistake".
+- SCRIPT: 4-6 short, spoken-style lines that hold retention; deliver value fast and end with a CTA.
+- CAPTION: written to earn saves/shares/comments, with ONE specific CTA.
+- HASHTAGS: 8-12, balanced mix (broad + mid-reach + niche), specific — never #love #viral #instagood.
+- best_time: a realistic best posting time for this audience.
+- Everything must be practical and ready to film today. If the niche is written in Hindi/Hinglish, match that language.`;
 
   try {
     const raw = await runGemini(prompt, {
