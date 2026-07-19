@@ -480,7 +480,9 @@ function calendarPrompt(topic, days, tone, goal) {
   const d = Number.isFinite(days) ? Math.min(Math.max(Math.floor(days), 1), 30) : 7;
   const toneStr = (tone && String(tone).trim()) ? String(tone).trim() : 'balanced / natural for the niche';
   const goalStr = (goal && String(goal).trim()) ? String(goal).trim() : 'engagement and community growth';
-  return `You are a professional Instagram strategist.
+  return `You are an elite Instagram content strategist who plans calendars for creators who grow fast. You balance formats, hooks, and posting times for maximum reach and consistency.
+
+Before planning, silently analyze the niche "${topic}": the audience, what content performs best in this space, and a healthy mix of educational / relatable / promotional posts. Match the language of the topic if it's Hindi/Hinglish.
 
 Create a ${d}-DAY content calendar for the niche/topic: "${topic}".
 
@@ -2719,17 +2721,18 @@ async function processPostIdeas(jobId, topic, niche, count) {
     const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
     const nicheContext = niche ? ` for ${niche} niche` : '';
     
-    const prompt = `Generate ${count} creative and engaging Instagram post ideas${nicheContext} based on the topic: "${topic}"
+    const prompt = `You are a viral content ideator for Instagram. You come up with post ideas that creators can't wait to film because they know they'll perform.
 
-Each post idea should include:
-- A catchy title/headline
+STEP 1 — ANALYZE SILENTLY (do not output): For the topic${nicheContext} "${topic}", identify the audience, what they're curious about, and the emotions (curiosity, relatability, aspiration) that drive engagement in this niche. Match the language if it's Hindi/Hinglish.
+
+STEP 2 — Generate ${count} post ideas that are SPECIFIC and scroll-worthy (never generic "share a tip"). Vary the format (Reel / carousel / relatable meme / story / tutorial / listicle) and the emotional angle.
+
+Each idea must include:
+- A catchy, curiosity-driving title/headline
 - A brief description (1-2 sentences)
-- Suggested content angle
+- The content angle (the hook/format)
 - Target audience
-- Engagement strategy
-
-Make each idea unique, creative, and relevant to the topic.
-Ensure variety in approach, tone, and content style.
+- Engagement strategy (how it earns saves/shares/comments)
 
 Return the ideas as a JSON array with this structure:
 [
@@ -2972,20 +2975,25 @@ async function processBio(jobId, description, style) {
     
     const styleGuide = styleInstructions[style] || styleInstructions['short'];
     
-    const prompt = `Generate an engaging Instagram bio based on this description: "${description}"
+    const prompt = `You are an Instagram bio expert who crafts bios that turn profile visitors into followers. A great bio instantly answers "who are you, what do I get, why follow you" — with personality.
 
-Style: ${style}
-${styleGuide}
+STEP 1 — ANALYZE SILENTLY (do not output): From "${description}", identify the person/brand's niche, their unique value, target audience, and personality/tone. Detect the language (English/Hindi/Hinglish) and match it.
 
-Requirements:
-- Engaging and authentic
-- Include relevant emojis (1-3 max for short/aesthetic, more for long)
-- Make it compelling and scroll-stopping
-- Optimize for Instagram bio character limit
-- Include a call-to-action if appropriate
-- Match the style requested (${style})
+STEP 2 — Write a bio that:
+- Leads with a clear identity (who + what they do)
+- States the value/benefit (why someone should follow)
+- Shows personality (never robotic)
+- Uses short lines + relevant emojis for scannability
+- Ends with a subtle CTA if it fits (link, DM, collab)
 
-Return ONLY the bio text. No explanations. No labels. Just the bio.
+Style: ${style} — ${styleGuide}
+
+Rules:
+- Optimize for Instagram's bio character limit; no wasted words.
+- Specific and authentic — never generic ("Living my best life ✨", "Dream big").
+- Match the user's language.
+
+Return ONLY the bio text. No explanations, no labels.
 
 🎲 UNIQUE_SEED: ${uniqueSeed}
 📅 TIMESTAMP: ${timestamp}
@@ -3084,39 +3092,27 @@ async function processHooks(jobId, topic, count) {
     const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
     const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}`;
     
-    const prompt = `Generate ${count} viral, scroll-stopping hooks for Instagram Reels based on this topic: "${topic}"
+    const prompt = `You are a viral hook writer who has engineered opening lines for reels with tens of millions of views. You know the first 3 words decide whether someone watches or scrolls.
 
-CRITICAL REQUIREMENTS:
-- Each hook must be UNIQUE and different from others
-- Hooks must be scroll-stopping (make viewers stop and watch)
-- Keep hooks SHORT (5-15 words max)
-- Use curiosity, emotion, or surprise
-- Make them engaging and attention-grabbing
-- No generic phrases like "Don't miss this" or "You won't believe"
-- Each hook should have a different angle/approach
+STEP 1 — ANALYZE SILENTLY (do not output): For the topic "${topic}", identify the audience, their curiosity triggers, and the pain or desire that makes them stop. Detect and match the language (English/Hindi/Hinglish).
 
-HOOK STYLES TO USE (mix different styles):
-1. Question hooks (e.g., "What if I told you...")
-2. Bold statements (e.g., "This changed everything...")
-3. Controversial/Curiosity (e.g., "The truth nobody tells you...")
-4. Personal/Relatable (e.g., "I used to think...")
-5. Number/List hooks (e.g., "3 things that changed my life...")
-6. Story hooks (e.g., "Last week I discovered...")
+STEP 2 — Write ${count} scroll-stopping hooks (5-15 words each), each a DIFFERENT angle. Every hook must create an instant "I need to know" — using curiosity gaps, bold claims, relatable pain, surprising numbers, or a POV.
+
+Mix these styles across the set:
+1. Question ("What if I told you...")
+2. Bold statement ("This changed everything...")
+3. Curiosity / contrarian ("The truth nobody tells you...")
+4. Personal / relatable ("I used to think...")
+5. Number / list ("3 things that...")
+6. Story ("Last week I discovered...")
+
+Rules:
+- Each hook UNIQUE — different angle and structure.
+- BANNED: "Don't miss this", "You won't believe", "Are you making this mistake".
+- Match the user's language.
 
 OUTPUT FORMAT:
-Return EXACTLY ${count} hooks, each on a separate line.
-Start each hook with "• " (bullet point).
-No numbering (1., 2., etc.).
-No explanations.
-No labels.
-Just the hooks.
-
-Example format:
-• What if I told you this one trick changed everything?
-• The truth about ${topic} that nobody wants to admit
-• I used to struggle with this until I discovered...
-• 3 secrets that will blow your mind
-• Last week I found out something that changed my life
+Return EXACTLY ${count} hooks, each on a separate line starting with "• ". No numbering, no labels, no explanations.
 
 🎲 UNIQUE_SEED: ${uniqueSeed}
 📅 TIMESTAMP: ${timestamp}
@@ -3247,28 +3243,25 @@ async function processCommentReply(jobId, comment, tone) {
     
     const toneGuide = toneInstructions[tone] || toneInstructions['friendly'];
     
-    const prompt = `Generate an engaging Instagram comment reply for this comment: "${comment}"
+    const prompt = `You are a community manager for a top Instagram creator. Your replies build loyal fans — they feel personal, keep the conversation going, and boost engagement (replies count as engagement).
 
-Tone: ${tone}
-${toneGuide}
+STEP 1 — ANALYZE SILENTLY (do not output): Read the comment "${comment}" — is it praise, a question, criticism, or just emoji/spam? What's the commenter's intent and emotion? Detect and match their language (English/Hindi/Hinglish).
 
-CRITICAL REQUIREMENTS:
-- Reply should be authentic and natural
-- Match the tone requested (${tone})
-- Keep it concise (1-2 sentences max, under 100 characters ideally)
-- Be engaging and encourage further interaction
-- Use appropriate emojis (1-2 max, natural placement)
-- Sound human and conversational
-- Address the comment directly
-- If the comment is a question, answer it
-- If the comment is positive, acknowledge and thank
-- If the comment is negative, be diplomatic and helpful
+STEP 2 — Write ONE reply that:
+- Feels personal and human (never templated)
+- Praise → warmly acknowledge + a small hook to reply again
+- Question → actually answer it, helpfully
+- Criticism → stay classy, diplomatic, helpful (never defensive)
+- Encourages further interaction naturally
 
-OUTPUT FORMAT:
-Return ONLY the reply text.
-No explanations.
-No labels.
-Just the reply.
+Tone: ${tone} — ${toneGuide}
+
+Rules:
+- 1-2 sentences, concise. 1-2 natural emojis max.
+- Match the commenter's language.
+- Never robotic or generic ("Thanks for your comment!").
+
+Return ONLY the reply text. No explanations, no labels.
 
 🎲 UNIQUE_SEED: ${uniqueSeed}
 📅 TIMESTAMP: ${timestamp}
@@ -3546,17 +3539,19 @@ async function processCarousel(jobId, topic, slides) {
     const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
     const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}`;
     
-    const prompt = `Generate an Instagram carousel post with ${slides} slides about: "${topic}"
+    const prompt = `You are an Instagram carousel expert. Carousels are the #1 format for SAVES and SHARES — a great one hooks on slide 1, delivers value slide by slide, and ends with a CTA that earns the save.
 
-CRITICAL REQUIREMENTS:
-- Create EXACTLY ${slides} slides
-- Each slide should have a clear, engaging message
-- Slides should flow logically and tell a story
-- Each slide should be concise (1-2 sentences max)
-- Make it visually appealing and scroll-stopping
-- Include actionable tips, insights, or information
-- Use emojis naturally (1-2 per slide max)
-- Make it shareable and engaging
+STEP 1 — ANALYZE SILENTLY (do not output): For "${topic}", identify the audience, the single valuable outcome they want, and the language to match (English/Hindi/Hinglish).
+
+STEP 2 — Build EXACTLY ${slides} slides that flow like a mini-story:
+- Slide 1 = a scroll-stopping HOOK title (bold claim / curiosity / "swipe to see...") that forces a swipe.
+- Middle slides = one clear, actionable point each (concise, 1-2 lines, skimmable).
+- Last slide = a CTA that drives SAVE / SHARE / FOLLOW ("Save this for later", "Share with a friend who needs this").
+
+CRITICAL:
+- EXACTLY ${slides} slides, logical progression, no filler.
+- Actionable value, not fluff. 1-2 emojis per slide max.
+- Match the user's language.
 
 OUTPUT FORMAT (JSON):
 {
