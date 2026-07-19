@@ -18,6 +18,8 @@ const { verifySubscription } = require('../utils/playVerify');
 const USERS = 'users';
 const AI_REQUEST_KEYS = 'ai_request_keys';
 const DAILY_CREDITS_FREE = 2;
+// Every new user gets a one-time 3-day free trial (full access), then Premium.
+const TRIAL_DAYS = 3;
 const DEV_SKIP_LIMITS = process.env.DEV_SKIP_LIMITS === 'true' || process.env.DEV_SKIP_LIMITS === '1';
 
 if (DEV_SKIP_LIMITS) {
@@ -284,10 +286,25 @@ async function getAiAccess(uid) {
   const trialEnd = toDate(user.trialEndDate) || toDate(user.trialEnd);
   const trialStart = toDate(user.trialStartDate) || toDate(user.trialStart);
 
-  if (planType === 'trial' && !trialEnd) {
-    const trialEndNew = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  // Start a one-time 3-day trial for a genuinely-new user (never had a trial and
+  // not premium). After it ends they resolve to 'free' and the app gates them to
+  // the paywall — so effectively: 3 days free, then Premium.
+  if (planType === 'free' && !user.trialUsed && !trialEnd && !trialStart) {
+    const trialEndNew = new Date(now.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
     try {
-      await ref.update({ planType: 'trial', trialEndDate: trialEndNew, trialStartDate: trialStart || now });
+      await ref.update({ planType: 'trial', trialStartDate: now, trialEndDate: trialEndNew, trialUsed: true });
+      user.planType = 'trial';
+      user.trialStartDate = now;
+      user.trialEndDate = trialEndNew;
+      user.trialUsed = true;
+      planType = 'trial';
+    } catch (e) {
+      console.warn('[aiAccess] start trial error:', e.message);
+    }
+  } else if (planType === 'trial' && !trialEnd) {
+    const trialEndNew = new Date(now.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    try {
+      await ref.update({ planType: 'trial', trialEndDate: trialEndNew, trialStartDate: trialStart || now, trialUsed: true });
       user.trialEndDate = trialEndNew;
       user.trialStartDate = trialStart || now;
     } catch (e) {
