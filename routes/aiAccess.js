@@ -135,6 +135,101 @@ router.get('/check-ai-access', async (req, res) => {
   }
 });
 
+// ─── Referral (invite a friend → both get 5 days free premium) ──────────────
+const REFERRAL_REWARD_DAYS = 5;
+function genReferralCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous chars
+  let c = '';
+  for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
+  return c;
+}
+function grantDaysPremiumFields(currentExpiry, now, days) {
+  const base = currentExpiry && currentExpiry > now ? currentExpiry : now;
+  const expiry = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
+  return {
+    isPremium: true,
+    planType: 'premium',
+    subscriptionPlan: 'pro',
+    premiumPlan: 'pro',
+    premiumExpiry: expiry,
+    premiumStartDate: now,
+    premiumExpiryNotified: false,
+    isTrialActive: false,
+    lastPurchaseStatus: 'referral',
+    lastUpdated: new Date(),
+  };
+}
+
+/** GET /referral/code — this user's shareable referral code (created lazily). */
+router.get('/referral/code', async (req, res) => {
+  const uid = (req.headers['x-user-uid'] || req.headers['X-User-UID'])?.trim();
+  if (!uid) return res.status(401).json({ success: false, error: 'UNAUTHORIZED' });
+  const db = getDb();
+  if (!db) return res.status(503).json({ success: false, error: 'FIRESTORE_UNAVAILABLE' });
+  try {
+    const ref = db.collection('users').doc(uid);
+    const snap = await ref.get();
+    let code = snap.data()?.referralCode;
+    if (!code) {
+      code = genReferralCode();
+      await ref.set({ referralCode: code }, { merge: true });
+    }
+    return res.json({
+      success: true,
+      code,
+      referralCount: snap.data()?.referralCount || 0,
+      alreadyRedeemed: !!snap.data()?.referredBy,
+      rewardDays: REFERRAL_REWARD_DAYS,
+    });
+  } catch (e) {
+    console.error('[referral/code]', e);
+    return res.status(500).json({ success: false, error: 'SERVER_ERROR', message: e.message });
+  }
+});
+
+/** POST /referral/redeem — a new user redeems a friend's code; both get reward. */
+router.post('/referral/redeem', async (req, res) => {
+  const uid = (req.headers['x-user-uid'] || req.headers['X-User-UID'])?.trim();
+  if (!uid) return res.status(401).json({ success: false, error: 'UNAUTHORIZED' });
+  const code = String(req.body?.code || '').trim().toUpperCase();
+  if (!code) return res.status(400).json({ success: false, error: 'MISSING_CODE', message: 'Enter a referral code' });
+  const db = getDb();
+  if (!db) return res.status(503).json({ success: false, error: 'FIRESTORE_UNAVAILABLE' });
+  try {
+    const meRef = db.collection('users').doc(uid);
+    const me = await meRef.get();
+    if (!me.exists) return res.status(404).json({ success: false, error: 'USER_NOT_FOUND' });
+    if (me.data()?.referredBy) {
+      return res.status(400).json({ success: false, error: 'ALREADY_REDEEMED', message: 'You have already used a referral code.' });
+    }
+    if (me.data()?.referralCode === code) {
+      return res.status(400).json({ success: false, error: 'SELF_REFERRAL', message: "You can't use your own code." });
+    }
+    const q = await db.collection('users').where('referralCode', '==', code).limit(1).get();
+    if (q.empty) return res.status(400).json({ success: false, error: 'INVALID_CODE', message: 'Invalid referral code.' });
+    const referrer = q.docs[0];
+    if (referrer.id === uid) {
+      return res.status(400).json({ success: false, error: 'SELF_REFERRAL', message: "You can't refer yourself." });
+    }
+    const now = new Date();
+    const toDateSafe = (v) => (v && v.toDate ? v.toDate() : null);
+    // Reward both sides with 5 days premium (extends existing premium).
+    await meRef.set({
+      ...grantDaysPremiumFields(toDateSafe(me.data()?.premiumExpiry), now, REFERRAL_REWARD_DAYS),
+      referredBy: code,
+    }, { merge: true });
+    const admin = require('firebase-admin');
+    await referrer.ref.set({
+      ...grantDaysPremiumFields(toDateSafe(referrer.data()?.premiumExpiry), now, REFERRAL_REWARD_DAYS),
+      referralCount: admin.firestore.FieldValue.increment(1),
+    }, { merge: true });
+    return res.json({ success: true, rewardDays: REFERRAL_REWARD_DAYS, message: `You both got ${REFERRAL_REWARD_DAYS} days of Premium!` });
+  } catch (e) {
+    console.error('[referral/redeem]', e);
+    return res.status(500).json({ success: false, error: 'SERVER_ERROR', message: e.message });
+  }
+});
+
 /**
  * POST /activate-premium — server-authoritative subscription activation.
  * Body: { purchaseToken, productId }. The client sends the Play purchase token
