@@ -43,10 +43,11 @@ async function ensureUserAiFields(userDocRef, data) {
 
   const now = new Date();
   const todayUtc = todayDateStrUtc();
-  const trialEndDefault = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  // 3-day free trial for new users (then Premium — no permanent free tier).
+  const trialEndDefault = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
   const updates = {};
 
-  // New user / missing: planType = trial, trialStartDate = now, trialEndDate = now+7 (only planType is source of truth)
+  // New user / missing: planType = trial, trialStartDate = now, trialEndDate = now+3 (only planType is source of truth)
   if (data.planType == null && data.plan_type == null) {
     updates.planType = 'trial';
   }

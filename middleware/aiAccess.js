@@ -708,7 +708,7 @@ async function setPlanType(uid, planType) {
     const now = new Date();
     const updates = { planType, isPremium: false, premiumExpiry: null };
     if (planType === 'trial') {
-      updates.trialEndDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      updates.trialEndDate = new Date(now.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
       updates.subscriptionPlan = 'trial';
     } else {
       updates.subscriptionPlan = 'free';
