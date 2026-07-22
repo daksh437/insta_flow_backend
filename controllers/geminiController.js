@@ -3646,9 +3646,12 @@ Return ONLY valid JSON. No explanations. No markdown code blocks.
 🔄 REQUEST_ID: ${jobId}
 🎲 RANDOM_CONTEXT: ${randomContext}`;
     
-    console.log('[processCarousel] Calling Gemini API with unique prompt...');
-    const output = await runGemini(prompt, { 
-      maxTokens: 2048, 
+    // Scale token budget with slide count so higher counts (8-10) don't get
+    // their JSON truncated mid-array (which was silently dropping slides).
+    const carouselTokens = Math.min(4096, 900 + slides * 320);
+    console.log(`[processCarousel] Calling Gemini API (slides: ${slides}, maxTokens: ${carouselTokens})...`);
+    const output = await runGemini(prompt, {
+      maxTokens: carouselTokens,
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
@@ -3680,15 +3683,29 @@ Return ONLY valid JSON. No explanations. No markdown code blocks.
       throw new Error('Invalid carousel data from Gemini API');
     }
     
-    // Ensure we have the right number of slides
+    // Ensure we have the right number of slides. If the model returned fewer,
+    // pad with usable slides (never blank "Additional content" placeholders) so
+    // every slide the user asked for has real, postable text.
     if (carouselData.slides.length < slides) {
-      // Fill remaining slides
+      const padFillers = [
+        { title: 'Quick recap', content: 'Recap the 1 big idea so it sticks — one line, easy to remember.' },
+        { title: 'Common mistake', content: 'Call out the #1 mistake people make with this — and the quick fix.' },
+        { title: 'Pro tip', content: 'Drop one bonus tip most people miss. Small effort, big result.' },
+        { title: 'Your turn', content: 'Give one action to try today. Keep it simple and specific.' },
+        { title: 'Save this', content: 'Save this post so you can come back to it — and share it with a friend who needs it. 🔖' },
+      ];
+      let fi = 0;
       while (carouselData.slides.length < slides) {
+        const isLast = carouselData.slides.length === slides - 1;
+        const filler = isLast
+          ? padFillers[padFillers.length - 1]
+          : padFillers[fi % (padFillers.length - 1)];
         carouselData.slides.push({
           slideNumber: carouselData.slides.length + 1,
-          title: `Slide ${carouselData.slides.length + 1}`,
-          content: 'Additional content slide'
+          title: filler.title,
+          content: filler.content,
         });
+        fi += 1;
       }
     } else {
       carouselData.slides = carouselData.slides.slice(0, slides);
