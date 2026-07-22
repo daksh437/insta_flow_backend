@@ -18,6 +18,7 @@ const {
   generateTrends,
   generateCarousel,
   contentEngine,
+  rewriteText,
   getGrowthCoach,
   viralScore,
   getJobStatus
@@ -56,6 +57,7 @@ router.post('/comment-reply', wrapAiHandler(generateCommentReply));
 router.post('/trends', wrapAiHandler(generateTrends));
 router.post('/carousel', wrapAiHandler(generateCarousel));
 router.post('/content-engine', wrapAiHandler(contentEngine));
+router.post('/rewrite', wrapAiHandler(rewriteText));
 router.post('/viral-score', wrapAiHandler(viralScore));
 
 /** Instagram growth pack: full pipeline, viral caption, post insights */

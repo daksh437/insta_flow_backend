@@ -689,17 +689,40 @@ async function buildAdvisor(feature, context, sampleOutput) {
 }
 
 function nicheAnalysisPrompt(topic) {
-  return `Analyze the Instagram niche "${topic}" and return:
+  return `You are a top Instagram growth strategist who has scaled accounts in many niches. You know current Reel trends, hook psychology, and hashtag competition.
 
-- trend_forecast_30_days: Trend forecast for next 30 days
-- top_5_viral_patterns: Top 5 viral content patterns
-- best_3_reel_formats: Best 3 reel formats for this niche
-- hashtag_clusters: Hashtag clusters based on difficulty (low, mid, high - 10 each)
-- untapped_content_ideas: Content ideas that competitors are not using
-- psychological_triggers: Engagement boosting psychological triggers
-- common_mistakes: Warning: Common mistakes creators make
+STEP 1 — Analyze silently (never output this): who follows the "${topic}" niche, what they scroll for, which formats are peaking on Reels right now, where competitors are weak, and which emotions drive saves/shares in this niche.
 
-Return structured JSON.`;
+STEP 2 — Return a niche report for "${topic}". Be SPECIFIC and ACTIONABLE, never generic. Every item should be something a creator can act on today, with concrete examples (real hook lines, real hashtag examples, concrete formats). No filler like "post consistently".
+
+Return STRICT JSON in EXACTLY this shape (keys and types must match):
+
+{
+  "trend_forecast_30_days": "3-5 sentences naming concrete trends, formats, audio styles and content angles rising in this niche over the next 30 days — specific, not vague.",
+  "top_5_viral_patterns": [
+    { "pattern": "short name of the pattern (e.g. 'Before/after in 3 seconds')", "reason": "why it works in THIS niche + an example hook line to use" }
+  ],
+  "best_3_reel_formats": [
+    { "format": "format name", "description": "exactly how to shoot/structure it for this niche (shots, length, on-screen text)", "expected_performance": "what result to expect, e.g. 'high saves, strong reach for cold audience'" }
+  ],
+  "hashtag_clusters": {
+    "low_competition": ["10 niche-specific low-competition hashtags, with # prefix"],
+    "mid_competition": ["10 mid-competition hashtags"],
+    "high_competition": ["10 broad high-competition hashtags"]
+  },
+  "untapped_content_ideas": ["6-8 fresh content angles competitors in this niche are NOT doing — each a concrete idea, not a category"],
+  "psychological_triggers": [
+    { "trigger": "trigger name (e.g. curiosity gap, social proof)", "application": "one concrete way to use it in this niche", "effectiveness": "High / Medium and a short why" }
+  ],
+  "common_mistakes": [
+    { "mistake": "a specific mistake creators make in this niche AND the fix, in one sentence" }
+  ]
+}
+
+Rules:
+- top_5_viral_patterns: exactly 5. best_3_reel_formats: exactly 3. hashtag clusters: exactly 10 each with real "#tag" examples relevant to "${topic}".
+- Everything must be tailored to "${topic}" specifically — a reader should not be able to swap in another niche.
+- Output ONLY the JSON, no markdown, no commentary.`;
 }
 
 function imageAnalysisPrompt() {
@@ -2672,27 +2695,29 @@ function getJobStatus(req, res) {
  */
 async function generatePostIdeas(req, res) {
   console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/post-ideas' }));
-  const { topic, niche, count = 5 } = req.body || {};
-  
+  const { topic, niche, count = 5, format } = req.body || {};
+  const ideaFormat = format === 'story' ? 'story' : 'post';
+
   if (!topic || topic.trim() === '') {
     return res.status(400).json({ success: false, error: 'Topic is required', data: [] });
   }
-  
+
   const jobId = generateJobId('POST_IDEAS');
-  
+
   createJob(jobId, {
     type: 'post-ideas',
     uid: req.uid,
     topic: topic.trim(),
     niche: niche || '',
     count: parseInt(count) || 5,
+    format: ideaFormat,
   });
-  
+
   console.log(`[generatePostIdeas] ===== NEW REQUEST =====`);
   console.log(`[generatePostIdeas] Job ID: ${jobId}`);
-  console.log(`[generatePostIdeas] Topic: "${topic}", Niche: "${niche}", Count: ${count}`);
-  
-  processPostIdeas(jobId, topic.trim(), niche || '', parseInt(count) || 5)
+  console.log(`[generatePostIdeas] Topic: "${topic}", Niche: "${niche}", Count: ${count}, Format: ${ideaFormat}`);
+
+  processPostIdeas(jobId, topic.trim(), niche || '', parseInt(count) || 5, ideaFormat)
     .catch((error) => {
       console.error(`[generatePostIdeas] Background processing failed for job ${jobId}:`, error);
       completeJobAndRecordUsage(jobId, 'done', { 
@@ -2711,17 +2736,43 @@ async function generatePostIdeas(req, res) {
 /**
  * Background processing for post ideas generation
  */
-async function processPostIdeas(jobId, topic, niche, count) {
-  console.log(`[processPostIdeas] Starting background processing for job: ${jobId}`);
-  
+async function processPostIdeas(jobId, topic, niche, count, format = 'post') {
+  console.log(`[processPostIdeas] Starting background processing for job: ${jobId} (format: ${format})`);
+
   try {
     updateJob(jobId, 'processing', {});
-    
+
     const timestamp = Date.now();
     const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
     const nicheContext = niche ? ` for ${niche} niche` : '';
-    
-    const prompt = `You are a viral content ideator for Instagram. You come up with post ideas that creators can't wait to film because they know they'll perform.
+
+    const meta = `\n\n🎲 UNIQUE_SEED: ${uniqueSeed}\n📅 TIMESTAMP: ${timestamp}\n🔄 REQUEST_ID: ${jobId}`;
+
+    const storyPrompt = `You are an Instagram STORIES expert. You design Story sequences that keep viewers tapping and replying, using native Story features (polls, quizzes, sliders, question/DM stickers, countdowns, "this or that", BTS, teasers).
+
+STEP 1 — ANALYZE SILENTLY (do not output): For "${topic}"${nicheContext}, figure out who watches these Stories, what makes them tap forward vs. actually reply/vote, and which interactive stickers fit best. Match the language if it's Hindi/Hinglish.
+
+STEP 2 — Generate ${count} Instagram STORY ideas (NOT feed posts). Each must be a story a creator can shoot on their phone today, using at least one interactive sticker OR a multi-frame sequence. Vary the types (poll, quiz, question box, countdown, BTS, tutorial-in-frames, slider, "this or that"). Be specific — never "post a poll".
+
+Each idea must include:
+- A catchy story-concept title
+- A description: exactly how to execute it frame-by-frame and which sticker to use
+- The angle (why viewers tap or reply)
+- Target audience
+- Engagement strategy (how it drives replies / DMs / poll taps)
+
+Return the ideas as a JSON array with this EXACT structure:
+[
+  {
+    "title": "Story idea title",
+    "description": "Frame-by-frame execution + sticker to use",
+    "angle": "Why viewers tap/reply",
+    "audience": "Target audience",
+    "engagement": "Engagement strategy"
+  }
+]${meta}`;
+
+    const postPrompt = `You are a viral content ideator for Instagram. You come up with post ideas that creators can't wait to film because they know they'll perform.
 
 STEP 1 — ANALYZE SILENTLY (do not output): For the topic${nicheContext} "${topic}", identify the audience, what they're curious about, and the emotions (curiosity, relatability, aspiration) that drive engagement in this niche. Match the language if it's Hindi/Hinglish.
 
@@ -2744,11 +2795,9 @@ Return the ideas as a JSON array with this structure:
     "engagement": "Engagement strategy"
   },
   ...
-]
+]${meta}`;
 
-🎲 UNIQUE_SEED: ${uniqueSeed}
-📅 TIMESTAMP: ${timestamp}
-🔄 REQUEST_ID: ${jobId}`;
+    const prompt = format === 'story' ? storyPrompt : postPrompt;
     
     console.log('[processPostIdeas] Calling Gemini API with unique prompt...');
     const output = await runGemini(prompt, { 
@@ -3183,27 +3232,29 @@ Return EXACTLY ${count} hooks, each on a separate line starting with "• ". No 
  */
 async function generateCommentReply(req, res) {
   console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/comment-reply' }));
-  const { comment, tone = 'friendly' } = req.body || {};
-  
+  const { comment, tone = 'friendly', context } = req.body || {};
+  const replyContext = context === 'dm' ? 'dm' : 'comment';
+
   if (!comment || comment.trim() === '') {
     return res.status(400).json({ success: false, error: 'Comment is required', data: null });
   }
-  
+
   const jobId = generateJobId('REPLY');
-  
+
   createJob(jobId, {
     type: 'comment-reply',
     uid: req.uid,
     comment: comment.trim(),
     tone: tone,
+    context: replyContext,
   });
-  
+
   console.log(`[generateCommentReply] ===== NEW REQUEST =====`);
   console.log(`[generateCommentReply] Job ID: ${jobId}`);
   const commentPreview = comment.length > 50 ? `${comment.substring(0, 50)}...` : comment;
-  console.log(`[generateCommentReply] Comment: "${commentPreview}", Tone: ${tone}`);
-  
-  processCommentReply(jobId, comment.trim(), tone)
+  console.log(`[generateCommentReply] Comment: "${commentPreview}", Tone: ${tone}, Context: ${replyContext}`);
+
+  processCommentReply(jobId, comment.trim(), tone, replyContext)
     .catch((error) => {
       console.error(`[generateCommentReply] Background processing failed for job ${jobId}:`, error);
       completeJobAndRecordUsage(jobId, 'done', { 
@@ -3222,16 +3273,16 @@ async function generateCommentReply(req, res) {
 /**
  * Background processing for comment reply generation
  */
-async function processCommentReply(jobId, comment, tone) {
-  console.log(`[processCommentReply] Starting background processing for job: ${jobId}`);
-  
+async function processCommentReply(jobId, comment, tone, context = 'comment') {
+  console.log(`[processCommentReply] Starting background processing for job: ${jobId} (context: ${context})`);
+
   try {
     updateJob(jobId, 'processing', {});
-    
+
     const timestamp = Date.now();
     const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
     const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}`;
-    
+
     const toneInstructions = {
       'friendly': 'Be warm, friendly, and approachable. Use casual language.',
       'professional': 'Be formal, polite, and business-like. Use professional language.',
@@ -3240,10 +3291,29 @@ async function processCommentReply(jobId, comment, tone) {
       'brief': 'Be concise and to the point. Keep it short and clear.',
       'enthusiastic': 'Be energetic, positive, and excited. Show enthusiasm.'
     };
-    
+
     const toneGuide = toneInstructions[tone] || toneInstructions['friendly'];
-    
-    const prompt = `You are a community manager for a top Instagram creator. Your replies build loyal fans — they feel personal, keep the conversation going, and boost engagement (replies count as engagement).
+
+    const meta = `\n\n🎲 UNIQUE_SEED: ${uniqueSeed}\n📅 TIMESTAMP: ${timestamp}\n🔄 REQUEST_ID: ${jobId}\n🎲 RANDOM_CONTEXT: ${randomContext}`;
+
+    const dmPrompt = `You are a top Instagram creator personally replying to a DM. Your replies feel 1:1 and human, protect your time, and turn DMs into opportunities.
+
+STEP 1 — ANALYZE SILENTLY (do not output): Read the DM "${comment}" and classify it: fan/appreciation, a question (price / how-to), a collab or brand deal, a sales/promo pitch, or spam/inappropriate. Detect the sender's language (English/Hindi/Hinglish) and their real intent.
+
+STEP 2 — Write ONE reply tuned to the type:
+- Fan/appreciation → warm, personal thanks + a light question to keep the chat going
+- Question (price/how-to) → answer clearly; if it's about paid work, sound professional and invite the next step
+- Collab/brand deal → interested but professional; ask for details (deliverables, timeline, budget) without sounding desperate
+- Sales/spam/inappropriate → a short, polite boundary or decline
+
+Tone: ${tone} — ${toneGuide}
+
+Rules:
+- 1-3 sentences, sounds like a real person typing — never a template.
+- Match the sender's language. 0-2 natural emojis.
+- Return ONLY the DM reply text. No labels, no "Here is your reply".${meta}`;
+
+    const commentPrompt = `You are a community manager for a top Instagram creator. Your replies build loyal fans — they feel personal, keep the conversation going, and boost engagement (replies count as engagement).
 
 STEP 1 — ANALYZE SILENTLY (do not output): Read the comment "${comment}" — is it praise, a question, criticism, or just emoji/spam? What's the commenter's intent and emotion? Detect and match their language (English/Hindi/Hinglish).
 
@@ -3261,12 +3331,9 @@ Rules:
 - Match the commenter's language.
 - Never robotic or generic ("Thanks for your comment!").
 
-Return ONLY the reply text. No explanations, no labels.
+Return ONLY the reply text. No explanations, no labels.${meta}`;
 
-🎲 UNIQUE_SEED: ${uniqueSeed}
-📅 TIMESTAMP: ${timestamp}
-🔄 REQUEST_ID: ${jobId}
-🎲 RANDOM_CONTEXT: ${randomContext}`;
+    const prompt = context === 'dm' ? dmPrompt : commentPrompt;
     
     console.log('[processCommentReply] Calling Gemini API with unique prompt...');
     const output = await runGemini(prompt, { 
@@ -3973,6 +4040,49 @@ Rules:
   }
 }
 
+/**
+ * POST /ai/rewrite — genuinely rewrite text in a chosen tone (used by AI Smart
+ * Rewrite). Returns { rewritten }. Synchronous (short output).
+ */
+async function rewriteText(req, res) {
+  const text = String(req.body?.text || '').trim();
+  const tone = String(req.body?.tone || 'engaging').trim().toLowerCase();
+  if (!text) {
+    return { rewritten: '' };
+  }
+
+  const toneGuide = {
+    simple: 'plain, clear, easy-to-read language; short words; no jargon',
+    attractive: 'catchy, punchy, scroll-stopping; add a few tasteful emojis and vivid words',
+    seo: 'keyword-rich and discoverable; weave in natural search terms for the topic while staying readable',
+    engaging: 'conversational and interactive; spark curiosity and end with a question or soft CTA',
+    professional: 'polished, credible and brand-safe; confident but not stiff',
+  };
+  const guide = toneGuide[tone] || toneGuide.engaging;
+
+  const prompt = `You are an expert Instagram copywriter. Rewrite the text below in a ${tone.toUpperCase()} tone: ${guide}.
+
+RULES:
+- Keep the original meaning and any key facts.
+- Match the input language (English / Hindi / Hinglish).
+- Make it ready to post — NO labels, NO surrounding quotes, no "Here is", no explanation.
+- Keep roughly the same length (a caption, not an essay).
+
+TEXT:
+"""${text}"""
+
+Return ONLY the rewritten text.`;
+
+  try {
+    const output = await runGemini(prompt, { maxTokens: 800, temperature: 0.8, topP: 0.95 });
+    const rewritten = String(output || '').trim().replace(/^["']|["']$/g, '');
+    return { rewritten: rewritten || text };
+  } catch (error) {
+    console.error('[rewriteText] Error:', error.message);
+    return { rewritten: text };
+  }
+}
+
 async function getGrowthCoach(req, res) {
   const followers = Number(req.query.followers ?? req.body?.followers ?? 0) || 0;
   const posts = Number(req.query.posts ?? req.body?.posts ?? 0) || 0;
@@ -4023,6 +4133,7 @@ module.exports = {
   generateTrends,
   generateCarousel,
   contentEngine,
+  rewriteText,
   getGrowthCoach,
   viralScore,
   getJobStatus,
