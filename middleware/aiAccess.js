@@ -9,7 +9,7 @@
  */
 
 const crypto = require('crypto');
-const { getDb } = require('../utils/firestoreAdmin');
+const { getDb, getAdmin } = require('../utils/firestoreAdmin');
 const { ensureUserAiFields } = require('../utils/ensureUserAiFields');
 const { resolvePlan } = require('../services/planResolver');
 const { buildAiFallback } = require('../utils/aiFallback');
@@ -25,6 +25,36 @@ const DEV_SKIP_LIMITS = process.env.DEV_SKIP_LIMITS === 'true' || process.env.DE
 if (DEV_SKIP_LIMITS) {
   console.warn('[aiAccess] ⚠️ DEV_SKIP_LIMITS is enabled — AI usage limits are bypassed. Do not use in production.');
 }
+
+// Secure by default: the AI path must present a verified Firebase ID token
+// (Authorization: Bearer <token>); the raw x-user-uid header is no longer
+// trusted. Set AI_REQUIRE_TOKEN=false on the host to temporarily fall back to
+// header-trust (safety valve for rollback without a redeploy).
+const REQUIRE_AUTH_TOKEN = String(process.env.AI_REQUIRE_TOKEN ?? 'true').toLowerCase() !== 'false';
+if (!REQUIRE_AUTH_TOKEN) {
+  console.warn('[aiAccess] ⚠️ AI_REQUIRE_TOKEN=false — trusting x-user-uid header without verification. Insecure; re-enable ASAP.');
+}
+
+/**
+ * Verify the Firebase ID token from the Authorization header and return the
+ * authenticated uid, or null if missing/invalid. This is what makes the AI
+ * path spoof-proof: a caller can no longer claim an arbitrary uid.
+ */
+async function verifyUidFromToken(req) {
+  const authz = (req.headers['authorization'] || req.headers['Authorization'] || '').trim();
+  const m = /^Bearer\s+(.+)$/i.exec(authz);
+  if (!m) return null;
+  const a = getAdmin();
+  if (!a) return null;
+  try {
+    const decoded = await a.auth().verifyIdToken(m[1]);
+    return decoded && decoded.uid ? decoded.uid : null;
+  } catch (e) {
+    logAiAccess('warn', { event: 'AI_TOKEN_VERIFY_FAILED', message: e.message });
+    return null;
+  }
+}
+
 const IDEMPOTENCY_TTL_MS = 48 * 60 * 60 * 1000;
 
 function hashIdempotencyKey(key) {
@@ -405,9 +435,21 @@ async function requireAiAccess(req, res, next) {
     logAiAccess('info', { userId: req.uid, planType: 'free', allowed: true, endpoint: req._aiEndpoint || req.path, reason: 'DEV_SKIP_LIMITS' });
     return next();
   }
-  const uidTrim = (req.headers['x-user-uid'] || req.headers['X-User-UID'] || req.body?.uid)?.trim();
+  // Trusted uid comes from the verified Firebase ID token — NOT the raw header.
+  // This closes the spoofing hole where any caller could send an arbitrary
+  // x-user-uid to get a fresh trial (unlimited AI) or act as another user.
+  const verifiedUid = await verifyUidFromToken(req);
+  let uidTrim = verifiedUid;
+  if (!uidTrim && !REQUIRE_AUTH_TOKEN) {
+    // Safety valve only: header-trust when token enforcement is explicitly off.
+    uidTrim = (req.headers['x-user-uid'] || req.headers['X-User-UID'] || req.body?.uid)?.trim();
+  }
   if (!uidTrim) {
-    return res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'Missing x-user-uid' });
+    return res.status(401).json({
+      success: false,
+      error: 'UNAUTHORIZED',
+      message: 'Missing or invalid auth token',
+    });
   }
   // ORDER: access = getAiAccess() → trial → premium → free (free: check daily limit, then block if >= 2).
   const access = (process.env.NODE_ENV === 'test' && req._mockAiAccess != null)
