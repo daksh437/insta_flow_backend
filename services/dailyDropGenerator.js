@@ -11,6 +11,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { runGemini } = require('../utils/geminiClient');
+const { getDb } = require('../utils/firestoreAdmin');
 
 const TRENDS_RSS_URL = 'https://trends.google.com/trending/rss?geo=US';
 const FALLBACK_TRENDS = [
@@ -32,10 +33,12 @@ function ensureDataDir() {
 }
 
 function dateKey(date = new Date()) {
+  // UTC to match the Flutter client (DailyDropService._dateKeyUtc), so the app
+  // reads the exact daily_drops/{key} doc this generator writes.
   const d = date instanceof Date ? date : new Date(date);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
 
@@ -230,8 +233,28 @@ async function generateDailyDrop() {
 
   const doc = toStoredDoc(json);
   setStored(key, doc);
+  await writeDropToFirestore(key, doc);
   console.log('[DailyDrop] Generated and stored:', key);
   return doc;
+}
+
+/**
+ * Mirror the day's drop into Firestore (daily_drops/{key}) so the Flutter app —
+ * which reads Firestore directly — can show it, and so it survives Render's
+ * ephemeral filesystem across restarts/redeploys. Best-effort: never throws.
+ */
+async function writeDropToFirestore(key, doc) {
+  try {
+    const db = getDb();
+    if (!db) {
+      console.warn('[DailyDrop] Firestore unavailable, skipped mirror for', key);
+      return;
+    }
+    await db.collection('daily_drops').doc(key).set({ ...doc, date: key }, { merge: true });
+    console.log('[DailyDrop] Mirrored to Firestore:', key);
+  } catch (err) {
+    console.error('[DailyDrop] Firestore mirror failed:', err.message);
+  }
 }
 
 /**
