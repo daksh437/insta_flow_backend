@@ -35,14 +35,9 @@ if (!REQUIRE_AUTH_TOKEN) {
   console.warn('[aiAccess] ⚠️ AI_REQUIRE_TOKEN=false — trusting x-user-uid header without verification. Insecure; re-enable ASAP.');
 }
 
-// Anonymous (not-yet-signed-up) users get a small taste of the AI before we ask
-// them to create an account. This both drives signups and caps abuse (a fresh
-// anonymous user from a reinstall can't farm unlimited free AI).
-const ANON_FREE_LIMIT = parseInt(process.env.ANON_FREE_LIMIT || '1', 10);
-
 /**
- * Verify the Firebase ID token from the Authorization header and return
- * { uid, isAnonymous }, or null if missing/invalid. This is what makes the AI
+ * Verify the Firebase ID token from the Authorization header and return the
+ * authenticated uid, or null if missing/invalid. This is what makes the AI
  * path spoof-proof: a caller can no longer claim an arbitrary uid.
  */
 async function verifyUidFromToken(req) {
@@ -53,9 +48,7 @@ async function verifyUidFromToken(req) {
   if (!a) return null;
   try {
     const decoded = await a.auth().verifyIdToken(m[1]);
-    if (!decoded || !decoded.uid) return null;
-    const provider = decoded.firebase && decoded.firebase.sign_in_provider;
-    return { uid: decoded.uid, isAnonymous: provider === 'anonymous' };
+    return decoded && decoded.uid ? decoded.uid : null;
   } catch (e) {
     logAiAccess('warn', { event: 'AI_TOKEN_VERIFY_FAILED', message: e.message });
     return null;
@@ -426,54 +419,6 @@ async function getAiAccess(uid) {
 }
 
 /**
- * Anonymous (try-before-signup) access: allow up to ANON_FREE_LIMIT free tastes,
- * counted on the user doc's anonAiUsed field, then return SIGNUP_REQUIRED so the
- * client can show a signup gate. Counts up-front since the AI path always
- * returns content (real or graceful fallback).
- */
-async function handleAnonymousAccess(req, res, next, uid) {
-  const firestore = getDb();
-  let used = 0;
-  let ref = null;
-  if (firestore) {
-    ref = firestore.collection(USERS).doc(uid);
-    try {
-      const snap = await ref.get();
-      if (snap.exists && typeof snap.data().anonAiUsed === 'number') {
-        used = snap.data().anonAiUsed;
-      }
-    } catch (e) {
-      logAiAccess('warn', { event: 'ANON_READ_FAILED', uid, message: e.message });
-    }
-  }
-  if (used >= ANON_FREE_LIMIT) {
-    logAiAccess('info', { event: 'ANON_SIGNUP_REQUIRED', uid, used });
-    return res.status(403).json({
-      success: false,
-      error: 'SIGNUP_REQUIRED',
-      code: 'SIGNUP_REQUIRED',
-      message: 'Create a free account to keep creating — it only takes a few seconds.',
-    });
-  }
-  if (ref) {
-    try {
-      await ref.set({ anonAiUsed: used + 1, isAnonymous: true }, { merge: true });
-    } catch (_) {}
-  }
-  req.uid = uid;
-  req.isAnonymous = true;
-  req.aiAccess = {
-    allowed: true,
-    planType: 'anonymous',
-    creditsLeftToday: Math.max(0, ANON_FREE_LIMIT - used - 1),
-  };
-  req.aiAccessAllowed = true;
-  req.idempotencyKey = getIdempotencyKey(req);
-  logAiAccess('info', { event: 'ANON_TASTE', uid, used: used + 1, limit: ANON_FREE_LIMIT });
-  return next();
-}
-
-/**
  * Express middleware: require x-user-uid, load user, enforce access. Sets req.uid, req.aiAccess.
  * Endpoint name is set by caller via req._aiEndpoint (for logging).
  */
@@ -493,9 +438,8 @@ async function requireAiAccess(req, res, next) {
   // Trusted uid comes from the verified Firebase ID token — NOT the raw header.
   // This closes the spoofing hole where any caller could send an arbitrary
   // x-user-uid to get a fresh trial (unlimited AI) or act as another user.
-  const decoded = await verifyUidFromToken(req);
-  let uidTrim = decoded ? decoded.uid : null;
-  const isAnonymous = decoded ? decoded.isAnonymous : false;
+  const verifiedUid = await verifyUidFromToken(req);
+  let uidTrim = verifiedUid;
   if (!uidTrim && !REQUIRE_AUTH_TOKEN) {
     // Safety valve only: header-trust when token enforcement is explicitly off.
     uidTrim = (req.headers['x-user-uid'] || req.headers['X-User-UID'] || req.body?.uid)?.trim();
@@ -507,13 +451,6 @@ async function requireAiAccess(req, res, next) {
       message: 'Missing or invalid auth token',
     });
   }
-
-  // Try-before-signup: anonymous users get ANON_FREE_LIMIT free tastes, then a
-  // signup gate. They do NOT get the trial (that unlocks on signup).
-  if (isAnonymous) {
-    return handleAnonymousAccess(req, res, next, uidTrim);
-  }
-
   // ORDER: access = getAiAccess() → trial → premium → free (free: check daily limit, then block if >= 2).
   const access = (process.env.NODE_ENV === 'test' && req._mockAiAccess != null)
     ? await Promise.resolve(req._mockAiAccess)
