@@ -58,28 +58,91 @@ async function getInstagramStats(req, res) {
     const { db, token } = await getStoredInstagramAuth(uid);
     const profile = await instagramService.getUserProfile(token);
 
+    // Aggregate real engagement from recent media (likes + comments are on the
+    // media object; no insights scope needed).
+    let media = [];
+    try {
+      media = await instagramService.getRecentMedia(token, 25);
+    } catch (e) {
+      console.warn('[getInstagramStats] media read failed:', e.message);
+    }
+    let totalLikes = 0;
+    let totalComments = 0;
+    let topLikes = 0;
+    for (const m of media) {
+      const l = Number(m.like_count || 0);
+      const c = Number(m.comments_count || 0);
+      totalLikes += l;
+      totalComments += c;
+      if (l > topLikes) topLikes = l;
+    }
+    const sampled = media.length;
+    const followers = Number(profile.followers_count || 0);
+    const posts = Number(profile.media_count || sampled || 0);
+    const avgLikes = sampled ? Math.round(totalLikes / sampled) : 0;
+    const avgComments = sampled ? Math.round(totalComments / sampled) : 0;
+    const engagementRate =
+      followers > 0 && sampled > 0
+        ? Number((((totalLikes + totalComments) / sampled / followers) * 100).toFixed(2))
+        : 0;
+
+    const username = String(profile.username || '');
+    const accountType = String(profile.account_type || '');
+    const now = new Date();
+
     await db.collection('users').doc(uid).set(
       {
         instagram: {
           connected: true,
           instagram_user_id: String(profile.id || ''),
-          username: String(profile.username || ''),
-          followers_count: Number(profile.followers_count || 0),
-          media_count: Number(profile.media_count || 0),
-          account_type: String(profile.account_type || ''),
-          last_sync: new Date(),
+          username,
+          followers_count: followers,
+          media_count: posts,
+          account_type: accountType,
+          last_sync: now,
         },
       },
       { merge: true }
     );
 
+    // Mirror rich stats into instagram_data/profile — the screen reads this.
+    await db
+      .collection('users')
+      .doc(uid)
+      .collection('instagram_data')
+      .doc('profile')
+      .set(
+        {
+          username,
+          account_type: accountType,
+          followers_count: followers,
+          media_count: posts,
+          total_likes: totalLikes,
+          total_comments: totalComments,
+          avg_likes: avgLikes,
+          avg_comments: avgComments,
+          top_post_likes: topLikes,
+          engagement_rate: engagementRate,
+          sampled_posts: sampled,
+          updated_at: now,
+        },
+        { merge: true }
+      );
+
     return res.json({
       success: true,
-      followers: Number(profile.followers_count || 0),
+      followers,
       following: Number(profile.follows_count || 0),
-      posts: Number(profile.media_count || 0),
-      username: String(profile.username || ''),
-      accountType: String(profile.account_type || ''),
+      posts,
+      likes: totalLikes,
+      comments: totalComments,
+      avgLikes,
+      avgComments,
+      topPostLikes: topLikes,
+      engagementRate,
+      sampledPosts: sampled,
+      username,
+      accountType,
     });
   } catch (error) {
     return sendError(res, error);
