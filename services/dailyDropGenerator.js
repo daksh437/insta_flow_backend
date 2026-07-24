@@ -12,8 +12,10 @@ const fs = require('fs');
 const path = require('path');
 const { runGemini } = require('../utils/geminiClient');
 const { getDb } = require('../utils/firestoreAdmin');
+const { buildCreatorContext } = require('./instagram_service');
 
-const TRENDS_RSS_URL = 'https://trends.google.com/trending/rss?geo=US';
+// India trends — the app's audience is India-heavy, so US trends were off.
+const TRENDS_RSS_URL = 'https://trends.google.com/trending/rss?geo=IN';
 const FALLBACK_TRENDS = [
   'day in my life', 'get ready with me', 'morning routine', 'tips and tricks',
   'before and after', 'trending sound', 'challenge', 'relatable', 'storytime', 'tutorial',
@@ -131,6 +133,46 @@ best_post_time
 coach_summary
 
 Avoid repeating yesterday structure.`;
+}
+
+/**
+ * Personalized prompt: blend today's trend with THIS creator's proven themes,
+ * hashtags, best format and audience-active hours (from buildCreatorContext).
+ */
+function buildPersonalizedPrompt(trendList, ctx) {
+  const list = (trendList && trendList.length) ? trendList : FALLBACK_TRENDS;
+  const trendListStr = list.slice(0, 10).join(', ');
+  const themes = (ctx.topThemes || []).slice(0, 4).map((t) => `- ${t}`).join('\n')
+    || '- (not enough posts yet — infer from niche)';
+  const tags = (ctx.topHashtags || []).slice(0, 10).join(' ') || '(none yet)';
+  const hoursStr = (ctx.bestHoursIST || []).length
+    ? ctx.bestHoursIST.map((h) => `${h}:00`).join(', ') + ' IST'
+    : 'evening (7-9 PM IST)';
+  return `You are a viral Instagram reel strategist creating a plan for ONE specific creator.
+
+Creator profile:
+- Username: @${ctx.username || 'creator'}
+- Followers: ${ctx.followers || 0}
+- Best-performing format: ${ctx.bestFormat || 'REELS'}
+- Audience most active around: ${hoursStr}
+- Hashtags that work for them: ${tags}
+- Their best recent content themes:
+${themes}
+
+Today's trending keywords (India): ${trendListStr}
+
+Blend the creator's proven style with a fresh trend. Make it feel MADE FOR THEM, not generic.
+
+Return STRICT JSON:
+trend_theme
+virality_score
+reel_concept
+steps (5)
+hooks (5)
+caption
+hashtags (10)  // mix their proven hashtags with trend hashtags
+best_post_time  // use their audience-active hours above
+coach_summary  // reference why this fits THEIR account`;
 }
 
 /** Fallback drop when Gemini fails after retry. */
@@ -265,8 +307,74 @@ function getTodayDrop() {
   return getStored(key);
 }
 
+/**
+ * Personalized daily drop for a connected creator. Reads their Instagram context
+ * (proven themes, hashtags, best format & active hours) and blends it with
+ * today's India trend. Cached per user per UTC day at
+ * users/{uid}/personalized_drops/{dateKey}. Returns null if the user isn't
+ * connected or generation fails — the caller then falls back to the global drop.
+ */
+async function generatePersonalizedDrop(uid) {
+  const db = getDb();
+  if (!db || !uid) return null;
+  const key = dateKey();
+  const cacheRef = db.collection('users').doc(uid).collection('personalized_drops').doc(key);
+
+  try {
+    const cached = await cacheRef.get();
+    if (cached.exists) return cached.data();
+  } catch (_) {}
+
+  let token = null;
+  try {
+    const userSnap = await db.collection('users').doc(uid).get();
+    const data = userSnap.data() || {};
+    token = String((data.instagram && data.instagram.access_token) || '').trim();
+  } catch (_) {}
+  if (!token) return null; // not connected → global drop
+
+  let ctx;
+  try {
+    ctx = await buildCreatorContext(token);
+  } catch (e) {
+    console.warn('[DailyDrop] creator context failed for', uid, e.message);
+    return null;
+  }
+
+  const trends = await fetchTrendKeywords();
+  const prompt = buildPersonalizedPrompt(trends, ctx);
+  const systemPrompt = 'Return only valid JSON. No markdown, no code fences, no extra text.';
+
+  let json = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const raw = await runGemini(prompt, {
+        systemPrompt,
+        userPrompt: prompt,
+        temperature: 0.7,
+        maxTokens: 2048,
+      });
+      json = parseDropJson(raw);
+      if (json) break;
+    } catch (err) {
+      console.warn(`[DailyDrop] personalized Gemini attempt ${attempt} failed:`, err.message);
+    }
+  }
+  if (!json) return null; // fall back to global
+
+  const doc = toStoredDoc(json);
+  doc.personalized = true;
+  doc.date = key;
+  try {
+    await cacheRef.set(doc, { merge: true });
+  } catch (_) {}
+  console.log('[DailyDrop] Personalized drop generated for', uid);
+  return doc;
+}
+
 module.exports = {
   generateDailyDrop,
+  generatePersonalizedDrop,
   getTodayDrop,
   dateKey,
 };

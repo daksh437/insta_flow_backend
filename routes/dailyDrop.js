@@ -3,19 +3,36 @@
  */
 
 const express = require('express');
-const { getTodayDrop, generateDailyDrop } = require('../services/dailyDropGenerator');
+const {
+  getTodayDrop,
+  generateDailyDrop,
+  generatePersonalizedDrop,
+} = require('../services/dailyDropGenerator');
 
 const router = express.Router();
 
 /**
  * GET /daily-drop/today
- * Returns today's drop. Self-healing: if the cron hasn't run yet (or the store
- * was wiped by a Render restart), generate once on demand. Generation is
- * idempotent per day (keyed by date) and also mirrors into Firestore, so the
- * Flutter app's direct read is populated. One Gemini call per day at most.
+ * Connected creators get a PERSONALIZED drop (built from their Instagram
+ * themes/hashtags/best-times, cached per user per day). Everyone else gets the
+ * global drop, which is self-healing: if the cron hasn't run (or the store was
+ * wiped by a Render restart) it generates once on demand and mirrors into
+ * Firestore for the app's direct read.
  */
 router.get('/today', async (req, res) => {
   try {
+    const uid = (req.headers['x-user-uid'] || req.headers['x-user-id'] || '')
+      .toString()
+      .trim();
+
+    // Personalized for connected users; returns null (→ global) if not connected.
+    if (uid) {
+      const personalized = await generatePersonalizedDrop(uid);
+      if (personalized) {
+        return res.json({ success: true, ok: true, drop: personalized, personalized: true });
+      }
+    }
+
     let drop = getTodayDrop();
     if (!drop) {
       drop = await generateDailyDrop();
