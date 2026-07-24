@@ -38,7 +38,7 @@ if (!REQUIRE_AUTH_TOKEN) {
 // Anonymous (not-yet-signed-up) users get a small taste of the AI before we ask
 // them to create an account. This both drives signups and caps abuse (a fresh
 // anonymous user from a reinstall can't farm unlimited free AI).
-const ANON_FREE_LIMIT = parseInt(process.env.ANON_FREE_LIMIT || '2', 10);
+const ANON_FREE_LIMIT = parseInt(process.env.ANON_FREE_LIMIT || '1', 10);
 
 /**
  * Verify the Firebase ID token from the Authorization header and return
