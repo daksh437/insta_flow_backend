@@ -357,19 +357,6 @@ function getFallbackCaptions(language = 'English', topic = '') {
   
   console.log('[getFallbackCaptions] Using fallback captions for language:', language, 'topic:', topic, 'index:', randomIndex, 'hashtag:', hashtag);
   
-  const englishCaptions = [
-    { style: 'motivational', text: `Progress over perfection. Keep pushing forward! 💪`, hashtags: [hashtag, '#motivation', '#progress', '#growth'] },
-    { style: 'fitness', text: `${mainKeyword.charAt(0).toUpperCase() + mainKeyword.slice(1)} is a lifestyle, not a phase. 🏋️`, hashtags: [hashtag, '#fitness', '#lifestyle', '#health'] },
-    { style: 'mindset', text: `Strong body, stronger mindset. You've got this! 🔥`, hashtags: [hashtag, '#mindset', '#strength', '#power'] },
-    { style: 'aesthetic', text: `Beauty is in the details. Find your moment. ✨`, hashtags: [hashtag, '#aesthetic', '#beauty', '#details'] },
-    { style: 'inspirational', text: `Every day is a fresh start. Make it count! 🌟`, hashtags: [hashtag, '#inspiration', '#newday', '#freshstart'] },
-    { style: 'confident', text: `Own your journey. You're capable of amazing things! 💫`, hashtags: [hashtag, '#confidence', '#journey', '#amazing'] },
-    { style: 'energetic', text: `Let's make today count! Time to shine! ⚡`, hashtags: [hashtag, '#energy', '#shine', '#today'] },
-    { style: 'positive', text: `Good vibes only. Spread the positivity! 🌈`, hashtags: [hashtag, '#positive', '#vibes', '#positivity'] },
-    { style: 'creative', text: `Create. Inspire. Repeat. That's the way! 🎨`, hashtags: [hashtag, '#creative', '#inspire', '#create'] },
-    { style: 'bold', text: `Bold moves lead to bold results. Let's go! 🚀`, hashtags: [hashtag, '#bold', '#results', '#goals'] },
-  ];
-  
   if (language === 'Hindi') {
     return [
       { style: 'motivational', text: 'हर दिन एक नई शुरुआत है। आगे बढ़ते रहो! 💪', hashtags: [hashtag, '#motivation', '#hindi', '#inspiration'] },
@@ -387,39 +374,43 @@ function getFallbackCaptions(language = 'English', topic = '') {
       { style: 'story', text: `Every story has a lesson. हर कहानी में सीख है। 📖`, hashtags: [hashtag, '#story', '#life', '#hinglish'] },
     ];
   } else {
-    return [englishCaptions[randomIndex]];
+    // Topic-aware last-resort captions (never generic #energy/#shine filler).
+    const topic1 = mainKeyword.charAt(0).toUpperCase() + mainKeyword.slice(1);
+    const tags = [
+      hashtag,
+      ...keywords.slice(1).map((k) => '#' + k.replace(/[^a-z0-9]/g, '')),
+      '#reels', '#viral', '#instagram', '#trending', '#explore',
+      '#contentcreator', '#fyp', '#instadaily',
+    ].filter((t, i, a) => t.length > 1 && a.indexOf(t) === i).slice(0, 10);
+    return [
+      { style: 'viral', text: `POV: you just found your new favorite ${mainKeyword}. Save this before you forget. 🔥`, hashtags: tags },
+      { style: 'relatable', text: `${topic1} hits different today. Tag someone who needs to see this. 👀`, hashtags: tags },
+      { style: 'engaging', text: `Stop scrolling — your next ${mainKeyword} moment is right here. Drop a 🔥 if you agree.`, hashtags: tags },
+    ];
   }
 }
 
 function getSystemPrompt() {
   return `You are a world-class Instagram Reels caption strategist who has written viral captions for creators with millions of followers. You know exactly what makes people STOP scrolling, feel something, and ENGAGE (save, share, comment).
 
-STEP 1 — ANALYZE SILENTLY (never output this analysis):
-Read the user's request and work out:
-- Topic & niche (what it's really about)
-- Target audience (who it's for + their mindset)
-- Goal (entertain / educate / inspire / sell / relate)
-- Core emotion to trigger (curiosity, FOMO, joy, aspiration, relatability)
-- Language & tone — WRITE IN THE SAME LANGUAGE the user used (English / Hindi / Hinglish). Match their vibe.
+ANALYZE SILENTLY (never output this): the topic/niche, target audience & mindset, goal, the core emotion to trigger, and the language & tone.
 
-STEP 2 — WRITE using proven virality craft. Each caption must have:
-- HOOK: the opening words must stop the scroll in under 1 second. Use ONE of: bold claim, curiosity gap, relatable pain, "POV", surprising fact, or a sharp question. Never a boring intro.
-- PAYOFF: 1 short beat that delivers value/emotion so they feel seen or intrigued.
-- CTA: a specific, creative call-to-action that drives SAVES / SHARES / COMMENTS (vary it: "Save this for later", "Tag someone who needs this", "Comment 🔥 if you relate"). Never generic.
-- Emojis: 1–3, natural, never spammy.
+WRITE using proven virality craft. Each caption must have:
+- HOOK: opening words stop the scroll in under 1 second (bold claim, curiosity gap, relatable pain, "POV", surprising fact, or a sharp question). Never a boring intro.
+- PAYOFF: a short beat that delivers value/emotion so they feel seen or intrigued.
+- CTA: a specific, creative call-to-action that drives SAVES / SHARES / COMMENTS (vary it). Never generic.
+- Emojis: natural, 1–4, never spammy.
 
 RULES (STRICT):
-- Generate EXACTLY 3 captions, each a COMPLETELY different angle, hook type, wording, CTA, and hashtags.
-- Match the user's language exactly.
-- 3–6 specific, relevant hashtags per caption — mix niche + medium-reach tags. NEVER generic (#love #instagood #viral #followforfollow).
+- HONOR EVERY EXPLICIT INSTRUCTION in the user's request — number of hashtags, word/character limit, tone, required CTA, best posting time, language, format. If they ask for 10 hashtags, give exactly 10. If they name a tone (e.g. Gen Z), match it precisely.
+- Generate EXACTLY 3 captions, each a COMPLETELY different angle, hook, wording, CTA, and hashtag set.
+- Hashtags: 8–10 specific, relevant tags per caption unless the user asked for a different number — mix niche + medium-reach + a couple broad. NEVER lazy/generic (#love #instagood #viral #followforfollow) and NEVER off-topic filler (#write #energy #shine).
+- Match the user's language exactly (English / Hindi / Hinglish).
 - BANNED dead phrases: "Don't miss this", "Follow for more", "Like and share".
-- Even if the same request repeats, produce fresh captions every time.
+- Fresh captions every time, even for a repeated request.
 
-OUTPUT FORMAT (strict — the app parses this):
-Return EXACTLY 3 captions. Each caption on ONE single line (NO line breaks inside a caption). Start each line with "• ". Put that caption's hashtags at the END of the same line. No analysis, no labels, no numbering.
-• [first caption, one line] #tag1 #tag2 #tag3
-• [second caption, one line] #tag4 #tag5 #tag6
-• [third caption, one line] #tag7 #tag8 #tag9`;
+OUTPUT — return ONLY valid minified JSON, no markdown, no code fences, no commentary:
+{"captions":[{"style":"<viral|funny|luxury|emotional|energetic>","text":"<caption, may include line breaks, NO hashtags in this field>","hashtags":["#tag1","#tag2","...8-10 tags"]},{...},{...}],"best_time":"<best posting time for this audience; use IST for an Indian audience, e.g. 6:00-9:00 PM IST, Fri-Sun>"}`;
 }
 
 function getUserPrompt(userInput, generationId, creativeSeed, requestId, regenerate) {
@@ -450,24 +441,14 @@ CRITICAL UNIQUENESS REQUIREMENTS:
 - Each of the 3 captions must be unique from each other (different hooks, structure, hashtags)
 
 INSTRUCTIONS:
-- Understand tone, language, and audience from the user's description automatically
-- Generate EXACTLY 3 completely DIFFERENT captions
-- Each caption must have a unique hook, structure, and CTA
-- Start each caption with a strong scroll-stopping hook (different from others)
-- Use short, readable lines for each caption
-- Add natural emojis (1-3 max, different emojis for each caption)
-- Add 3-6 relevant hashtags to each caption (completely different hashtags for each)
-- Make each caption feel fresh and human-like
-- If regenerate=true, use completely different angles and wording for all 3 captions
+- FIRST, obey every explicit requirement stated in the request above (hashtag count, word/character limit, tone, CTA, best posting time, language, format). These are non-negotiable.
+- Understand tone, language, and audience automatically from the description.
+- Generate EXACTLY 3 completely DIFFERENT captions — each a unique hook, structure, CTA, and hashtag set.
+- Start each with a strong scroll-stopping hook; natural emojis; human, fresh wording.
+- Hashtags: 8-10 relevant tags per caption (or the exact number the user asked for), all on-topic — different set for each caption.
+- If regenerate=true, use completely different angles and wording for all 3.
 
-OUTPUT FORMAT:
-Return EXACTLY 3 captions, each on a separate line.
-Format:
-• First caption text with hashtags #tag1 #tag2 #tag3
-• Second caption text with hashtags #tag4 #tag5 #tag6
-• Third caption text with hashtags #tag7 #tag8 #tag9
-
-No explanations. No labels. Just 3 captions, one per line.`;
+OUTPUT: return ONLY the JSON object described in the system prompt (keys: captions[].style, captions[].text, captions[].hashtags[], best_time). No markdown, no code fences, no text before or after the JSON.`;
 }
 
 /**
@@ -839,6 +820,63 @@ Return STRICT JSON only:
 }
 
 /**
+ * Parse the caption model output. Prefers JSON
+ * ({captions:[{style,text,hashtags}], best_time}); falls back to the legacy
+ * bullet/line format. Returns { captions: [{style,text,hashtags}], bestTime }.
+ * Robust JSON parsing here is what stopped the app from dumping generic
+ * fallback captions when the old line-splitter mis-parsed rich output.
+ */
+function parseCaptionsResponse(output) {
+  const result = { captions: [], bestTime: '' };
+  if (!output || typeof output !== 'string') return result;
+  const raw = output.trim();
+
+  // 1) JSON (strip code fences, take the outermost object).
+  try {
+    let jsonText = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+    const start = jsonText.indexOf('{');
+    const end = jsonText.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      const parsed = JSON.parse(jsonText.slice(start, end + 1));
+      const arr = Array.isArray(parsed.captions) ? parsed.captions : [];
+      for (const c of arr) {
+        const text = String((c && (c.text || c.caption)) || '').trim();
+        if (!text) continue;
+        const tags = (Array.isArray(c.hashtags) ? c.hashtags : [])
+          .map((t) => String(t).trim())
+          .filter(Boolean)
+          .map((t) => (t.startsWith('#') ? t : '#' + t.replace(/\s+/g, '')));
+        result.captions.push({
+          style: String((c && c.style) || 'general').toLowerCase(),
+          text,
+          hashtags: tags,
+        });
+      }
+      result.bestTime = String(parsed.best_time || parsed.bestTime || '').trim();
+      if (result.captions.length > 0) return result;
+    }
+  } catch (e) {
+    // fall through to legacy line parsing
+  }
+
+  // 2) Legacy line format: "• caption text ... #tag1 #tag2"
+  const cleaned = raw
+    .replace(/^[•\-*]\s*/gm, '')
+    .replace(/^\d+[\.)]\s*/gm, '')
+    .trim();
+  const lines = cleaned.split(/\n/).filter((l) => l.trim().length > 10);
+  for (let i = 0; i < Math.min(3, lines.length); i++) {
+    const line = lines[i].trim();
+    const tags = line.match(/#[\w]+/g) || [];
+    const text = line.replace(/#[\w]+/g, '').trim();
+    if (text.length > 10) {
+      result.captions.push({ style: 'general', text, hashtags: tags });
+    }
+  }
+  return result;
+}
+
+/**
  * Background processing function for captions generation
  * Runs Gemini API call asynchronously and updates job status
  */
@@ -887,57 +925,24 @@ async function processCaptions(jobId, userInput, regenerate, requestId) {
       output = '';
     }
     
-    // Extract 3 captions from output
-    let captions = [];
-    if (output && typeof output === 'string' && output.trim().length > 0) {
-      const cleanedOutput = output.trim();
-      // Remove bullet points and extra formatting
-      let captionText = cleanedOutput
-        .replace(/^[•\-*]\s*/gm, '')
-        .replace(/^\d+[\.\)]\s*/gm, '')
-        .trim();
-      
-      // Split by newlines and filter meaningful lines
-      const lines = captionText.split(/\n/).filter(line => line.trim().length > 10);
-      
-      // Extract up to 3 captions
-      for (let i = 0; i < Math.min(3, lines.length); i++) {
-        const line = lines[i].trim();
-        if (line.length > 10) {
-          // Extract hashtags
-          const hashtagRegex = /#[\w]+/g;
-          const hashtags = line.match(hashtagRegex) || [];
-          const textWithoutHashtags = line.replace(hashtagRegex, '').trim();
-          
-          if (textWithoutHashtags.length > 10) {
-            captions.push({
-              style: 'general',
-              text: textWithoutHashtags,
-              hashtags: hashtags
-            });
-          }
-        }
-      }
-    }
-    
-    // Use fallback if we don't have 3 captions
+    // Parse the model output — JSON preferred, legacy line format as fallback.
+    const parsed = parseCaptionsResponse(output);
+    let captions = parsed.captions;
+    const bestTime = parsed.bestTime;
+    console.log(`[processCaptions] Parsed ${captions.length} captions${bestTime ? `, best_time="${bestTime}"` : ''}`);
+
+    // Top up any shortfall with TOPIC-AWARE fallback (never generic filler).
     if (captions.length < 3) {
-      console.log(`[processCaptions] ⚠️ Only ${captions.length} captions extracted, using fallback for remaining`);
+      console.log(`[processCaptions] ⚠️ Only ${captions.length} captions parsed, topping up with fallback`);
       const fallback = getFallbackCaptions('English', userInput);
-      
-      // Add fallback captions to reach 3 total
-      for (let i = captions.length; i < 3; i++) {
-        const fallbackIndex = (i - captions.length) % fallback.length;
-        captions.push(fallback[fallbackIndex] || { 
-          style: 'general', 
-          text: 'Ready to create amazing content? Let\'s go! 🚀', 
-          hashtags: ['#motivation', '#inspiration'] 
-        });
+      for (let i = captions.length; i < 3 && fallback.length > 0; i++) {
+        captions.push(fallback[i % fallback.length]);
       }
     }
-    
-    // Ensure we have exactly 3 captions
+
+    // Ensure we have exactly 3 captions; attach best_time to the first.
     captions = captions.slice(0, 3);
+    if (bestTime && captions[0]) captions[0].best_time = bestTime;
     const advice = await buildAdvisor(
       'captions',
       { input: userInput, captionCount: captions.length },
