@@ -405,7 +405,7 @@ RULES (STRICT):
 - HONOR EVERY EXPLICIT INSTRUCTION in the user's request — number of hashtags, word/character limit, tone, required CTA, best posting time, language, format. If they ask for 10 hashtags, give exactly 10. If they name a tone (e.g. Gen Z), match it precisely.
 - Generate EXACTLY 3 captions, each a COMPLETELY different angle, hook, wording, CTA, and hashtag set.
 - Hashtags: 8–10 specific, relevant tags per caption unless the user asked for a different number — mix niche + medium-reach + a couple broad. NEVER lazy/generic (#love #instagood #viral #followforfollow) and NEVER off-topic filler (#write #energy #shine).
-- Match the user's language exactly (English / Hindi / Hinglish).
+- LANGUAGE (critical): detect the language and script the user wrote the request in and write ALL captions in that SAME language and script (Hindi request → Devanagari Hindi, English → English, etc.). If the user explicitly names a language anywhere (e.g. "in Hindi", "in English", "in Tamil", "in Marathi"), use THAT language instead — override everything, never default to English. Hashtags may stay romanized/English.
 - BANNED dead phrases: "Don't miss this", "Follow for more", "Like and share".
 - Fresh captions every time, even for a repeated request.
 
@@ -1950,7 +1950,9 @@ The reel MUST be about EXACTLY what the user asked for below. Do NOT change the 
 USER REQUEST (this is the topic — obey it literally):
 "${userInput}"
 
-Write for a ${durationSeconds}-second reel. Tone: ${tone} (${toneGuidelines[tone.toLowerCase()] || 'engaging and confident'}). Audience: ${audience} (${audienceGuidelines[audience.toLowerCase()] || 'general'}). Language: ${languageGuidelines}
+Write for a ${durationSeconds}-second reel. Tone: ${tone} (${toneGuidelines[tone.toLowerCase()] || 'engaging and confident'}). Audience: ${audience} (${audienceGuidelines[audience.toLowerCase()] || 'general'}).
+
+LANGUAGE (critical): Detect the language and script the user wrote the request in, and write the ENTIRE output (hook, every scene's "say", cta, caption) in that SAME language and script — e.g. a Hindi (Devanagari) request gets a Hindi script, an English request gets English. If the user explicitly names a language anywhere (e.g. "in Hindi", "in English", "in Tamil", "in Marathi"), use THAT language instead, overriding everything. Never default to English translation. (Hashtags may stay romanized/English.)
 Freshness seed (make every generation different, never reuse phrasing): ${creativeSeed}${regenerateWarning}
 
 Return ONLY valid JSON — no markdown, no code fences, no text before or after — in EXACTLY this shape:
