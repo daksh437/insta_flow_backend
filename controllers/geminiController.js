@@ -1944,91 +1944,32 @@ function reelsScriptPromptChatGPT(userInput, extractedParams, generationId, crea
 
   return `You are an elite Instagram Reels scriptwriter behind viral reels for top creators. You understand retention curves, pattern interrupts, and what makes a viewer watch till the end.
 
-BEFORE writing, silently analyze the user's request (never output this): the exact topic, the audience and their mindset, the goal, the emotion to trigger, and the language/tone to match. Then write a script engineered to hook in the first second and hold attention to the CTA.
+THE #1 RULE — STAY ON TOPIC:
+The reel MUST be about EXACTLY what the user asked for below. Do NOT change the topic, do NOT turn it into a generic motivational reel, and do NOT promote or mention any app, brand, product, or service unless the user explicitly names one. If a creator profile is provided above this prompt, use it ONLY to match the creator's tone, niche vocabulary, and hashtag style — NEVER to replace the requested topic. If the request is a list (e.g. "top 5 games"), the script MUST actually walk through those specific items with a real detail for each.
 
-Your task is to generate a reel script STRICTLY based on the user's request.
-
-USER REQUEST:
+USER REQUEST (this is the topic — obey it literally):
 "${userInput}"
 
-🎲 CREATIVE_SEED: ${creativeSeed}
-🆔 REQUEST_ID: ${generationId}
-📅 TIMESTAMP: ${Date.now()}
-🔄 VARIATION_TOKEN: ${variationToken}
-📐 SELECTED_ANGLE: ${selectedAngle}
-🎯 HOOK_STYLE: ${selectedHookStyle}
-📢 CTA_TYPE: ${selectedCTA}
-${regenerateWarning}
+Write for a ${durationSeconds}-second reel. Tone: ${tone} (${toneGuidelines[tone.toLowerCase()] || 'engaging and confident'}). Audience: ${audience} (${audienceGuidelines[audience.toLowerCase()] || 'general'}). Language: ${languageGuidelines}
+Freshness seed (make every generation different, never reuse phrasing): ${creativeSeed}${regenerateWarning}
 
-STRICT INTERPRETATION RULES:
-- If a brand name is mentioned, the script MUST clearly reflect that brand's vibe, identity, and context.
-- Do NOT ignore the brand.
-- Do NOT generate a generic motivational script unless the user explicitly asks for it.
-- The script must directly relate to what the user requested.
+Return ONLY valid JSON — no markdown, no code fences, no text before or after — in EXACTLY this shape:
+{
+  "hook": "one scroll-stopping opening line the creator SAYS, <= 14 words",
+  "scenes": [
+    { "time": "0-3s", "say": "the exact words the creator says out loud", "show": "the VISUAL to put on screen — a shot/b-roll direction, NOT the spoken words" }
+  ],
+  "cta": "one strong spoken call to action",
+  "caption": "a fresh Instagram caption for this reel (2-4 short lines, its own hook + a CTA) — do NOT just paste the script back",
+  "hashtags": ["8 to 10 hashtags about the TOPIC, each starting with # and no spaces"]
+}
 
-EXTRACTED PARAMETERS:
-- Topic/Theme: ${topic}
-- Duration: ${duration} (${durationSeconds} seconds)
-- Tone: ${tone} → ${toneGuidelines[tone.toLowerCase()] || 'Professional and engaging'}
-- Language: ${language} → ${languageGuidelines}
-- Target Audience: ${audience} → ${audienceGuidelines[audience.toLowerCase()] || 'General audience'}
-
-DURATION RULE:
-- The script must fit a ${durationSeconds}-second Instagram Reel.
-- Keep it concise and spoken-friendly.
-- Each line on a new line for clarity.
-
-BRAND SAFETY RULES:
-- Do not claim official brand endorsement.
-- Do not use copyrighted slogans.
-- You may reference brand identity indirectly (example: style, mindset, visual cues).
-- If a brand is mentioned, the brand influence must be obvious in the script.
-
-STYLE RULES:
-- Sound like a real human creator speaking to camera.
-- Natural flow, no headings, no lists.
-- No generic hooks like "Did you know", "Are you making this mistake", "Most people do this".
-- Short punchy lines.
-- Emotion + confidence + clarity.
-- Sounds authentic and human, not AI-generated.
-
-STRUCTURE (do NOT label):
-- Start with a powerful opening line (use ${selectedHookStyle} style, ${selectedAngle} approach)
-- Build momentum
-- Highlight value or story related to the user's request
-- End with a strong CTA (${selectedCTA} style)
-
-UNIQUENESS (MANDATORY):
-- Every generation must be different
-- Change hook, angle, and CTA every time
-- Even if the same prompt is used again, output must be new
-- Use the variation token (${variationToken}) to force uniqueness
-- Never repeat sentence structure or phrasing
-
-LANGUAGE RULES:
-- ${languageGuidelines}
-- Match tone perfectly (${tone})
-- If Hinglish, mix Hindi + English naturally, not translated
-
-CTA RULES:
-- CTA must be different every time
-- Type: ${selectedCTA}
-- Examples (rotate creatively): comment, save, follow, share, DM, try this, think about it
-- Make it feel natural, not forced
-- Strong and confident, not begging
-
-OUTPUT RULES:
-- Output ONLY the reel script.
-- The script must clearly relate to the user request.
-- If the request mentions a brand, the brand influence must be obvious.
-- No headings
-- No bullet points
-- No timestamps
-- No explanations
-- No markdown
-- Just the script text, line by line, as a creator would speak it
-
-Now generate the reel script.`;
+HARD RULES:
+- Provide 3 to 5 scenes that together fill the full ${durationSeconds} seconds. For a "top N" request, use roughly one scene per item.
+- "say" and "show" MUST be different: "say" = spoken words; "show" = camera/visual instruction (e.g. "fast cuts of gameplay", "creator pointing at the phone", "text overlay: TOP 5"). Never copy the dialogue into "show".
+- Sound like a real human creator; short punchy lines; no "Did you know", no "Are you making this mistake".
+- hashtags must be about the topic — NEVER turn the raw request sentence into a single hashtag.
+- Output JSON ONLY.`;
 }
 
 /**
@@ -2178,6 +2119,60 @@ IMPORTANT:
 
 
 /**
+ * Parse the structured reels-script JSON the prompt asks for and map it to the
+ * client shape { hook, cta, caption, hashtags, scene_by_scene:[{time,dialogue,
+ * visual}], fullScript }. dialogue = spoken ("say"), visual = shot direction
+ * ("show") — kept DISTINCT so the app no longer shows "Dikhao" repeating the
+ * dialogue. fullScript is built ONCE (hook → dialogues → cta), killing the old
+ * triple-duplication.
+ */
+function parseReelsJson(output) {
+  if (!output || typeof output !== 'string') return null;
+  const text = output.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(text.slice(start, end + 1));
+  } catch (e) {
+    return null;
+  }
+  const str = (v) => (v != null ? String(v).trim() : '');
+  const hook = str(parsed.hook);
+  const cta = str(parsed.cta);
+  const caption = str(parsed.caption);
+  const scenesIn = Array.isArray(parsed.scenes) ? parsed.scenes : [];
+  const scene_by_scene = scenesIn
+    .map((s, i) => ({
+      time: str(s && s.time) || `${i * 3}-${i * 3 + 3}s`,
+      dialogue: str(s && (s.say || s.dialogue || s.voiceover)),
+      visual: str(s && (s.show || s.visual || s.on_screen_text)),
+    }))
+    .filter((s) => s.dialogue || s.visual);
+  const hashtags = (Array.isArray(parsed.hashtags) ? parsed.hashtags : [])
+    .map((t) => str(t))
+    .filter(Boolean)
+    .map((t) => (t.startsWith('#') ? t : '#' + t.replace(/\s+/g, '')))
+    .slice(0, 12);
+
+  const spoken = [hook, ...scene_by_scene.map((s) => s.dialogue).filter(Boolean), cta]
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+
+  if (!hook && scene_by_scene.length === 0) return null;
+  return {
+    hook,
+    cta,
+    caption: caption || spoken,
+    hashtags,
+    scene_by_scene,
+    fullScript: spoken,
+  };
+}
+
+/**
  * Background processing function for reels script (handles errors with fallback)
  * Wraps the main processing logic to ensure fallback on any error
  */
@@ -2244,45 +2239,14 @@ async function processReelsScript(jobId, userInput, extractedParams, regenerate,
     
     console.log(`[processReelsScript] Job ${jobId} - ✅ Gemini API success, response length: ${output?.length || 0}`);
     
-    // CRITICAL: Treat Gemini output as PLAIN TEXT ONLY - NEVER expect JSON
-    let scriptData = null;
-    
-    // Step 1: Try JSON parsing first (in case Gemini returns JSON)
-    if (output && output.length > 0) {
-      scriptData = extractJsonFromText(output);
+    // Parse the structured JSON the prompt asks for. This is what stopped the
+    // duplicated sections, "show" copying "say", and the raw-prompt hashtag.
+    const transformedData = parseReelsJson(output);
+    if (!transformedData || !Array.isArray(transformedData.scene_by_scene) || transformedData.scene_by_scene.length === 0) {
+      throw new Error('Failed to parse reels script JSON from Gemini response.');
     }
-    
-    // Step 2: If JSON parsing failed, extract from plain text
-    if (!scriptData || typeof scriptData !== 'object' || !scriptData.hooks || !scriptData.script) {
-      console.log('[processReelsScript] JSON parsing failed or incomplete, extracting from plain text...');
-      const textScript = extractReelsScriptFromText(output, language);
-      
-      if (textScript && textScript.hooks && textScript.script) {
-        console.log('[processReelsScript] Extracted script from plain text');
-        scriptData = textScript;
-      }
-    }
-    
-    // Step 3: If still empty, throw error - NO FALLBACK
-    if (!scriptData || !scriptData.hooks || !scriptData.script || !Array.isArray(scriptData.hooks) || !Array.isArray(scriptData.script)) {
-      throw new Error('Failed to extract script from Gemini response. Output was empty or invalid.');
-    }
-    
-    // Final validation
-    if (scriptData.hooks.length === 0 || scriptData.script.length === 0) {
-      throw new Error('Gemini returned empty hooks or script array');
-    }
-    
-    console.log('[processReelsScript] ✅ Final script - hooks:', scriptData.hooks?.length || 0, 'scenes:', scriptData.script?.length || 0);
-    console.log('[processReelsScript] ✅ Using REAL Gemini API response');
-    
-    // Transform to required format
-    const transformedData = transformScriptData(scriptData, extractedParams.language, extractedParams.topic, extractedParams.duration);
-    
-    // Generate full script text (like ChatGPT format)
-    const fullScript = generateFullScriptText(transformedData, output, extractedParams.language);
-    transformedData.fullScript = fullScript;
-    
+    console.log(`[processReelsScript] ✅ Parsed ${transformedData.scene_by_scene.length} scenes, ${transformedData.hashtags.length} hashtags`);
+
     // Update job with completed status and data
     completeJobAndRecordUsage(jobId, 'completed', { data: transformedData });
     console.log(`[processReelsScript] ✅ Job ${jobId} status: processing → completed`);
