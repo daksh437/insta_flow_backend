@@ -421,8 +421,13 @@ function getUserPrompt(userInput, generationId, creativeSeed, requestId, regener
   const timestamp = Date.now();
   const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}-${Math.random().toString(36).substring(2, 10)}`;
   const variationToken = Math.random().toString(36).substring(2, 20);
-  
-  return `${regenerateWarning}Generate EXACTLY 3 UNIQUE Instagram Reels captions based on this request:
+
+  const forcedLang = detectRequestedLanguage(userInput);
+  const langDirective = forcedLang
+    ? `⚠️⚠️ OUTPUT LANGUAGE = ${forcedLang.toUpperCase()}. Write every caption's text ENTIRELY in ${forcedLang} — not English. (Hashtags may stay romanized.)\n\n`
+    : '';
+
+  return `${langDirective}${regenerateWarning}Generate EXACTLY 3 UNIQUE Instagram Reels captions based on this request:
 
 "${userInput}"
 
@@ -1897,6 +1902,39 @@ function extractParamsFromUserInput(userInput) {
  * @param {boolean} regenerate - Whether this is a regenerate request
  * @returns {string} - Formatted prompt
  */
+// Detect an explicitly requested output language from the user's text
+// ("in hindi", "hindi mein", Devanagari script, etc.). Returns a clear language
+// name for the prompt, or '' to let the model match the input language itself.
+function detectRequestedLanguage(userInput) {
+  const raw = String(userInput || '');
+  const t = raw.toLowerCase();
+  if (/[ऀ-ॿ]/.test(raw)) return 'Hindi (Devanagari script)';
+  if (/[஀-௿]/.test(raw)) return 'Tamil';
+  if (/[ఀ-౿]/.test(raw)) return 'Telugu';
+  const langMap = {
+    hindi: 'Hindi (Devanagari script)',
+    english: 'English',
+    hinglish: 'Hinglish (natural Hindi + English mix, Latin script)',
+    tamil: 'Tamil',
+    telugu: 'Telugu',
+    marathi: 'Marathi (Devanagari script)',
+    bengali: 'Bengali',
+    gujarati: 'Gujarati',
+    kannada: 'Kannada',
+    malayalam: 'Malayalam',
+    punjabi: 'Punjabi',
+    urdu: 'Urdu',
+    spanish: 'Spanish',
+    french: 'French',
+    arabic: 'Arabic',
+  };
+  for (const key of Object.keys(langMap)) {
+    const re = new RegExp(`\\b(in|into)\\s+${key}\\b|\\b${key}\\s+(me|mein|mai|language)\\b`, 'i');
+    if (re.test(t)) return langMap[key];
+  }
+  return '';
+}
+
 function reelsScriptPromptChatGPT(userInput, extractedParams, generationId, creativeSeed, regenerate) {
   const { topic, duration, tone, audience, language } = extractedParams;
   const durationSeconds = parseInt(duration.replace('s', '')) || 15;
@@ -1942,7 +1980,14 @@ function reelsScriptPromptChatGPT(userInput, extractedParams, generationId, crea
   const selectedHookStyle = hookStyles[Math.floor(Math.random() * hookStyles.length)];
   const selectedCTA = ctaVariations[Math.floor(Math.random() * ctaVariations.length)];
 
-  return `You are an elite Instagram Reels scriptwriter behind viral reels for top creators. You understand retention curves, pattern interrupts, and what makes a viewer watch till the end.
+  // Force the output language from the request itself (more reliable than
+  // hoping the model spots "in hindi" buried in an English prompt).
+  const forcedLang = detectRequestedLanguage(userInput);
+  const langDirective = forcedLang
+    ? `\n\n⚠️⚠️ OUTPUT LANGUAGE = ${forcedLang.toUpperCase()}. Write the hook, EVERY scene's "say", the cta and the caption ENTIRELY in ${forcedLang}. Do NOT write them in English or any other language. (Hashtags may stay romanized.)`
+    : '';
+
+  return `You are an elite Instagram Reels scriptwriter behind viral reels for top creators. You understand retention curves, pattern interrupts, and what makes a viewer watch till the end.${langDirective}
 
 THE #1 RULE — STAY ON TOPIC:
 The reel MUST be about EXACTLY what the user asked for below. Do NOT change the topic, do NOT turn it into a generic motivational reel, and do NOT promote or mention any app, brand, product, or service unless the user explicitly names one. If a creator profile is provided above this prompt, use it ONLY to match the creator's tone, niche vocabulary, and hashtag style — NEVER to replace the requested topic. If the request is a list (e.g. "top 5 games"), the script MUST actually walk through those specific items with a real detail for each.
