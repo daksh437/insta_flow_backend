@@ -2921,7 +2921,11 @@ async function processHashtags(jobId, topic, caption, count) {
     const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
     
     const context = caption ? `Caption: "${caption}"` : `Topic: "${topic}"`;
-    
+    const forcedLang = detectRequestedLanguage(topic || caption || '');
+    const langLine = forcedLang
+      ? `- Write/transliterate tags to suit ${forcedLang} content (tags themselves may stay romanized).`
+      : '- If the topic is written in Hindi/Hinglish, include tags that fit that audience.';
+
     const prompt = `You are an Instagram hashtag strategist whose sets are engineered to maximize REACH and DISCOVERY — not just relevance.
 
 STEP 1 — ANALYZE SILENTLY (do not output): From this ${context}, identify the core niche, sub-topics, and the exact audience searching for this content.
@@ -2934,9 +2938,10 @@ STEP 2 — Generate ${count} Instagram hashtags using a REACH-TIER mix (this ran
 
 Rules:
 - Every tag must be genuinely relevant to the ${context}.
+- The audience is primarily in INDIA — where it fits the topic, include a natural mix of India-relevant and community tags (e.g. #IndianCreators, city/region or niche-in-India tags) alongside global ones. Do not force India tags onto an unrelated topic.
 - Specific over generic. AVOID dead/overused tags: #love #instagood #viral #followforfollow #photooftheday #f4f #instadaily.
 - No spaces or special characters — Instagram-valid tags only.
-- Match the language of the topic if it's Hindi/Hinglish.
+${langLine}
 
 Return ONLY a JSON array of exactly ${count} strings:
 ["#tag1", "#tag2", "#tag3", ...]
