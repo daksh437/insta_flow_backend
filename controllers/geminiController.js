@@ -4026,6 +4026,10 @@ async function contentEngine(req, res) {
   }
 
   console.log('[contentEngine] Request:', req.body);
+  const forcedLang = detectRequestedLanguage(niche);
+  const langLine = forcedLang
+    ? `- Write the idea, hook, script and caption ENTIRELY in ${forcedLang}.`
+    : `- If the niche is written in Hindi/Hinglish, match that language.`;
   const prompt = `You are an elite Instagram growth strategist who has scaled creator accounts from 0 to 100k+. You think in hooks, retention, and shareability.
 
 STEP 1 — ANALYZE SILENTLY (do NOT output this): For niche "${niche}" with goal "${goal}", work out the target audience, their biggest pain or desire, the content format that performs best in this niche right now, and the emotion that drives saves/shares here.
@@ -4047,9 +4051,10 @@ Rules:
 - HOOK: the exact first line to say/show; must stop the scroll in 1 second (bold claim, curiosity gap, or relatable pain). Ban "Did you know", "Are you making this mistake".
 - SCRIPT: 4-6 short, spoken-style lines that hold retention; deliver value fast and end with a CTA.
 - CAPTION: written to earn saves/shares/comments, with ONE specific CTA.
-- HASHTAGS: 8-12, balanced mix (broad + mid-reach + niche), specific — never #love #viral #instagood.
-- best_time: a realistic best posting time for this audience.
-- Everything must be practical and ready to film today. If the niche is written in Hindi/Hinglish, match that language.`;
+- HASHTAGS: 8-12, balanced mix (broad + mid-reach + niche), specific — never #love #viral #instagood. The audience is primarily in INDIA, so include a natural mix of India-relevant/community tags where they fit the niche.
+- best_time: a realistic best posting time for an Indian audience (use IST, e.g. "7:00-9:00 PM IST").
+- Everything must be practical and ready to film today.
+${langLine}`;
 
   try {
     const raw = await runGemini(prompt, {
