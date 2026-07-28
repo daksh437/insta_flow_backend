@@ -71,6 +71,12 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', success: true, message: 'OK' });
 });
 
+// Deploy verification marker — bump this string on each deploy to confirm
+// Render actually shipped the latest commit.
+app.get('/version', (_req, res) => {
+  res.json({ success: true, build: '2026-07-28-captions-reels-lang' });
+});
+
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error(`[ERROR] ${new Date().toISOString()} ${req.method} ${req.path}`);
