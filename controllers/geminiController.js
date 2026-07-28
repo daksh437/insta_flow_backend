@@ -427,7 +427,12 @@ function getUserPrompt(userInput, generationId, creativeSeed, requestId, regener
     ? `⚠️⚠️ OUTPUT LANGUAGE = ${forcedLang.toUpperCase()}. Write every caption's text ENTIRELY in ${forcedLang} — not English. (Hashtags may stay romanized.)\n\n`
     : '';
 
-  return `${langDirective}${regenerateWarning}Generate EXACTLY 3 UNIQUE Instagram Reels captions based on this request:
+  const reqTags = detectRequestedHashtagCount(userInput);
+  const hashtagDirective = reqTags
+    ? `⚠️⚠️ Each caption's "hashtags" array MUST contain EXACTLY ${reqTags} hashtags — count them, no more and no fewer.\n\n`
+    : '';
+
+  return `${langDirective}${hashtagDirective}${regenerateWarning}Generate EXACTLY 3 UNIQUE Instagram Reels captions based on this request:
 
 "${userInput}"
 
@@ -1933,6 +1938,17 @@ function detectRequestedLanguage(userInput) {
     if (re.test(t)) return langMap[key];
   }
   return '';
+}
+
+// Detect an explicit hashtag count the user asked for ("10 hashtags",
+// "include 10 relevant hashtags"). Returns 0 if none / out of a sane range.
+function detectRequestedHashtagCount(userInput) {
+  const t = String(userInput || '').toLowerCase();
+  const m = t.match(/(\d{1,2})\s*(?:relevant\s+|good\s+|niche\s+|viral\s+|trending\s+|different\s+)?hashtags?\b/)
+    || t.match(/hashtags?\s*[:=-]?\s*(\d{1,2})\b/);
+  if (!m) return 0;
+  const n = parseInt(m[1], 10);
+  return n >= 3 && n <= 30 ? n : 0;
 }
 
 function reelsScriptPromptChatGPT(userInput, extractedParams, generationId, creativeSeed, regenerate) {
