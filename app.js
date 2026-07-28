@@ -15,6 +15,7 @@ const instagramRoutes = require('./routes/instagram');
 const schedulerRoutes = require('./routes/scheduler');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const { processPendingScheduledPosts } = require('./services/scheduler_service');
+const { sendPushToAllUsers } = require('./services/pushService');
 const { buildAiFallback } = require('./utils/aiFallback');
 const { apiError } = require('./utils/response');
 const { parseCorsOrigins, buildCorsOptions } = require('./utils/corsConfig');
@@ -74,7 +75,7 @@ app.get('/health', (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-07-28-captions-reels-lang' });
+  res.json({ success: true, build: '2026-07-28-daily-push' });
 });
 
 // eslint-disable-next-line no-unused-vars
@@ -148,6 +149,19 @@ function startServer() {
     });
   });
   console.log('⏰ Instagram scheduler cron scheduled (every minute)');
+
+  // Daily Viral Drop push — 13:30 UTC = 7:00 PM IST (prime engagement hour for
+  // our India-first audience). Pulls users back to the hero feature every day.
+  cron.schedule('30 13 * * *', () => {
+    sendPushToAllUsers({
+      title: "🔥 Today's Viral Drop is ready",
+      body: 'Your trending idea + hook + hashtags are waiting. Tap to create your next post.',
+      data: { deepLink: '/daily-viral-drop', type: 'daily_drop' },
+    }).catch((err) => {
+      console.error('[Push] Daily drop push failed:', err?.message || err);
+    });
+  });
+  console.log('⏰ Daily Viral Drop push cron scheduled (13:30 UTC / 7 PM IST)');
   });
   return server;
 }
