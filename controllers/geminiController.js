@@ -752,26 +752,8 @@ Return output in STRICT JSON:
 }
 
 // Step 1: Extract basic attributes from image (Vision API - fast analysis only)
-function imageAttributeExtractionPrompt() {
-  return `Analyze this image and extract ONLY these basic attributes:
-
-- scene: indoor OR outdoor
-- setting: travel OR festival OR casual OR work OR home OR event OR other
-- mood: calm OR energetic OR confident OR happy OR serious OR playful OR relaxed OR other
-- time: day OR night
-- occasion: casual OR festival OR travel OR work OR celebration OR event OR other (or "not clearly visible")
-
-Return STRICT JSON only:
-{
-  "scene": "indoor or outdoor",
-  "setting": "one of the options above",
-  "mood": "one of the options above",
-  "time": "day or night",
-  "occasion": "one of the options above or 'not clearly visible'"
-}`;
-}
-
-// Step 2: Generate captions using text-only model with extracted attributes
+// Text-only caption fallback used only when the single-pass Vision call returns
+// no captions — generates from the coarse vibe the Vision step extracted.
 function captionGenerationPrompt(scene, setting, mood, time, occasion) {
   const seed = Date.now() + Math.random();
   
@@ -825,6 +807,38 @@ Return STRICT JSON only:
       "text": "[Caption under 120 chars]",
       "hashtags": ["#tag1", "#tag2", "#tag3"]
     }
+  ]
+}`;
+}
+
+// Single-pass image → captions. The Vision model SEES the actual photo and
+// writes captions that reference what's really in it (subject, action, colours,
+// setting, visible text) — far more specific than the old attributes-only path.
+function imageCaptionPrompt() {
+  const seed = Date.now() + Math.random();
+  return `VARIATION_SEED: ${seed}
+
+You are an expert Instagram caption writer. LOOK CAREFULLY at the attached image and write captions that clearly fit THIS specific photo — reference what is actually visible: the subject, what they are doing, colours, outfit, location/background, objects, and any visible text or logos. Do NOT write generic captions that could fit any photo.
+
+First briefly analyse the image, then write 5 captions.
+
+Rules:
+- Every caption must reflect something REAL in this exact image.
+- 5 captions, each a DIFFERENT style: aesthetic, confident, story-based, short punchline, emotional.
+- Under 150 characters each. Natural, human, scroll-stopping. Emojis where they fit.
+- Write in English by default. If there is clearly non-English text in the image, you may match that language.
+- The audience is primarily in INDIA — where it genuinely fits the photo, use India-relevant references/tags naturally. Never force India onto an unrelated photo.
+- 8-12 specific, relevant hashtags per caption (mix of broad + niche). Never spam #love #viral #instagood.
+
+Return STRICT JSON only:
+{
+  "analysis": { "scene": "indoor or outdoor", "setting": "short phrase", "mood": "short phrase", "time": "day or night", "occasion": "short phrase or 'not clearly visible'" },
+  "captions": [
+    { "angle": "aesthetic", "text": "[under 150 chars]", "hashtags": ["#tag1", "#tag2"] },
+    { "angle": "confident", "text": "[under 150 chars]", "hashtags": ["#tag1", "#tag2"] },
+    { "angle": "story-based", "text": "[under 150 chars]", "hashtags": ["#tag1", "#tag2"] },
+    { "angle": "short punchline", "text": "[under 150 chars]", "hashtags": ["#tag1", "#tag2"] },
+    { "angle": "emotional", "text": "[under 150 chars]", "hashtags": ["#tag1", "#tag2"] }
   ]
 }`;
 }
@@ -1429,64 +1443,50 @@ async function generateCaptionFromMedia(req, res) {
   }
   
   try {
-    console.log('[generateCaptionFromMedia] HYBRID APPROACH: Step 1 - Extracting image attributes...');
+    console.log('[generateCaptionFromMedia] Single-pass Vision: analyze image + write captions...');
     const processStartTime = Date.now();
-    
-    // Step 1: Process image for Vision API (smaller for faster analysis)
+
+    // Optimize the image for the Vision API.
     const processedImage = await processImageForGemini(imageBase64, imageMimeType);
-    const processDuration = Date.now() - processStartTime;
-    console.log(`[generateCaptionFromMedia] ✅ Image processed in ${processDuration}ms: ${processedImage.sizeKB} KB`);
-    
-    // Step 2: Extract basic attributes using Vision API (fast, minimal analysis)
-    console.log('[generateCaptionFromMedia] Step 2 - Calling Gemini Vision for attribute extraction...');
-    const attributePrompt = imageAttributeExtractionPrompt();
-    const attributeStartTime = Date.now();
-    const attributeOutput = await runGeminiWithImage(attributePrompt, processedImage.base64, processedImage.mimeType, { 
-      maxTokens: 256, // Small response for attributes only
-      temperature: 0.7,
-      topP: 0.9
-    });
-    const attributeDuration = Date.now() - attributeStartTime;
-    console.log(`[generateCaptionFromMedia] ✅ Attributes extracted in ${attributeDuration}ms`);
-    
-    // Parse attributes
-    const attributes = tryParseJson(attributeOutput, { 
-      scene: 'indoor', 
-      setting: 'casual', 
-      mood: 'happy', 
-      time: 'day', 
-      occasion: 'casual' 
-    });
-    
-    const { scene, setting, mood, time, occasion } = attributes;
-    console.log(`[generateCaptionFromMedia] Extracted: scene=${scene}, setting=${setting}, mood=${mood}, time=${time}, occasion=${occasion}`);
-    
-    // Step 3: Generate captions using text-only model (faster, more stable)
-    console.log('[generateCaptionFromMedia] Step 3 - Generating captions with text-only Gemini...');
-    const captionPrompt = captionGenerationPrompt(scene, setting, mood, time, occasion);
-    const captionStartTime = Date.now();
-    const captionOutput = await runGemini(captionPrompt, { 
-      maxTokens: 1024,
-      temperature: 0.8
-    });
-    const captionDuration = Date.now() - captionStartTime;
-    console.log(`[generateCaptionFromMedia] ✅ Captions generated in ${captionDuration}ms`);
-    
-    // Parse captions
-    const captionData = tryParseJson(captionOutput, { captions: [] });
-    
-    // Combine attributes and captions
+    console.log(`[generateCaptionFromMedia] ✅ Image processed: ${processedImage.sizeKB} KB`);
+
+    // ONE Vision call that actually looks at the photo and writes captions that
+    // reference what's really in it — far more specific than the old
+    // attributes-only path (which threw the image away before writing captions).
+    const output = await runGeminiWithImage(
+      imageCaptionPrompt(),
+      processedImage.base64,
+      processedImage.mimeType,
+      { maxTokens: 1200, temperature: 0.85, topP: 0.9 }
+    );
+
+    const parsed = tryParseJson(output, { analysis: {}, captions: [] });
+    const a = parsed.analysis || {};
     const data = {
       analysis: {
-        scene: scene,
-        setting: setting,
-        mood: mood,
-        time: time,
-        occasion: occasion
+        scene: a.scene || 'not clearly visible',
+        setting: a.setting || '',
+        mood: a.mood || '',
+        time: a.time || '',
+        occasion: a.occasion || '',
       },
-      captions: captionData.captions || []
+      captions: Array.isArray(parsed.captions) ? parsed.captions : [],
     };
-    
+
+    // Safety net: if the Vision call returned no captions, fall back to the
+    // text-only generator using the extracted vibe so the user still gets output.
+    if (data.captions.length === 0) {
+      console.warn('[generateCaptionFromMedia] Vision returned no captions — using text fallback');
+      const fb = tryParseJson(
+        await runGemini(
+          captionGenerationPrompt(data.analysis.scene, data.analysis.setting, data.analysis.mood, data.analysis.time, data.analysis.occasion),
+          { maxTokens: 1024, temperature: 0.8 }
+        ),
+        { captions: [] }
+      );
+      data.captions = fb.captions || [];
+    }
+
     const totalDuration = Date.now() - processStartTime;
     console.log(`[generateCaptionFromMedia] ✅ Total processing time: ${totalDuration}ms`);
     console.log(`[generateCaptionFromMedia] Generated ${data.captions.length} captions`);
