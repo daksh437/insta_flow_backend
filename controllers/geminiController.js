@@ -820,6 +820,10 @@ function imageCaptionPrompt() {
 
 You are an expert Instagram caption writer. LOOK CAREFULLY at the attached image and write captions that clearly fit THIS specific photo — reference what is actually visible: the subject, what they are doing, colours, outfit, location/background, objects, and any visible text or logos. Do NOT write generic captions that could fit any photo.
 
+IMPORTANT: Always respond. Even if the image is a quote/text graphic, a "good morning" image, a meme, or has a watermark, still describe the visible scene/background and write captions for it — NEVER refuse and NEVER explain, just output the JSON. If the image contains readable text (e.g. a Hindi quote or a greeting), use its theme to inspire the captions.
+
+Output ONLY the JSON object below — no preamble, no markdown, no explanation.
+
 First briefly analyse the image, then write 5 captions.
 
 Rules:
@@ -1460,6 +1464,7 @@ async function generateCaptionFromMedia(req, res) {
       { maxTokens: 1200, temperature: 0.85, topP: 0.9 }
     );
 
+    console.log('[generateCaptionFromMedia] Vision output length:', (output || '').length);
     const parsed = tryParseJson(output, { analysis: {}, captions: [] });
     const a = parsed.analysis || {};
     const data = {
@@ -1473,7 +1478,7 @@ async function generateCaptionFromMedia(req, res) {
       captions: Array.isArray(parsed.captions) ? parsed.captions : [],
     };
 
-    // Safety net: if the Vision call returned no captions, fall back to the
+    // Safety net 1: if the Vision call returned no captions, fall back to the
     // text-only generator using the extracted vibe so the user still gets output.
     if (data.captions.length === 0) {
       console.warn('[generateCaptionFromMedia] Vision returned no captions — using text fallback');
@@ -1484,7 +1489,15 @@ async function generateCaptionFromMedia(req, res) {
         ),
         { captions: [] }
       );
-      data.captions = fb.captions || [];
+      if (Array.isArray(fb.captions)) data.captions = fb.captions;
+    }
+
+    // Safety net 2 (guaranteed non-empty): if BOTH AI attempts failed — e.g. the
+    // model refused on a watermarked/text-heavy image — return curated captions
+    // so the user never sees an empty screen.
+    if (!Array.isArray(data.captions) || data.captions.length === 0) {
+      console.warn('[generateCaptionFromMedia] No captions from AI — using curated fallback');
+      data.captions = getFallbackCaptions('English', '');
     }
 
     const totalDuration = Date.now() - processStartTime;
