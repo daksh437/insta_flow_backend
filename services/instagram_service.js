@@ -36,6 +36,12 @@ async function graphGet(path, params = {}) {
         response.data?.error?.message ||
         response.data?.error_message ||
         `Instagram API request failed (${response.status})`;
+      console.error('[instagram graphGet] FAILED', {
+        url,
+        fields: params?.fields,
+        status: response.status,
+        error: response.data?.error || response.data,
+      });
       const code = response.status === 400 ? 'invalid_token_or_request' : 'instagram_api_error';
       throw toApiError(apiMessage, response.status, code);
     }

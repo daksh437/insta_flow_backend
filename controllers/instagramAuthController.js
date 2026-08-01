@@ -119,7 +119,16 @@ async function saveInstagramAuth({ uid, instagramUserId, accessToken, expiresIn 
   }
   const now = new Date();
   const expiresAt = new Date(now.getTime() + Number(expiresIn || 0) * 1000);
-  const profile = await instagramService.getUserProfile(accessToken);
+  // Profile fetch is BEST-EFFORT. The important thing is the access token — if
+  // Instagram rejects the /me profile request (field/permission/account-type
+  // quirks), we still save the token and mark the account connected so the user
+  // isn't blocked. Profile details refresh later via getInstagramStats.
+  let profile = {};
+  try {
+    profile = await instagramService.getUserProfile(accessToken);
+  } catch (e) {
+    console.error('[instagramAuth] getUserProfile failed (continuing, token still saved):', e?.message || e);
+  }
 
   await db.collection('users').doc(uid).set(
     {
@@ -175,18 +184,21 @@ async function instagramCallback(req, res) {
   }
   try {
     const { appId, appSecret, redirectUri } = requiredConfig();
+    console.log('[instagramAuth] Step 1: exchanging code for short-lived token...');
     const shortTokenData = await exchangeCodeForShortToken({
       code,
       appId,
       appSecret,
       redirectUri,
     });
+    console.log('[instagramAuth] Step 1 OK. Step 2: exchanging for long-lived token...');
 
     const shortToken = sanitize(shortTokenData.access_token);
     const longTokenData = await exchangeShortForLongToken({
       shortToken,
       appSecret,
     });
+    console.log('[instagramAuth] Step 2 OK. Step 3: saving auth + fetching profile...');
 
     await saveInstagramAuth({
       uid,
@@ -194,9 +206,15 @@ async function instagramCallback(req, res) {
       accessToken: sanitize(longTokenData.access_token),
       expiresIn: Number(longTokenData.expires_in || 0),
     });
+    console.log('[instagramAuth] Step 3 OK. Connected uid=', uid);
 
     return res.status(200).send(callbackHtml(true, 'Instagram Business account connected successfully.'));
   } catch (error) {
+    console.error('[instagramAuth] Callback failed:', {
+      code: error?.code,
+      status: error?.status,
+      message: error?.message,
+    });
     const status = Number(error?.status || 500);
     return res.status(status).send(callbackHtml(false, sanitize(error?.message || 'Connection failed.')));
   }
