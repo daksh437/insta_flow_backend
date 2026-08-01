@@ -346,4 +346,56 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
   }
 }
 
-module.exports = { runGemini, runGeminiWithImage };
+/**
+ * Generate an image with Gemini's image model (Nano Banana:
+ * `gemini-2.5-flash-image`). Text-to-image, or image-to-image when
+ * `opts.imageBase64` is provided (used for Photo Restyle).
+ * Returns the generated image as { base64, mimeType }.
+ */
+async function runGeminiImageGen(prompt, opts = {}) {
+  if (!apiKey || apiKey.trim() === '') {
+    throw new Error('GEMINI_API_KEY missing');
+  }
+  const modelName = opts.model || 'gemini-2.5-flash-image';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+
+  const parts = [];
+  if (opts.imageBase64) {
+    parts.push({ inlineData: { data: opts.imageBase64, mimeType: opts.imageMimeType || 'image/jpeg' } });
+  }
+  parts.push({ text: injectPromptVariation(String(prompt || '').trim(), generateVariationNonce()) });
+
+  const requestBody = {
+    contents: [{ role: 'user', parts }],
+    generationConfig: { responseModalities: ['IMAGE'], temperature: opts.temperature ?? 0.9 },
+  };
+
+  try {
+    const response = await axios.post(url, requestBody, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: opts.timeout ?? 90000,
+    });
+    const respParts = response.data?.candidates?.[0]?.content?.parts || [];
+    for (const p of respParts) {
+      const inline = p.inlineData || p.inline_data;
+      if (inline && inline.data) {
+        return { base64: inline.data, mimeType: inline.mimeType || inline.mime_type || 'image/png' };
+      }
+    }
+    throw new Error('GEMINI_IMAGE_EMPTY: No image returned');
+  } catch (error) {
+    if (error.code === 'ECONNABORTED' || (error.message || '').includes('timeout')) {
+      throw new Error('GEMINI_TIMEOUT: Image generation timed out');
+    }
+    if (error.response) {
+      const status = error.response.status;
+      const message = error.response.data?.error?.message || `HTTP ${status}`;
+      if (status === 404) throw new Error('GEMINI_MODEL_NOT_FOUND: Image model not available');
+      if (status === 403) throw new Error('GEMINI_PERMISSION_DENIED: API key lacks image access');
+      throw new Error(`GEMINI_IMAGE_ERROR: ${message}`);
+    }
+    throw error;
+  }
+}
+
+module.exports = { runGemini, runGeminiWithImage, runGeminiImageGen };

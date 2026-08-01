@@ -1,4 +1,7 @@
-const { runGemini, runGeminiWithImage } = require('../utils/geminiClient');
+const { runGemini, runGeminiWithImage, runGeminiImageGen } = require('../utils/geminiClient');
+const { getAdmin, getDb } = require('../utils/firestoreAdmin');
+const sharp = require('sharp');
+const { randomUUID } = require('crypto');
 const { processImageForGemini } = require('../utils/imageProcessor');
 const { v4: uuidv4 } = require('uuid');
 const { createJob, updateJob, generateJobId, getJob } = require('../utils/jobStore');
@@ -4189,7 +4192,120 @@ async function getGrowthCoach(req, res) {
   return response;
 }
 
+// ─── InstaFlow Studio: AI image generation ────────────────────────────────
+// Aspect → output dimensions (Instagram-friendly).
+const STUDIO_ASPECTS = {
+  '1:1': { w: 1080, h: 1080 },
+  '4:5': { w: 1080, h: 1350 },
+  '9:16': { w: 1080, h: 1920 },
+  '16:9': { w: 1920, h: 1080 },
+};
+
+const STUDIO_STYLE_HINTS = {
+  minimal: 'clean minimal design, lots of negative space, simple',
+  bold: 'bold vibrant colors, high contrast, punchy',
+  gradient: 'smooth modern gradient background, trendy',
+  photoreal: 'photorealistic, high detail, natural lighting',
+  doodle: 'hand-drawn doodle illustration style, playful',
+};
+
+/**
+ * POST /ai/image — generate an Instagram-ready image from a prompt (and an
+ * optional input photo for restyle). Metered by aiAccess like every /ai/* route.
+ * Uploads the result to Firebase Storage and returns a permanent download URL.
+ */
+async function generateImage(req, res) {
+  const prompt = String(req.body?.prompt || '').trim();
+  const aspect = STUDIO_ASPECTS[req.body?.aspect] ? req.body.aspect : '1:1';
+  const style = String(req.body?.style || '').toLowerCase().trim();
+  const inputImage = typeof req.body?.imageBase64 === 'string' ? req.body.imageBase64 : '';
+  const inputMime = String(req.body?.imageMimeType || 'image/jpeg');
+
+  if (!prompt && !inputImage) {
+    return res.status(400).json({ success: false, error: 'A prompt or an image is required.' });
+  }
+
+  // Build the final prompt: user prompt + style hint + aspect guidance.
+  const dims = STUDIO_ASPECTS[aspect];
+  const styleHint = STUDIO_STYLE_HINTS[style] ? `, ${STUDIO_STYLE_HINTS[style]}` : '';
+  const fullPrompt =
+    `${prompt}${styleHint}. High-quality Instagram ${aspect} image, ` +
+    `sharp, well-composed, no watermark, no gibberish text.`;
+
+  try {
+    const img = await runGeminiImageGen(fullPrompt, {
+      imageBase64: inputImage || undefined,
+      imageMimeType: inputMime,
+    });
+
+    // Crop/resize to the requested aspect ratio.
+    let buffer = Buffer.from(img.base64, 'base64');
+    try {
+      buffer = await sharp(buffer)
+        .resize(dims.w, dims.h, { fit: 'cover', position: 'center' })
+        .png()
+        .toBuffer();
+    } catch (e) {
+      console.warn('[generateImage] resize failed, using original:', e?.message);
+    }
+
+    // Upload to Firebase Storage with a permanent Firebase download URL.
+    const admin = getAdmin();
+    const bucket = admin?.storage ? admin.storage().bucket() : null;
+    if (!bucket) throw new Error('Firebase Storage unavailable');
+    const uid = req.uid || 'anon';
+    const id = uuidv4();
+    const objectPath = `studio_images/${uid}/${id}.png`;
+    const token = randomUUID();
+    await bucket.file(objectPath).save(buffer, {
+      resumable: false,
+      metadata: {
+        contentType: 'image/png',
+        metadata: { firebaseStorageDownloadTokens: token },
+      },
+    });
+    const url =
+      `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/` +
+      `${encodeURIComponent(objectPath)}?alt=media&token=${token}`;
+
+    // Save to the user's Studio gallery (best-effort).
+    try {
+      const db = getDb();
+      if (db && req.uid) {
+        await db.collection('users').doc(req.uid).collection('studio').doc(id).set({
+          id,
+          prompt,
+          aspect,
+          style: style || null,
+          url,
+          path: objectPath,
+          isRestyle: !!inputImage,
+          createdAt: new Date(),
+        });
+      }
+    } catch (e) {
+      console.warn('[generateImage] gallery save failed:', e?.message);
+    }
+
+    if (req.uid) {
+      recordAiUsage(req.uid, null, req.idempotencyKey, {
+        endpoint: req._aiEndpoint || req.path || '/ai/image',
+      });
+    }
+    console.log(`[generateImage] OK uid=${uid} aspect=${aspect} restyle=${!!inputImage}`);
+    return res.json({ success: true, data: { url, id, aspect } });
+  } catch (error) {
+    console.error('[generateImage] FAILED:', error?.message || error);
+    return res.status(500).json({
+      success: false,
+      error: 'Image generation failed. Please try again.',
+      details: error?.message || 'unknown',
+    });
+  }
+}
+
 module.exports = {
+  generateImage,
   generateCaptions,
   generateImageCaptions,
   generateCaptionFromMedia,

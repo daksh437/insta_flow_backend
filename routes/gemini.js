@@ -3,6 +3,7 @@ const { requireAiAccess, wrapAiHandler } = require('../middleware/aiAccess');
 const { AI_AUDIT_TAG } = require('../scripts/auditAiRoutes');
 
 const {
+  generateImage,
   generateCaptions,
   generateCalendar,
   generateStrategy,
@@ -42,6 +43,7 @@ aiAccessMiddleware._aiAuditTag = AI_AUDIT_TAG;
 router.use(aiAccessMiddleware);
 
 // AI Generation Endpoints (all wrapped with wrapAiHandler — assert req.aiAccessAllowed before run)
+router.post('/image', wrapAiHandler(generateImage));
 router.post('/captions', wrapAiHandler(generateCaptions));
 router.post('/image-captions', wrapAiHandler(generateImageCaptions));
 router.post('/caption-from-media', wrapAiHandler(generateCaptionFromMedia));
