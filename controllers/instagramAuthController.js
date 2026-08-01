@@ -87,6 +87,7 @@ async function exchangeCodeForShortToken({ code, appId, appSecret, redirectUri }
 }
 
 async function exchangeShortForLongToken({ shortToken, appSecret }) {
+  console.log('[instagramAuth] S2 short token prefix:', String(shortToken || '').slice(0, 6), 'len:', String(shortToken || '').length);
   const response = await axios.get('https://graph.instagram.com/access_token', {
     params: {
       grant_type: 'ig_exchange_token',
@@ -97,10 +98,13 @@ async function exchangeShortForLongToken({ shortToken, appSecret }) {
     validateStatus: () => true,
   });
   if (response.status < 200 || response.status >= 300 || !response.data?.access_token) {
-    const message =
-      response.data?.error?.message ||
-      response.data?.error_message ||
-      'Failed to exchange long-lived token';
+    console.error('[instagramAuth] S2 long-token FAILED', {
+      status: response.status,
+      body: response.data,
+    });
+    const e = response.data?.error || {};
+    const base = e.message || response.data?.error_message || 'Failed to exchange long-lived token';
+    const message = `${base} (http=${response.status} code=${e.code || ''} sub=${e.error_subcode || ''} type=${e.type || ''})`;
     const err = new Error(message);
     err.status = 400;
     err.code = 'instagram_long_token_exchange_failed';
