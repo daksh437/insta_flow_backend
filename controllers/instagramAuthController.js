@@ -201,18 +201,28 @@ async function instagramCallback(req, res) {
 
     step = 'S2_long_token';
     const shortToken = sanitize(shortTokenData.access_token);
-    const longTokenData = await exchangeShortForLongToken({
-      shortToken,
-      appSecret,
-    });
-    console.log('[instagramAuth] Step 2 OK. Step 3: saving auth + fetching profile...');
+    // Try to upgrade to a 60-day long-lived token. If Instagram rejects the
+    // exchange (app-config/token-type quirks), fall back to the short-lived
+    // token so the connection STILL succeeds — the user isn't blocked, and the
+    // token can be refreshed later.
+    let accessToken = shortToken;
+    let expiresIn = Number(shortTokenData.expires_in || 3600);
+    try {
+      const longTokenData = await exchangeShortForLongToken({ shortToken, appSecret });
+      accessToken = sanitize(longTokenData.access_token) || shortToken;
+      expiresIn = Number(longTokenData.expires_in || expiresIn);
+      console.log('[instagramAuth] Step 2 OK (long-lived token).');
+    } catch (e) {
+      console.warn('[instagramAuth] Step 2 long-token exchange failed — using short-lived token:', e?.message);
+    }
+    console.log('[instagramAuth] Step 3: saving auth + fetching profile...');
 
     step = 'S3_save';
     await saveInstagramAuth({
       uid,
       instagramUserId: shortTokenData.user_id,
-      accessToken: sanitize(longTokenData.access_token),
-      expiresIn: Number(longTokenData.expires_in || 0),
+      accessToken,
+      expiresIn,
     });
     console.log('[instagramAuth] Step 3 OK. Connected uid=', uid);
 
