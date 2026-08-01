@@ -75,7 +75,7 @@ app.get('/health', (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-07-28-photo-caption-vision' });
+  res.json({ success: true, build: '2026-07-30-ig-connect-debug' });
 });
 
 // eslint-disable-next-line no-unused-vars

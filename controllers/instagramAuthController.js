@@ -182,8 +182,10 @@ async function instagramCallback(req, res) {
   if (!code) {
     return res.status(400).send(callbackHtml(false, 'Missing authorization code.'));
   }
+  let step = 'config';
   try {
     const { appId, appSecret, redirectUri } = requiredConfig();
+    step = 'S1_exchange_code';
     console.log('[instagramAuth] Step 1: exchanging code for short-lived token...');
     const shortTokenData = await exchangeCodeForShortToken({
       code,
@@ -193,6 +195,7 @@ async function instagramCallback(req, res) {
     });
     console.log('[instagramAuth] Step 1 OK. Step 2: exchanging for long-lived token...');
 
+    step = 'S2_long_token';
     const shortToken = sanitize(shortTokenData.access_token);
     const longTokenData = await exchangeShortForLongToken({
       shortToken,
@@ -200,6 +203,7 @@ async function instagramCallback(req, res) {
     });
     console.log('[instagramAuth] Step 2 OK. Step 3: saving auth + fetching profile...');
 
+    step = 'S3_save';
     await saveInstagramAuth({
       uid,
       instagramUserId: shortTokenData.user_id,
@@ -211,12 +215,13 @@ async function instagramCallback(req, res) {
     return res.status(200).send(callbackHtml(true, 'Instagram Business account connected successfully.'));
   } catch (error) {
     console.error('[instagramAuth] Callback failed:', {
+      step,
       code: error?.code,
       status: error?.status,
       message: error?.message,
     });
     const status = Number(error?.status || 500);
-    return res.status(status).send(callbackHtml(false, sanitize(error?.message || 'Connection failed.')));
+    return res.status(status).send(callbackHtml(false, `[${step}] ${sanitize(error?.message || 'Connection failed.')}`));
   }
 }
 
