@@ -367,7 +367,7 @@ async function runGeminiImageGen(prompt, opts = {}) {
 
   const requestBody = {
     contents: [{ role: 'user', parts }],
-    generationConfig: { responseModalities: ['IMAGE'], temperature: opts.temperature ?? 0.9 },
+    generationConfig: { responseModalities: ['TEXT', 'IMAGE'], temperature: opts.temperature ?? 0.9 },
   };
 
   try {
