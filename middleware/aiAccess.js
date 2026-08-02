@@ -13,6 +13,7 @@ const { getDb, getAdmin } = require('../utils/firestoreAdmin');
 const { ensureUserAiFields } = require('../utils/ensureUserAiFields');
 const { resolvePlan } = require('../services/planResolver');
 const { buildAiFallback } = require('../utils/aiFallback');
+const creditService = require('../services/creditService');
 const { verifySubscription } = require('../utils/playVerify');
 
 const USERS = 'users';
@@ -451,58 +452,42 @@ async function requireAiAccess(req, res, next) {
       message: 'Missing or invalid auth token',
     });
   }
-  // ORDER: access = getAiAccess() → trial → premium → free (free: check daily limit, then block if >= 2).
-  const access = (process.env.NODE_ENV === 'test' && req._mockAiAccess != null)
-    ? await Promise.resolve(req._mockAiAccess)
-    : await getAiAccess(uidTrim);
+  // ── Credit-based access (server-authoritative) ──────────────────────────
   req.uid = uidTrim;
-  req.aiAccess = access;
-  const planType = access.planType || 'free';
-
-  // Trial and premium: unlimited — do NOT check daily limits
-  if (planType === 'trial' || planType === 'premium') {
-    req.aiAccessAllowed = true;
-    req.idempotencyKey = getIdempotencyKey(req);
-    if (planType === 'trial') logAiAccess('info', { event: 'AI_TRIAL_BYPASS', uid: uidTrim });
-    return next();
-  }
-
-  // Free only: block when daily limit reached
+  req.idempotencyKey = getIdempotencyKey(req);
   const endpointFinal = req._aiEndpoint || req.baseUrl + req.path;
-  const dailyAiUsed = typeof access.dailyUsed === 'number' ? access.dailyUsed : (access.user && typeof (access.user.dailyAiUsed ?? access.user.daily_ai_used) === 'number' ? (access.user.dailyAiUsed ?? access.user.daily_ai_used) : 0);
+  const cost = creditService.costForPath(endpointFinal);
+  req._creditCost = cost;
 
-  logAiAccess('info', { event: 'AI_ACCESS_MIDDLEWARE_HIT', uid: uidTrim, planType, dailyAiUsed, endpoint: endpointFinal });
+  // Free credit grants (idempotent): one-time signup bonus + daily login.
+  await creditService.ensureSignupBonus(uidTrim);
+  await creditService.grantDailyLoginIfDue(uidTrim);
 
-  if (planType === 'free' && dailyAiUsed >= DAILY_CREDITS_FREE) {
-    console.warn('AI_LIMIT_BLOCK', uidTrim, dailyAiUsed);
+  const balance = await creditService.getBalance(uidTrim);
+  logAiAccess('info', { event: 'AI_ACCESS_MIDDLEWARE_HIT', uid: uidTrim, endpoint: endpointFinal, cost, balance });
+
+  if (balance < cost) {
+    console.warn('AI_CREDIT_BLOCK', uidTrim, 'balance', balance, 'cost', cost);
     logAiAccess('warn', {
       event: EVENTS.AI_BLOCKED_LIMIT,
       userId: uidTrim,
-      dailyAiUsed,
-      limit: DAILY_CREDITS_FREE,
+      balance,
+      cost,
       endpoint: endpointFinal,
-      message: 'Free plan daily limit reached (middleware block)',
+      message: 'Insufficient credits (middleware block)',
     });
     return res.status(403).json({
       success: false,
-      error: 'DAILY_LIMIT_REACHED',
-      code: 'DAILY_LIMIT_REACHED',
-      message: 'Daily free limit reached',
+      error: 'INSUFFICIENT_CREDITS',
+      code: 'INSUFFICIENT_CREDITS',
+      message: 'Not enough credits',
+      balance,
+      cost,
     });
   }
 
-  logAiAccess('info', {
-    log: 'ai_usage_truth',
-    source: 'requireAiAccess',
-    uid: uidTrim,
-    planType: access.planType,
-    dailyUsed: access.dailyUsed ?? (access.user ? (typeof (access.user.dailyAiUsed ?? access.user.daily_ai_used) === 'number' ? (access.user.dailyAiUsed ?? access.user.daily_ai_used) : 0) : null),
-    creditsLeftToday: access.creditsLeftToday,
-    allowed: true,
-    endpoint: endpointFinal,
-  });
+  req.aiAccess = { allowed: true, balance, cost };
   req.aiAccessAllowed = true;
-  req.idempotencyKey = getIdempotencyKey(req);
   next();
 }
 
@@ -574,6 +559,17 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
     : null;
   const now = Date.now();
   const endpoint = options.endpoint || null;
+
+  // Deduct credits for this AI action — idempotent by key (retries/jobs won't
+  // double-charge). This is the authoritative charge; the dailyAiUsed counter
+  // below is legacy and no longer gates access.
+  try {
+    const cost = creditService.costForPath(endpoint || '');
+    await creditService.spend(uid, cost, idempotencyKey || requestId);
+  } catch (e) {
+    console.warn('[credits] spend failed:', e.message);
+  }
+
   let usageLog = null;
   // Captured inside the transaction so we can log every AI use (all plans) to
   // ai_usage_logs afterwards — that's what the admin panel reads.
