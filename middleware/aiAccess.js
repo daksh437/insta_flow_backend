@@ -403,20 +403,20 @@ async function getAiAccess(uid) {
     }
   }
 
-  dailyAiUsed = Math.max(0, Math.min(2, Math.floor(dailyAiUsed)));
-  const allowed = dailyAiUsed < 2;
-
+  // Credit system is now the real gate (requireAiAccess checks credits per
+  // action). The legacy daily-limit UI must never block, so report unlimited
+  // here — otherwise old client screens would disable buttons at 2/day even
+  // when the user has plenty of credits.
   const out = {
     planType: 'free',
-    allowed,
-    dailyUsed: dailyAiUsed,
-    dailyLimit: 2,
+    allowed: true,
+    dailyUsed: 0,
+    dailyLimit: null, // unlimited (credit-gated instead)
     trialEndDate: null,
     resetAtUtc,
   };
-  logAiAccess('info', { event: 'AI_ACCESS_RESPONSE', uid, planType: 'free', dailyUsed: dailyAiUsed, dailyLimit: 2, allowed });
-  if (!allowed) logAiAccess('warn', { event: EVENTS.AI_BLOCKED_LIMIT, uid, planType: 'free', dailyUsed: dailyAiUsed, error: 'DAILY_LIMIT_REACHED' });
-  return { ...out, error: allowed ? null : 'DAILY_LIMIT_REACHED', user };
+  logAiAccess('info', { event: 'AI_ACCESS_RESPONSE', uid, planType: 'free', creditGated: true, allowed: true });
+  return { ...out, error: null, user };
 }
 
 /**
