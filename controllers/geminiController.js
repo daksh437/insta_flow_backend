@@ -4193,13 +4193,30 @@ async function getGrowthCoach(req, res) {
 }
 
 // ─── InstaFlow Studio: AI image generation ────────────────────────────────
-// Aspect → output dimensions (Instagram-friendly).
-const STUDIO_ASPECTS = {
-  '1:1': { w: 1080, h: 1080 },
-  '4:5': { w: 1080, h: 1350 },
-  '9:16': { w: 1080, h: 1920 },
-  '16:9': { w: 1920, h: 1080 },
-};
+// Compute output dimensions from any "W:H" aspect + resolution (720/1080).
+// The shorter side = the chosen resolution; longer side scales by the ratio.
+function studioDims(aspect, resolution) {
+  const base = Number(resolution) === 720 ? 720 : 1080;
+  const parts = String(aspect || '1:1').split(':').map((n) => Number(n));
+  const wS = parts[0];
+  const hS = parts[1];
+  if (!wS || !hS || wS <= 0 || hS <= 0) return { w: base, h: base };
+  const ratio = wS / hS;
+  let w;
+  let h;
+  if (ratio >= 1) {
+    h = base;
+    w = Math.round(base * ratio);
+  } else {
+    w = base;
+    h = Math.round(base / ratio);
+  }
+  // Clamp the long edge so we never request an enormous image.
+  const MAX = 2560;
+  if (w > MAX) { h = Math.round((h * MAX) / w); w = MAX; }
+  if (h > MAX) { w = Math.round((w * MAX) / h); h = MAX; }
+  return { w, h };
+}
 
 const STUDIO_STYLE_HINTS = {
   minimal: 'clean minimal design, lots of negative space, simple',
@@ -4216,7 +4233,8 @@ const STUDIO_STYLE_HINTS = {
  */
 async function generateImage(req, res) {
   const prompt = String(req.body?.prompt || '').trim();
-  const aspect = STUDIO_ASPECTS[req.body?.aspect] ? req.body.aspect : '1:1';
+  const aspect = /^\d{1,3}:\d{1,3}$/.test(String(req.body?.aspect || '')) ? String(req.body.aspect) : '1:1';
+  const resolution = Number(req.body?.resolution) === 720 ? 720 : 1080;
   const style = String(req.body?.style || '').toLowerCase().trim();
   const inputImage = typeof req.body?.imageBase64 === 'string' ? req.body.imageBase64 : '';
   const inputMime = String(req.body?.imageMimeType || 'image/jpeg');
@@ -4226,7 +4244,7 @@ async function generateImage(req, res) {
   }
 
   // Build the final prompt: user prompt + style hint + aspect guidance.
-  const dims = STUDIO_ASPECTS[aspect];
+  const dims = studioDims(aspect, resolution);
   const styleHint = STUDIO_STYLE_HINTS[style] ? `, ${STUDIO_STYLE_HINTS[style]}` : '';
   const fullPrompt =
     `${prompt}${styleHint}. High-quality Instagram ${aspect} image, ` +
@@ -4276,6 +4294,7 @@ async function generateImage(req, res) {
           id,
           prompt,
           aspect,
+          resolution,
           style: style || null,
           url,
           path: objectPath,
@@ -4292,8 +4311,8 @@ async function generateImage(req, res) {
         endpoint: req._aiEndpoint || req.path || '/ai/image',
       });
     }
-    console.log(`[generateImage] OK uid=${uid} aspect=${aspect} restyle=${!!inputImage}`);
-    return res.json({ success: true, data: { url, id, aspect } });
+    console.log(`[generateImage] OK uid=${uid} aspect=${aspect} res=${resolution} restyle=${!!inputImage}`);
+    return res.json({ success: true, data: { url, id, aspect, resolution } });
   } catch (error) {
     console.error('[generateImage] FAILED:', error?.message || error);
     return res.status(500).json({
