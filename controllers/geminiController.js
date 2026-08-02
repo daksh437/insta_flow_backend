@@ -4246,9 +4246,11 @@ async function generateImage(req, res) {
   // Build the final prompt: user prompt + style hint + aspect guidance.
   const dims = studioDims(aspect, resolution);
   const styleHint = STUDIO_STYLE_HINTS[style] ? `, ${STUDIO_STYLE_HINTS[style]}` : '';
+  const orientation = dims.w > dims.h ? 'landscape' : (dims.h > dims.w ? 'vertical portrait' : 'square');
   const fullPrompt =
-    `${prompt}${styleHint}. High-quality Instagram ${aspect} image, ` +
-    `sharp, well-composed, no watermark, no gibberish text.`;
+    `${prompt}${styleHint}. High-quality ${orientation} image (${aspect} aspect ratio). ` +
+    `IMPORTANT: show the FULL subject with comfortable margin — do NOT crop the head, face, or body; keep the whole person in frame. ` +
+    `Sharp, well-composed, no watermark, no gibberish text.`;
 
   try {
     const img = await runGeminiImageGen(fullPrompt, {
@@ -4256,11 +4258,12 @@ async function generateImage(req, res) {
       imageMimeType: inputMime,
     });
 
-    // Crop/resize to the requested aspect ratio.
+    // Resize WITHOUT cropping — 'inside' keeps the whole generated image (no
+    // head/body cut off). The aspect is guided by the prompt instead of a crop.
     let buffer = Buffer.from(img.base64, 'base64');
     try {
       buffer = await sharp(buffer)
-        .resize(dims.w, dims.h, { fit: 'cover', position: 'center' })
+        .resize(dims.w, dims.h, { fit: 'inside', withoutEnlargement: false })
         .png()
         .toBuffer();
     } catch (e) {
