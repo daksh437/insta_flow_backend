@@ -226,10 +226,60 @@ async function connectInstagram(req, res) {
   return res.json({ success: true, authUrl });
 }
 
+// TEMPORARY diagnostic — calls graph.instagram.com/me with the stored token and
+// returns the RAW response so we can see the exact error. Gated by a key; never
+// returns the token itself. Remove after debugging.
+async function debugInstagramProfile(req, res) {
+  if (String(req.query.key || '') !== 'studio-debug-2026') {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  try {
+    const axios = require('axios');
+    const db = getDb();
+    if (!db) return res.json({ ok: false, reason: 'db unavailable' });
+
+    // Find the most recently connected user (solo-dev friendly scan).
+    const snap = await db.collection('users').limit(300).get();
+    let found = null;
+    for (const d of snap.docs) {
+      const ig = (d.data() || {}).instagram || {};
+      if (ig && typeof ig.access_token === 'string' && ig.access_token.trim()) {
+        const connectedAt = ig.connected_at && ig.connected_at.toMillis ? ig.connected_at.toMillis() : 0;
+        if (!found || connectedAt > found.connectedAt) {
+          found = { uid: d.id, token: ig.access_token.trim(), username: ig.username || null, expiresAt: ig.token_expires_at || null, connectedAt };
+        }
+      }
+    }
+    if (!found) return res.json({ ok: false, reason: 'no connected user found in Firestore' });
+
+    const meResp = await axios.get('https://graph.instagram.com/me', {
+      params: {
+        fields: 'user_id,username,account_type,media_count,followers_count,follows_count',
+        access_token: found.token,
+      },
+      validateStatus: () => true,
+      timeout: 20000,
+    });
+
+    return res.json({
+      ok: true,
+      uid: found.uid,
+      storedUsername: found.username,
+      tokenLength: found.token.length,
+      tokenPrefix: found.token.slice(0, 6),
+      me_http: meResp.status,
+      me_body: meResp.data,
+    });
+  } catch (e) {
+    return res.json({ ok: false, error: e?.message || 'debug failed' });
+  }
+}
+
 module.exports = {
   connectInstagram,
   getInstagramStats,
   createMedia,
   publishMedia,
   getInsights,
+  debugInstagramProfile,
 };
