@@ -261,6 +261,18 @@ async function debugInstagramProfile(req, res) {
       timeout: 20000,
     });
 
+    // Also attempt the long-lived token exchange to capture its raw error.
+    const secret = String(process.env.INSTAGRAM_APP_SECRET || '');
+    const exResp = await axios.get('https://graph.instagram.com/access_token', {
+      params: {
+        grant_type: 'ig_exchange_token',
+        client_secret: secret,
+        access_token: found.token,
+      },
+      validateStatus: () => true,
+      timeout: 20000,
+    });
+
     return res.json({
       ok: true,
       uid: found.uid,
@@ -269,6 +281,8 @@ async function debugInstagramProfile(req, res) {
       tokenPrefix: found.token.slice(0, 6),
       me_http: meResp.status,
       me_body: meResp.data,
+      exchange_http: exResp.status,
+      exchange_body: exResp.data,
     });
   } catch (e) {
     return res.json({ ok: false, error: e?.message || 'debug failed' });
