@@ -47,9 +47,6 @@ const PLAN_CREDITS = {
 const PACK_CREDITS = {
   'credits_79': 250,
   'credits_149': 600,
-  'credits_299': 1200,
-  'credits_599': 2000,
-  'credits_999': 3500,
 };
 
 function costForEndpoint(key) {
