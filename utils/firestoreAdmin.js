@@ -58,15 +58,18 @@ function getAdmin() {
     if (!admin.apps.length) {
       const key = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
       const projectId = resolveProjectId();
+      const storageBucket =
+        process.env.FIREBASE_STORAGE_BUCKET || 'instaflow-f65a0.firebasestorage.app';
 
       if (key && key.trim()) {
         const cred = normalizeServiceAccount(key);
         admin.initializeApp({
           credential: admin.credential.cert(cred),
           projectId: resolveProjectId(cred),
+          storageBucket,
         });
       } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-        admin.initializeApp({ projectId });
+        admin.initializeApp({ projectId, storageBucket });
       } else {
         throw new Error(
           'Missing Firebase credentials. Set FIREBASE_SERVICE_ACCOUNT_JSON in backend/.env ' +
