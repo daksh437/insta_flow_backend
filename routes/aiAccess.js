@@ -6,6 +6,8 @@
 const express = require('express');
 const { getDb } = require('../utils/firestoreAdmin');
 const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, todayDateStr, logAiAccess } = require('../middleware/aiAccess');
+const { PLAN_CREDITS, PACK_CREDITS } = require('../config/credits');
+const crypto = require('crypto');
 
 const router = express.Router();
 const ADMIN_KEY = process.env.ADMIN_SECRET || process.env.ADMIN_KEY || '';
@@ -265,6 +267,29 @@ router.post('/activate-premium', async (req, res) => {
 
     // Reuse the single activation path: verify with Play + token ownership + set premiumExpiry.
     const access = await getAiAccess(uid);
+
+    // Grant credits for the purchased plan/pack — idempotent by purchaseToken so
+    // re-verification never double-grants. (Renewals handled on next activation.)
+    try {
+      const amount = PLAN_CREDITS[productId] || PACK_CREDITS[productId] || 0;
+      if (amount > 0) {
+        const grantId = crypto.createHash('sha256').update(`${purchaseToken}:${productId}`).digest('hex');
+        const grantRef = firestore.collection('credit_grants').doc(grantId);
+        await firestore.runTransaction(async (tx) => {
+          const g = await tx.get(grantRef);
+          if (g.exists) return;
+          const uref = firestore.collection('users').doc(uid);
+          const usnap = await tx.get(uref);
+          const cur = usnap.exists && typeof usnap.data().credits === 'number' ? usnap.data().credits : 0;
+          tx.set(uref, { credits: cur + amount, creditsUpdatedAt: new Date() }, { merge: true });
+          tx.set(grantRef, { uid, productId, amount, at: new Date() });
+        });
+        console.log(`[credits] purchase grant +${amount} to ${uid} (${productId})`);
+      }
+    } catch (e) {
+      console.warn('[credits] purchase grant failed:', e.message);
+    }
+
     return res.json({
       success: true,
       ok: true,
