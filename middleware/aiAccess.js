@@ -22,6 +22,10 @@ const DAILY_CREDITS_FREE = 2;
 // Every new user gets a one-time 3-day free trial (full access), then Premium.
 const TRIAL_DAYS = 3;
 const DEV_SKIP_LIMITS = process.env.DEV_SKIP_LIMITS === 'true' || process.env.DEV_SKIP_LIMITS === '1';
+// Credit system master switch. OFF (default) = no credit gating/deduction, so
+// the currently-published app keeps working unchanged. Flip to 'true' on Render
+// ONLY after the new credit-UI build is published + Play products are live.
+const CREDITS_ENABLED = process.env.CREDITS_ENABLED === 'true' || process.env.CREDITS_ENABLED === '1';
 
 if (DEV_SKIP_LIMITS) {
   console.warn('[aiAccess] ⚠️ DEV_SKIP_LIMITS is enabled — AI usage limits are bypassed. Do not use in production.');
@@ -403,15 +407,30 @@ async function getAiAccess(uid) {
     }
   }
 
-  // Credit system is now the real gate (requireAiAccess checks credits per
-  // action). The legacy daily-limit UI must never block, so report unlimited
-  // here — otherwise old client screens would disable buttons at 2/day even
-  // when the user has plenty of credits.
+  // Credits OFF → keep the original free 2/day behaviour (current app unchanged).
+  if (!CREDITS_ENABLED) {
+    dailyAiUsed = Math.max(0, Math.min(2, Math.floor(dailyAiUsed)));
+    const allowed = dailyAiUsed < 2;
+    const out = {
+      planType: 'free',
+      allowed,
+      dailyUsed: dailyAiUsed,
+      dailyLimit: 2,
+      trialEndDate: null,
+      resetAtUtc,
+    };
+    logAiAccess('info', { event: 'AI_ACCESS_RESPONSE', uid, planType: 'free', dailyUsed: dailyAiUsed, dailyLimit: 2, allowed });
+    return { ...out, error: allowed ? null : 'DAILY_LIMIT_REACHED', user };
+  }
+
+  // Credits ON → the real gate is requireAiAccess (credits per action). Report
+  // unlimited here so old client screens never block at 2/day when the user has
+  // plenty of credits.
   const out = {
     planType: 'free',
     allowed: true,
     dailyUsed: 0,
-    dailyLimit: null, // unlimited (credit-gated instead)
+    dailyLimit: null,
     trialEndDate: null,
     resetAtUtc,
   };
@@ -455,6 +474,15 @@ async function requireAiAccess(req, res, next) {
   // ── Credit-based access (server-authoritative) ──────────────────────────
   req.uid = uidTrim;
   req.idempotencyKey = getIdempotencyKey(req);
+
+  // Credit system OFF → allow freely (no gating). Keeps the currently-published
+  // app working exactly as before until credits are switched on.
+  if (!CREDITS_ENABLED) {
+    req.aiAccessAllowed = true;
+    req.aiAccess = { allowed: true };
+    return next();
+  }
+
   const endpointFinal = req._aiEndpoint || req.baseUrl + req.path;
   const cost = creditService.costForPath(endpointFinal);
   req._creditCost = cost;
@@ -561,13 +589,14 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
   const endpoint = options.endpoint || null;
 
   // Deduct credits for this AI action — idempotent by key (retries/jobs won't
-  // double-charge). This is the authoritative charge; the dailyAiUsed counter
-  // below is legacy and no longer gates access.
-  try {
-    const cost = creditService.costForPath(endpoint || '');
-    await creditService.spend(uid, cost, idempotencyKey || requestId);
-  } catch (e) {
-    console.warn('[credits] spend failed:', e.message);
+  // double-charge). Only when the credit system is switched on.
+  if (CREDITS_ENABLED) {
+    try {
+      const cost = creditService.costForPath(endpoint || '');
+      await creditService.spend(uid, cost, idempotencyKey || requestId);
+    } catch (e) {
+      console.warn('[credits] spend failed:', e.message);
+    }
   }
 
   let usageLog = null;
