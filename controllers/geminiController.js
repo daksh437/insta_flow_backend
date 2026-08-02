@@ -4323,39 +4323,8 @@ async function generateImage(req, res) {
   }
 }
 
-// TEMPORARY: verify the deployed key can generate images + mint template
-// thumbnails. GET, gated by key. Remove after use.
-async function debugStudioThumb(req, res) {
-  if (String(req.query.key || '') !== 'studio-debug-2026') {
-    return res.status(403).json({ error: 'forbidden' });
-  }
-  const prompt = String(req.query.prompt || 'A friendly young person portrait, soft studio lighting, vertical');
-  try {
-    const img = await runGeminiImageGen(prompt, { temperature: 0.9, timeout: 90000 });
-    const buf = await sharp(Buffer.from(img.base64, 'base64'))
-      .resize(600, 800, { fit: 'cover', position: 'center' })
-      .jpeg({ quality: 82 })
-      .toBuffer();
-    const admin = getAdmin();
-    const bucket = admin.storage().bucket();
-    const token = randomUUID();
-    const objectPath = `studio_thumbs/${uuidv4()}.jpg`;
-    await bucket.file(objectPath).save(buf, {
-      resumable: false,
-      metadata: { contentType: 'image/jpeg', metadata: { firebaseStorageDownloadTokens: token } },
-    });
-    const url =
-      `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/` +
-      `${encodeURIComponent(objectPath)}?alt=media&token=${token}`;
-    return res.json({ ok: true, url });
-  } catch (e) {
-    return res.json({ ok: false, error: e.message });
-  }
-}
-
 module.exports = {
   generateImage,
-  debugStudioThumb,
   generateCaptions,
   generateImageCaptions,
   generateCaptionFromMedia,
