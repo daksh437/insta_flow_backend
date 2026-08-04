@@ -35,4 +35,35 @@ async function requireAuth(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth };
+/**
+ * TEMPORARY compatibility shim for /instagram/* — remove once the app build
+ * that sends Authorization on Instagram calls (added 2026-08-05) has rolled
+ * out to the active install base, then swap routes/instagram.js back to
+ * requireAuth. Until then: a verified token (updated clients) is preferred
+ * and always wins; a bare x-user-uid header (currently-live clients, which
+ * never sent a token for these routes) is accepted as a fallback so
+ * Instagram connect/stats/publish don't stay broken for existing users.
+ * This reopens the original uid-spoofing hole for callers with no token.
+ */
+async function softRequireAuth(req, res, next) {
+  const verifiedUid = await verifyUidFromToken(req);
+  const uid = verifiedUid || String(
+    req.headers['x-user-uid'] ||
+      req.headers['X-User-UID'] ||
+      req.headers['x-user-id'] ||
+      req.body?.userId ||
+      req.query?.userId ||
+      ''
+  ).trim();
+  if (!uid) {
+    return res.status(401).json({
+      success: false,
+      error: 'UNAUTHORIZED',
+      message: 'Missing or invalid auth token',
+    });
+  }
+  req.uid = uid;
+  next();
+}
+
+module.exports = { requireAuth, softRequireAuth };
