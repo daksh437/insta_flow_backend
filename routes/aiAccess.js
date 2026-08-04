@@ -7,6 +7,7 @@ const express = require('express');
 const { getDb } = require('../utils/firestoreAdmin');
 const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, todayDateStr, logAiAccess } = require('../middleware/aiAccess');
 const { requireAuth } = require('../middleware/verifyAuth');
+const { strictLimiter } = require('../middleware/rateLimiters');
 const { PLAN_CREDITS, PACK_CREDITS } = require('../config/credits');
 const crypto = require('crypto');
 
@@ -181,7 +182,7 @@ router.get('/referral/code', requireAuth, async (req, res) => {
 });
 
 /** POST /referral/redeem — a new user redeems a friend's code; both get reward. */
-router.post('/referral/redeem', requireAuth, async (req, res) => {
+router.post('/referral/redeem', requireAuth, strictLimiter, async (req, res) => {
   const uid = req.uid;
   const code = String(req.body?.code || '').trim().toUpperCase();
   if (!code) return res.status(400).json({ success: false, error: 'MISSING_CODE', message: 'Enter a referral code' });
@@ -229,7 +230,7 @@ router.post('/referral/redeem', requireAuth, async (req, res) => {
  * which verifies with Google Play, enforces one-account-per-token ownership, and
  * writes premiumExpiry. Returns the resulting plan so the gate can open.
  */
-router.post('/activate-premium', requireAuth, async (req, res) => {
+router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) => {
   const uid = req.uid;
   const purchaseToken = (req.body?.purchaseToken || '').trim();
   const productId = (req.body?.productId || 'premium_monthly').trim();

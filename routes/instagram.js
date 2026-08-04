@@ -7,6 +7,7 @@ const {
   getInsights,
 } = require('../controllers/instagramController');
 const { requireAuth } = require('../middleware/verifyAuth');
+const { strictLimiter } = require('../middleware/rateLimiters');
 
 const router = express.Router();
 
@@ -17,8 +18,8 @@ router.use(requireAuth);
 
 router.post('/instagram-connect', connectInstagram);
 router.get('/instagram-stats', getInstagramStats);
-router.post('/instagram/media', createMedia);
-router.post('/instagram/media/publish', publishMedia);
+router.post('/instagram/media', strictLimiter, createMedia);
+router.post('/instagram/media/publish', strictLimiter, publishMedia);
 router.get('/instagram/insights', getInsights);
 
 module.exports = router;

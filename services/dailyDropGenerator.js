@@ -23,6 +23,35 @@ const FALLBACK_TRENDS = [
 
 const DATA_DIR = path.join(process.cwd(), 'data', 'daily_drops');
 const inMemoryStore = new Map();
+const DAILY_DROP_LOCK_TTL_MS = 3 * 60 * 1000;
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Firestore-backed distributed lock so concurrent callers (the midnight cron
+ * plus any on-demand /daily-drop/today self-heal, possibly on different
+ * Render instances) don't all pay for duplicate Gemini calls for the same
+ * day. The in-memory/file store below is per-instance and doesn't survive
+ * restarts, so it can't coordinate this by itself.
+ */
+async function claimDailyDropGeneration(key, db) {
+  const ref = db.collection('daily_drop_locks').doc(key);
+  const nowMs = Date.now();
+  try {
+    return await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const lockedUntilMs = Number(snap.data()?.lockedUntilMs || 0);
+      if (lockedUntilMs > nowMs) return false; // another instance is already generating
+      tx.set(ref, { lockedAtMs: nowMs, lockedUntilMs: nowMs + DAILY_DROP_LOCK_TTL_MS }, { merge: true });
+      return true;
+    });
+  } catch (e) {
+    console.warn('[DailyDrop] claim failed, proceeding without lock:', e.message);
+    return true;
+  }
+}
 
 function ensureDataDir() {
   try {
@@ -248,6 +277,38 @@ function toStoredDoc(json) {
  */
 async function generateDailyDrop() {
   const key = dateKey();
+
+  const db = getDb();
+  if (db) {
+    try {
+      const existing = await db.collection('daily_drops').doc(key).get();
+      if (existing.exists) {
+        const doc = existing.data();
+        setStored(key, doc);
+        return doc;
+      }
+    } catch (e) {
+      console.warn('[DailyDrop] Firestore existence check failed:', e.message);
+    }
+
+    const claimed = await claimDailyDropGeneration(key, db);
+    if (!claimed) {
+      // Someone else (another instance, or an overlapping cron/on-demand
+      // call) is already generating this — wait for their result instead of
+      // duplicating the Gemini calls.
+      for (let i = 0; i < 6; i++) {
+        await wait(2000);
+        const stored = getStored(key);
+        if (stored) return stored;
+        try {
+          const snap = await db.collection('daily_drops').doc(key).get();
+          if (snap.exists) return snap.data();
+        } catch (_) {}
+      }
+      // Gave up waiting — generate anyway rather than fail the request.
+    }
+  }
+
   const trends = await fetchTrendKeywords();
   const prompt = buildDailyDropPrompt(trends);
   const systemPrompt = 'Return only valid JSON. No markdown, no code fences, no extra text.';

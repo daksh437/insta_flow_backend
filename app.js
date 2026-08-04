@@ -2,6 +2,7 @@ console.log("🔥 MAIN APP.JS RUNNING");
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const { globalLimiter } = require('./middleware/rateLimiters');
 
 const authRoutes = require('./routes/auth');
 const geminiRoutes = require('./routes/gemini');
@@ -26,8 +27,18 @@ const PORT = process.env.PORT || 10000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const IS_PROD = NODE_ENV === 'production';
 
+// Render sits behind a reverse proxy — without this, express-rate-limit sees
+// every request as coming from the same proxy IP and can't rate-limit per
+// real client (req.ip needs X-Forwarded-For).
+app.set('trust proxy', 1);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// No per-user auth has run yet at this point, so this is IP-based defense
+// against brute force / scripted abuse — a floor under the per-user credit
+// system, not a replacement for it.
+app.use(globalLimiter);
 
 const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
 if (IS_PROD && corsOrigins.length === 0) {
