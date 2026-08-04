@@ -808,4 +808,6 @@ module.exports = {
   EVENTS,
   AI_REQUEST_KEYS,
   IDEMPOTENCY_TTL_MS,
+  verifyUidFromToken,
+  REQUIRE_AUTH_TOKEN,
 };

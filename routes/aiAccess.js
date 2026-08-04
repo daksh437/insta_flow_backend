@@ -6,6 +6,7 @@
 const express = require('express');
 const { getDb } = require('../utils/firestoreAdmin');
 const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, todayDateStr, logAiAccess } = require('../middleware/aiAccess');
+const { requireAuth } = require('../middleware/verifyAuth');
 const { PLAN_CREDITS, PACK_CREDITS } = require('../config/credits');
 const crypto = require('crypto');
 
@@ -20,8 +21,8 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-/** GET /debug/ai-usage/:uid — full computed access state, no increment. Visibility only. */
-router.get('/debug/ai-usage/:uid', async (req, res) => {
+/** GET /debug/ai-usage/:uid — full computed access state, no increment. Admin-only (was unauthenticated, letting anyone enumerate any user's usage). */
+router.get('/debug/ai-usage/:uid', requireAdmin, async (req, res) => {
   const uid = (req.params.uid || '').trim();
   if (!uid) {
     return res.status(400).json({ success: false, ok: false, error: 'Missing uid', message: 'Provide uid in path, e.g. /debug/ai-usage/USER_UID' });
@@ -63,17 +64,8 @@ router.get('/debug/ai-usage/:uid', async (req, res) => {
   }
 });
 
-router.get('/check-ai-access', async (req, res) => {
-  const uid = (req.headers['x-user-uid'] || req.headers['X-User-UID'])?.trim();
-  if (!uid) {
-    return res.status(401).json({
-      success: false,
-      ok: false,
-      allowed: false,
-      error: 'UNAUTHORIZED',
-      message: 'Missing x-user-uid header',
-    });
-  }
+router.get('/check-ai-access', requireAuth, async (req, res) => {
+  const uid = req.uid;
   try {
     const access = await getAiAccess(uid);
     const planType = access.planType;
@@ -163,9 +155,8 @@ function grantDaysPremiumFields(currentExpiry, now, days) {
 }
 
 /** GET /referral/code — this user's shareable referral code (created lazily). */
-router.get('/referral/code', async (req, res) => {
-  const uid = (req.headers['x-user-uid'] || req.headers['X-User-UID'])?.trim();
-  if (!uid) return res.status(401).json({ success: false, error: 'UNAUTHORIZED' });
+router.get('/referral/code', requireAuth, async (req, res) => {
+  const uid = req.uid;
   const db = getDb();
   if (!db) return res.status(503).json({ success: false, error: 'FIRESTORE_UNAVAILABLE' });
   try {
@@ -190,9 +181,8 @@ router.get('/referral/code', async (req, res) => {
 });
 
 /** POST /referral/redeem — a new user redeems a friend's code; both get reward. */
-router.post('/referral/redeem', async (req, res) => {
-  const uid = (req.headers['x-user-uid'] || req.headers['X-User-UID'])?.trim();
-  if (!uid) return res.status(401).json({ success: false, error: 'UNAUTHORIZED' });
+router.post('/referral/redeem', requireAuth, async (req, res) => {
+  const uid = req.uid;
   const code = String(req.body?.code || '').trim().toUpperCase();
   if (!code) return res.status(400).json({ success: false, error: 'MISSING_CODE', message: 'Enter a referral code' });
   const db = getDb();
@@ -239,11 +229,8 @@ router.post('/referral/redeem', async (req, res) => {
  * which verifies with Google Play, enforces one-account-per-token ownership, and
  * writes premiumExpiry. Returns the resulting plan so the gate can open.
  */
-router.post('/activate-premium', async (req, res) => {
-  const uid = (req.headers['x-user-uid'] || req.headers['X-User-UID'])?.trim();
-  if (!uid) {
-    return res.status(401).json({ success: false, ok: false, error: 'UNAUTHORIZED', message: 'Missing x-user-uid header' });
-  }
+router.post('/activate-premium', requireAuth, async (req, res) => {
+  const uid = req.uid;
   const purchaseToken = (req.body?.purchaseToken || '').trim();
   const productId = (req.body?.productId || 'premium_monthly').trim();
   if (!purchaseToken) {

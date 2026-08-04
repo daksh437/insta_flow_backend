@@ -3,14 +3,9 @@ const instagramService = require('../services/instagram_service');
 const { createOAuthState } = require('../utils/oauthState');
 
 function getUid(req) {
-  return String(
-    req.headers['x-user-uid'] ||
-      req.headers['X-User-UID'] ||
-      req.headers['x-user-id'] ||
-      req.query.userId ||
-      req.body?.userId ||
-      ''
-  ).trim();
+  // req.uid is set by the requireAuth middleware (verified Firebase ID
+  // token) — see routes/instagram.js. Never trust the raw header directly.
+  return String(req.uid || '').trim();
 }
 
 async function getStoredInstagramAuth(uid) {

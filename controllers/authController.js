@@ -5,22 +5,12 @@ const { createOAuthState, verifyOAuthState } = require('../utils/oauthState');
 const { apiSuccess, apiError, toSafeError } = require('../utils/response');
 
 function getUserId(req) {
-  // Try multiple header name variations (case-insensitive)
-  const uid = req.headers['x-user-uid'] || 
-              req.headers['X-User-UID'] || 
-              req.headers['x-user-id'] || 
-              req.headers['X-User-Id'] ||
-              req.query.userId || 
-              req.body?.userId;
-  
-  // Log for debugging
-  if (!uid) {
-    console.log('[getUserId] No userId found. Headers:', Object.keys(req.headers).filter(k => k.toLowerCase().includes('user')));
-    console.log('[getUserId] Query:', req.query);
-    console.log('[getUserId] Body:', req.body);
-  }
-  
-  return uid;
+  // req.uid is set by the requireAuth middleware (verified Firebase ID
+  // token) on routes that carry it — see routes/auth.js. redirectGoogleOAuth
+  // is a raw browser redirect (no Authorization header possible) and is the
+  // only caller that still falls back to the query param below.
+  if (req.uid) return req.uid;
+  return req.query.userId || req.body?.userId;
 }
 
 async function getAuthUrl(req, res) {

@@ -3,22 +3,9 @@ const { createOAuthClient } = require('../utils/oauthClient');
 const { getTokens, saveTokens } = require('../utils/tokenStore');
 
 function getUserId(req) {
-  // Try multiple header name variations (case-insensitive)
-  const uid = req.headers['x-user-uid'] || 
-              req.headers['X-User-UID'] || 
-              req.headers['x-user-id'] || 
-              req.headers['X-User-Id'] ||
-              req.body?.userId || 
-              req.query?.userId;
-  
-  // Log for debugging
-  if (!uid) {
-    console.log('[getUserId] No userId found. Headers:', Object.keys(req.headers).filter(k => k.toLowerCase().includes('user')));
-    console.log('[getUserId] Query:', req.query);
-    console.log('[getUserId] Body:', req.body);
-  }
-  
-  return uid;
+  // req.uid is set by the requireAuth middleware (verified Firebase ID
+  // token) — see routes/calendar.js. Never trust the raw header directly.
+  return req.uid || null;
 }
 
 async function createCalendarEvent(req, res) {
