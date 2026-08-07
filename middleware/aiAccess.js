@@ -31,6 +31,13 @@ if (DEV_SKIP_LIMITS) {
   console.warn('[aiAccess] ⚠️ DEV_SKIP_LIMITS is enabled — AI usage limits are bypassed. Do not use in production.');
 }
 
+// Diagnostic: log the raw env value at boot so a misconfigured Render env
+// var (wrong name, stray quotes/whitespace, wrong service) is visible
+// immediately instead of silently no-op'ing the credit system.
+console.log(
+  `[aiAccess] CREDITS_ENABLED raw="${process.env.CREDITS_ENABLED}" resolved=${CREDITS_ENABLED}`
+);
+
 // Secure by default: the AI path must present a verified Firebase ID token
 // (Authorization: Bearer <token>); the raw x-user-uid header is no longer
 // trusted. Set AI_REQUIRE_TOKEN=false on the host to temporarily fall back to
