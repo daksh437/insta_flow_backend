@@ -21,11 +21,13 @@ const AI_REQUEST_KEYS = 'ai_request_keys';
 const DAILY_CREDITS_FREE = 2;
 // Every new user gets a one-time 3-day free trial (full access), then Premium.
 const TRIAL_DAYS = 3;
-const DEV_SKIP_LIMITS = process.env.DEV_SKIP_LIMITS === 'true' || process.env.DEV_SKIP_LIMITS === '1';
+// .trim() guards against stray whitespace/newlines in the Render env var
+// value (e.g. pasting "true\n") silently leaving these switches off.
+const DEV_SKIP_LIMITS = ['true', '1'].includes((process.env.DEV_SKIP_LIMITS || '').trim());
 // Credit system master switch. OFF (default) = no credit gating/deduction, so
 // the currently-published app keeps working unchanged. Flip to 'true' on Render
 // ONLY after the new credit-UI build is published + Play products are live.
-const CREDITS_ENABLED = process.env.CREDITS_ENABLED === 'true' || process.env.CREDITS_ENABLED === '1';
+const CREDITS_ENABLED = ['true', '1'].includes((process.env.CREDITS_ENABLED || '').trim());
 
 if (DEV_SKIP_LIMITS) {
   console.warn('[aiAccess] ⚠️ DEV_SKIP_LIMITS is enabled — AI usage limits are bypassed. Do not use in production.');
@@ -35,7 +37,7 @@ if (DEV_SKIP_LIMITS) {
 // var (wrong name, stray quotes/whitespace, wrong service) is visible
 // immediately instead of silently no-op'ing the credit system.
 console.log(
-  `[aiAccess] CREDITS_ENABLED raw="${process.env.CREDITS_ENABLED}" resolved=${CREDITS_ENABLED}`
+  `[aiAccess] CREDITS_ENABLED raw=${JSON.stringify(process.env.CREDITS_ENABLED)} resolved=${CREDITS_ENABLED}`
 );
 
 // Secure by default: the AI path must present a verified Firebase ID token
