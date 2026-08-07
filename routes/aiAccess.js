@@ -5,10 +5,11 @@
 
 const express = require('express');
 const { getDb } = require('../utils/firestoreAdmin');
-const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, todayDateStr, logAiAccess } = require('../middleware/aiAccess');
+const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, todayDateStr, logAiAccess, CREDITS_ENABLED } = require('../middleware/aiAccess');
 const { requireAuth } = require('../middleware/verifyAuth');
 const { strictLimiter } = require('../middleware/rateLimiters');
 const { PLAN_CREDITS, PACK_CREDITS } = require('../config/credits');
+const creditService = require('../services/creditService');
 const crypto = require('crypto');
 
 const router = express.Router();
@@ -68,6 +69,14 @@ router.get('/debug/ai-usage/:uid', requireAdmin, async (req, res) => {
 router.get('/check-ai-access', requireAuth, async (req, res) => {
   const uid = req.uid;
   try {
+    // Grant the signup bonus / daily-login credits here too (not just on an
+    // actual AI call) so opening the app is enough — the balance chip would
+    // otherwise look stale until the user's first generation of the day.
+    // Both are idempotent (no-op if already granted today/ever).
+    if (CREDITS_ENABLED) {
+      await creditService.ensureSignupBonus(uid);
+      await creditService.grantDailyLoginIfDue(uid);
+    }
     const access = await getAiAccess(uid);
     const planType = access.planType;
     const trialEndDate = access.trialEndDate ?? null;

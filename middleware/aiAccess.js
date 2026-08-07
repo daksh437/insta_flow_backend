@@ -819,4 +819,5 @@ module.exports = {
   IDEMPOTENCY_TTL_MS,
   verifyUidFromToken,
   REQUIRE_AUTH_TOKEN,
+  CREDITS_ENABLED,
 };
