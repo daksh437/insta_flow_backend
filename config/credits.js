@@ -31,10 +31,20 @@ const DEFAULT_COST = 2;
 const FREE_GRANTS = {
   NEW_USER_BONUS: 50, // one-time on signup
   DAILY_LOGIN: 5, // once per UTC day
-  REFERRAL_INVITER: 100, // when an invited friend is verified
-  REFERRAL_FRIEND: 50, // the invited friend
-  REFERRAL_MAX: 10, // max rewarded referrals per user
+  // Referral: the REFERRER gets this once their invited friend actually uses
+  // an AI feature (proof of a real, engaged user — not just an install).
+  REFERRAL_INVITER: 50,
+  // Anti-abuse cap: max AI-use referral rewards a single referrer can earn.
+  // Does NOT cap the purchase-bonus reward below — a verified real purchase
+  // isn't something worth capping.
+  REFERRAL_MAX: 10,
 };
+
+// When a referred friend buys a plan or credit pack, the referrer gets this
+// fraction of the credits the friend's purchase granted, as an ongoing
+// reward — e.g. a 2000-credit plan purchase pays the referrer 20% * 2000 =
+// 400 credits. Applies to every purchase the friend makes, not just the first.
+const REFERRAL_PURCHASE_BONUS_PCT = 0.2;
 
 // Monthly credits granted by each subscription plan (Google Play product IDs).
 const PLAN_CREDITS = {
@@ -59,5 +69,6 @@ module.exports = {
   FREE_GRANTS,
   PLAN_CREDITS,
   PACK_CREDITS,
+  REFERRAL_PURCHASE_BONUS_PCT,
   costForEndpoint,
 };

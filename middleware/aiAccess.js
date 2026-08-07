@@ -15,6 +15,7 @@ const { resolvePlan } = require('../services/planResolver');
 const { buildAiFallback } = require('../utils/aiFallback');
 const creditService = require('../services/creditService');
 const { verifySubscription } = require('../utils/playVerify');
+const { FREE_GRANTS } = require('../config/credits');
 
 const USERS = 'users';
 const AI_REQUEST_KEYS = 'ai_request_keys';
@@ -614,6 +615,7 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
   let logEmail = null;
   let logPlan = 'free';
   let didRead = false;
+  let referralRewardGrantedTo = null;
   try {
     await firestore.runTransaction(async (tx) => {
       if (keyRef) {
@@ -635,7 +637,32 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
       const pt = String(rawPt || '').toLowerCase();
       logPlan = pt || 'free';
       didRead = true;
-      if (pt === 'premium' || pt === 'trial') return; // Only increment when planType === 'free'
+
+      // Referral: this user's FIRST successful AI use (any plan — most new
+      // users are on 'trial', which the counters below skip entirely, so
+      // this has to run before that early return) rewards whoever referred
+      // them. Capped per-referrer via FREE_GRANTS.REFERRAL_MAX so a fake
+      // signup farm can't be used to mint credits.
+      if (CREDITS_ENABLED && data.referredByUid && data.referralAiRewardGranted !== true) {
+        const referrerRef = firestore.collection(USERS).doc(data.referredByUid);
+        const referrerSnap = await tx.get(referrerRef);
+        if (referrerSnap.exists) {
+          const referrerData = referrerSnap.data();
+          const referrerRewardCount = typeof referrerData.referralRewardCount === 'number' ? referrerData.referralRewardCount : 0;
+          tx.update(ref, { referralAiRewardGranted: true });
+          if (referrerRewardCount < FREE_GRANTS.REFERRAL_MAX) {
+            const referrerCredits = typeof referrerData.credits === 'number' ? referrerData.credits : 0;
+            tx.update(referrerRef, {
+              credits: referrerCredits + FREE_GRANTS.REFERRAL_INVITER,
+              referralRewardCount: referrerRewardCount + 1,
+              creditsUpdatedAt: new Date(),
+            });
+            referralRewardGrantedTo = data.referredByUid;
+          }
+        }
+      }
+
+      if (pt === 'premium' || pt === 'trial') return; // Only increment usage counters when planType === 'free'
       const today = todayDateStr();
       const dailyAiDate = data.dailyAiDate ?? data.daily_ai_date ?? '';
       let dailyAiUsed = typeof (data.dailyAiUsed ?? data.daily_ai_used) === 'number' ? (data.dailyAiUsed ?? data.daily_ai_used) : 0;
@@ -668,6 +695,9 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
         endpoint: endpoint || undefined,
       };
     });
+    if (referralRewardGrantedTo) {
+      console.log(`[credits] referral AI-use reward +${FREE_GRANTS.REFERRAL_INVITER} to ${referralRewardGrantedTo} (from ${uid}'s first AI use)`);
+    }
     // Log this AI use for the admin panel — ALL plans (free/trial/premium), with
     // the user's email and the tool name. Read by AdminAIUsageScreen.
     if (didRead && endpoint) {

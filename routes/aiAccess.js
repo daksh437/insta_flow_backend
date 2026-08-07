@@ -8,7 +8,7 @@ const { getDb } = require('../utils/firestoreAdmin');
 const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, todayDateStr, logAiAccess, CREDITS_ENABLED } = require('../middleware/aiAccess');
 const { requireAuth } = require('../middleware/verifyAuth');
 const { strictLimiter } = require('../middleware/rateLimiters');
-const { PLAN_CREDITS, PACK_CREDITS } = require('../config/credits');
+const { PLAN_CREDITS, PACK_CREDITS, FREE_GRANTS, REFERRAL_PURCHASE_BONUS_PCT } = require('../config/credits');
 const creditService = require('../services/creditService');
 const crypto = require('crypto');
 
@@ -139,29 +139,23 @@ router.get('/check-ai-access', requireAuth, async (req, res) => {
   }
 });
 
-// ─── Referral (invite a friend → both get 5 days free premium) ──────────────
-const REFERRAL_REWARD_DAYS = 5;
+// ─── Referral (invite a friend → referrer earns credits from real activity) ──
+// Redeeming a code just LINKS the two accounts — no instant reward for
+// either side. The referrer earns credits from what the friend actually
+// does afterward:
+//   1. Friend's first successful AI generation → referrer gets
+//      FREE_GRANTS.REFERRAL_INVITER credits (see recordAiUsage in
+//      middleware/aiAccess.js), capped at FREE_GRANTS.REFERRAL_MAX
+//      rewarded referrals per referrer (anti-fake-account abuse).
+//   2. Every verified purchase (plan or pack) the friend makes → referrer
+//      gets REFERRAL_PURCHASE_BONUS_PCT of the credits that purchase
+//      granted (see /activate-premium below). Not capped — it's tied to
+//      real revenue, not signups.
 function genReferralCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous chars
   let c = '';
   for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
   return c;
-}
-function grantDaysPremiumFields(currentExpiry, now, days) {
-  const base = currentExpiry && currentExpiry > now ? currentExpiry : now;
-  const expiry = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
-  return {
-    isPremium: true,
-    planType: 'premium',
-    subscriptionPlan: 'pro',
-    premiumPlan: 'pro',
-    premiumExpiry: expiry,
-    premiumStartDate: now,
-    premiumExpiryNotified: false,
-    isTrialActive: false,
-    lastPurchaseStatus: 'referral',
-    lastUpdated: new Date(),
-  };
 }
 
 /** GET /referral/code — this user's shareable referral code (created lazily). */
@@ -182,7 +176,8 @@ router.get('/referral/code', requireAuth, async (req, res) => {
       code,
       referralCount: snap.data()?.referralCount || 0,
       alreadyRedeemed: !!snap.data()?.referredBy,
-      rewardDays: REFERRAL_REWARD_DAYS,
+      aiUseReward: FREE_GRANTS.REFERRAL_INVITER,
+      purchaseBonusPct: REFERRAL_PURCHASE_BONUS_PCT,
     });
   } catch (e) {
     console.error('[referral/code]', e);
@@ -190,7 +185,7 @@ router.get('/referral/code', requireAuth, async (req, res) => {
   }
 });
 
-/** POST /referral/redeem — a new user redeems a friend's code; both get reward. */
+/** POST /referral/redeem — a new user links themselves to a friend's code. No reward yet — see above. */
 router.post('/referral/redeem', requireAuth, strictLimiter, async (req, res) => {
   const uid = req.uid;
   const code = String(req.body?.code || '').trim().toUpperCase();
@@ -213,19 +208,19 @@ router.post('/referral/redeem', requireAuth, strictLimiter, async (req, res) => 
     if (referrer.id === uid) {
       return res.status(400).json({ success: false, error: 'SELF_REFERRAL', message: "You can't refer yourself." });
     }
-    const now = new Date();
-    const toDateSafe = (v) => (v && v.toDate ? v.toDate() : null);
-    // Reward both sides with 5 days premium (extends existing premium).
-    await meRef.set({
-      ...grantDaysPremiumFields(toDateSafe(me.data()?.premiumExpiry), now, REFERRAL_REWARD_DAYS),
-      referredBy: code,
-    }, { merge: true });
     const admin = require('firebase-admin');
+    await meRef.set({
+      referredBy: code,
+      referredByUid: referrer.id,
+      referredAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
     await referrer.ref.set({
-      ...grantDaysPremiumFields(toDateSafe(referrer.data()?.premiumExpiry), now, REFERRAL_REWARD_DAYS),
       referralCount: admin.firestore.FieldValue.increment(1),
     }, { merge: true });
-    return res.json({ success: true, rewardDays: REFERRAL_REWARD_DAYS, message: `You both got ${REFERRAL_REWARD_DAYS} days of Premium!` });
+    return res.json({
+      success: true,
+      message: `Linked! Your friend earns ${FREE_GRANTS.REFERRAL_INVITER} credits once you try an AI feature.`,
+    });
   } catch (e) {
     console.error('[referral/redeem]', e);
     return res.status(500).json({ success: false, error: 'SERVER_ERROR', message: e.message });
@@ -272,16 +267,55 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
       if (amount > 0) {
         const grantId = crypto.createHash('sha256').update(`${purchaseToken}:${productId}`).digest('hex');
         const grantRef = firestore.collection('credit_grants').doc(grantId);
+        let referredByUid = null;
+        let alreadyGranted = false;
         await firestore.runTransaction(async (tx) => {
           const g = await tx.get(grantRef);
-          if (g.exists) return;
+          if (g.exists) { alreadyGranted = true; return; }
           const uref = firestore.collection('users').doc(uid);
           const usnap = await tx.get(uref);
           const cur = usnap.exists && typeof usnap.data().credits === 'number' ? usnap.data().credits : 0;
+          referredByUid = usnap.exists ? (usnap.data().referredByUid || null) : null;
           tx.set(uref, { credits: cur + amount, creditsUpdatedAt: new Date() }, { merge: true });
           tx.set(grantRef, { uid, productId, amount, at: new Date() });
         });
-        console.log(`[credits] purchase grant +${amount} to ${uid} (${productId})`);
+
+        if (!alreadyGranted) {
+          console.log(`[credits] purchase grant +${amount} to ${uid} (${productId})`);
+
+          // Referral purchase bonus: whoever referred this buyer gets a cut
+          // of the credits this purchase granted, every time the friend
+          // buys — an ongoing incentive, not just a one-off. Idempotent by
+          // its own grant doc so a retry never double-pays the referrer.
+          if (referredByUid && referredByUid !== uid) {
+            const bonus = Math.round(amount * REFERRAL_PURCHASE_BONUS_PCT);
+            if (bonus > 0) {
+              const refGrantId = crypto.createHash('sha256').update(`referral:${purchaseToken}:${productId}`).digest('hex');
+              const refGrantRef = firestore.collection('credit_grants').doc(refGrantId);
+              try {
+                await firestore.runTransaction(async (tx) => {
+                  const g = await tx.get(refGrantRef);
+                  if (g.exists) return;
+                  const rref = firestore.collection('users').doc(referredByUid);
+                  const rsnap = await tx.get(rref);
+                  const rcur = rsnap.exists && typeof rsnap.data().credits === 'number' ? rsnap.data().credits : 0;
+                  tx.set(rref, { credits: rcur + bonus, creditsUpdatedAt: new Date() }, { merge: true });
+                  tx.set(refGrantRef, {
+                    uid: referredByUid,
+                    productId,
+                    amount: bonus,
+                    at: new Date(),
+                    reason: 'referral_purchase_bonus',
+                    referredUid: uid,
+                  });
+                });
+                console.log(`[credits] referral purchase bonus +${bonus} to ${referredByUid} (from ${uid}'s ${productId})`);
+              } catch (e) {
+                console.warn('[credits] referral purchase bonus failed:', e.message);
+              }
+            }
+          }
+        }
       }
     } catch (e) {
       console.warn('[credits] purchase grant failed:', e.message);
