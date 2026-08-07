@@ -4258,12 +4258,22 @@ async function generateImage(req, res) {
       imageMimeType: inputMime,
     });
 
-    // Resize WITHOUT cropping — 'inside' keeps the whole generated image (no
-    // head/body cut off). The aspect is guided by the prompt instead of a crop.
+    // Resize to the EXACT requested aspect ratio without cropping. 'inside'
+    // (previous behavior) only shrinks the image to fit within dims.w x
+    // dims.h while keeping the source's own ratio — since Gemini mostly
+    // ignores the aspect-ratio text hint and generates near-square images
+    // regardless, the output never actually matched whatever ratio the user
+    // picked. 'contain' guarantees the final buffer is exactly dims.w x
+    // dims.h (the selected ratio) by letterboxing with a white background
+    // instead of cropping the subject.
     let buffer = Buffer.from(img.base64, 'base64');
     try {
       buffer = await sharp(buffer)
-        .resize(dims.w, dims.h, { fit: 'inside', withoutEnlargement: false })
+        .resize(dims.w, dims.h, {
+          fit: 'contain',
+          background: { r: 255, g: 255, b: 255, alpha: 1 },
+          withoutEnlargement: false,
+        })
         .png()
         .toBuffer();
     } catch (e) {
