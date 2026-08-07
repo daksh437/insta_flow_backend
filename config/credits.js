@@ -42,9 +42,9 @@ const FREE_GRANTS = {
 
 // When a referred friend buys a plan or credit pack, the referrer gets this
 // fraction of the credits the friend's purchase granted, as an ongoing
-// reward — e.g. a 2000-credit plan purchase pays the referrer 20% * 2000 =
-// 400 credits. Applies to every purchase the friend makes, not just the first.
-const REFERRAL_PURCHASE_BONUS_PCT = 0.2;
+// reward — e.g. a 2000-credit plan purchase pays the referrer 10% * 2000 =
+// 200 credits. Applies to every purchase the friend makes, not just the first.
+const REFERRAL_PURCHASE_BONUS_PCT = 0.1;
 
 // Monthly credits granted by each subscription plan (Google Play product IDs).
 const PLAN_CREDITS = {
