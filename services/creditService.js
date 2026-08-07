@@ -47,17 +47,23 @@ async function ensureSignupBonus(uid) {
   const db = getDb();
   if (!db || !uid) return;
   const ref = db.collection('users').doc(uid);
-  await db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const d = snap.exists ? snap.data() : {};
-    if (d.creditsSignupBonusGranted === true) return;
-    const current = typeof d.credits === 'number' ? d.credits : 0;
-    tx.set(ref, {
-      credits: current + FREE_GRANTS.NEW_USER_BONUS,
-      creditsSignupBonusGranted: true,
-      creditsUpdatedAt: new Date(),
-    }, { merge: true });
-  }).catch((e) => console.warn('[credits] signup bonus failed:', e.message));
+  try {
+    const granted = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const d = snap.exists ? snap.data() : {};
+      if (d.creditsSignupBonusGranted === true) return false;
+      const current = typeof d.credits === 'number' ? d.credits : 0;
+      tx.set(ref, {
+        credits: current + FREE_GRANTS.NEW_USER_BONUS,
+        creditsSignupBonusGranted: true,
+        creditsUpdatedAt: new Date(),
+      }, { merge: true });
+      return true;
+    });
+    console.log(`[credits] ensureSignupBonus uid=${uid} granted=${granted}`);
+  } catch (e) {
+    console.warn('[credits] signup bonus failed:', uid, e.message);
+  }
 }
 
 // Daily login grant (once per UTC day).
@@ -66,17 +72,23 @@ async function grantDailyLoginIfDue(uid) {
   if (!db || !uid) return;
   const ref = db.collection('users').doc(uid);
   const today = todayUtc();
-  await db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const d = snap.exists ? snap.data() : {};
-    if (d.creditsDailyDate === today) return;
-    const current = typeof d.credits === 'number' ? d.credits : 0;
-    tx.set(ref, {
-      credits: current + FREE_GRANTS.DAILY_LOGIN,
-      creditsDailyDate: today,
-      creditsUpdatedAt: new Date(),
-    }, { merge: true });
-  }).catch((e) => console.warn('[credits] daily grant failed:', e.message));
+  try {
+    const granted = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const d = snap.exists ? snap.data() : {};
+      if (d.creditsDailyDate === today) return false;
+      const current = typeof d.credits === 'number' ? d.credits : 0;
+      tx.set(ref, {
+        credits: current + FREE_GRANTS.DAILY_LOGIN,
+        creditsDailyDate: today,
+        creditsUpdatedAt: new Date(),
+      }, { merge: true });
+      return true;
+    });
+    console.log(`[credits] grantDailyLoginIfDue uid=${uid} granted=${granted}`);
+  } catch (e) {
+    console.warn('[credits] daily grant failed:', uid, e.message);
+  }
 }
 
 // Grant credits (plan/pack purchase, referral, admin).
