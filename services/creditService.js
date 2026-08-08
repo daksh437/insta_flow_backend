@@ -7,6 +7,26 @@ function todayUtc() {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
+/**
+ * Write one ledger entry inside an already-open Firestore transaction, so
+ * the entry is atomic with whatever balance change it's describing — the
+ * user's Credit History screen (bank-statement style) reads this
+ * subcollection. Call this from inside every credit-mutating tx, right
+ * alongside the balance write.
+ */
+function recordTransactionInTx(tx, uid, { type, amount, balanceAfter, description, meta }) {
+  const db = getDb();
+  const txnRef = db.collection('users').doc(uid).collection('credit_transactions').doc();
+  tx.set(txnRef, {
+    type,
+    amount,
+    balanceAfter,
+    description: description || type,
+    meta: meta || null,
+    at: new Date(),
+  });
+}
+
 // Map an AI endpoint path to a credit-cost key.
 function endpointToCostKey(endpoint) {
   const p = String(endpoint || '').toLowerCase();
@@ -34,6 +54,35 @@ function costForPath(endpoint) {
   return costForEndpoint(endpointToCostKey(endpoint));
 }
 
+// Human-readable tool name for a cost key, shown as the Credit History line
+// for a spend (e.g. "AI Caption Generator" instead of the raw key "caption").
+const COST_KEY_LABELS = {
+  caption: 'AI Caption Generator',
+  hashtag: 'Hashtag Generator',
+  bio: 'Bio Maker',
+  post_ideas: 'Post Ideas',
+  carousel: 'Carousel Writer',
+  content_planner: 'Content Calendar',
+  reels_script: 'Reel Script Writer',
+  strategy: 'AI Strategy',
+  niche_analysis: 'Niche Analysis',
+  comment_reply: 'Comment Reply',
+  rewrite: 'Rewrite Tool',
+  trending: 'Trending Hashtags',
+  content_engine: 'AI Content Engine',
+  caption_from_media: 'Caption from Photo',
+  background_remove: 'Background Remove',
+  image: 'Studio Image',
+  thumbnail: 'Thumbnail Maker',
+  logo: 'Logo Maker',
+  image_edit: 'Image Edit',
+};
+
+function labelForEndpoint(endpoint) {
+  const key = endpointToCostKey(endpoint);
+  return (key && COST_KEY_LABELS[key]) || 'AI generation';
+}
+
 async function getBalance(uid) {
   const db = getDb();
   if (!db || !uid) return 0;
@@ -53,11 +102,18 @@ async function ensureSignupBonus(uid) {
       const d = snap.exists ? snap.data() : {};
       if (d.creditsSignupBonusGranted === true) return false;
       const current = typeof d.credits === 'number' ? d.credits : 0;
+      const balanceAfter = current + FREE_GRANTS.NEW_USER_BONUS;
       tx.set(ref, {
-        credits: current + FREE_GRANTS.NEW_USER_BONUS,
+        credits: balanceAfter,
         creditsSignupBonusGranted: true,
         creditsUpdatedAt: new Date(),
       }, { merge: true });
+      recordTransactionInTx(tx, uid, {
+        type: 'signup_bonus',
+        amount: FREE_GRANTS.NEW_USER_BONUS,
+        balanceAfter,
+        description: 'Welcome gift',
+      });
       return true;
     });
     console.log(`[credits] ensureSignupBonus uid=${uid} granted=${granted}`);
@@ -80,11 +136,18 @@ async function grantDailyLoginIfDue(uid) {
       const d = snap.exists ? snap.data() : {};
       if (d.creditsDailyDate === today) return false;
       const current = typeof d.credits === 'number' ? d.credits : 0;
+      const balanceAfter = current + FREE_GRANTS.DAILY_LOGIN;
       tx.set(ref, {
-        credits: current + FREE_GRANTS.DAILY_LOGIN,
+        credits: balanceAfter,
         creditsDailyDate: today,
         creditsUpdatedAt: new Date(),
       }, { merge: true });
+      recordTransactionInTx(tx, uid, {
+        type: 'daily_login',
+        amount: FREE_GRANTS.DAILY_LOGIN,
+        balanceAfter,
+        description: 'Daily free credits',
+      });
       return true;
     });
     console.log(`[credits] grantDailyLoginIfDue uid=${uid} granted=${granted}`);
@@ -99,7 +162,7 @@ async function grantDailyLoginIfDue(uid) {
 // `flagField` so a repeat claim is a no-op. Used for the Instagram-follow /
 // YouTube-subscribe Gift-screen rewards — honor system (no real follow/
 // subscribe verification), same trust model as the signup bonus.
-async function claimOnceFlag(uid, flagField, amount) {
+async function claimOnceFlag(uid, flagField, amount, type, description) {
   const db = getDb();
   if (!db || !uid) return false;
   const ref = db.collection('users').doc(uid);
@@ -109,11 +172,13 @@ async function claimOnceFlag(uid, flagField, amount) {
       const d = snap.exists ? snap.data() : {};
       if (d[flagField] === true) return false;
       const current = typeof d.credits === 'number' ? d.credits : 0;
+      const balanceAfter = current + amount;
       tx.set(ref, {
-        credits: current + amount,
+        credits: balanceAfter,
         [flagField]: true,
         creditsUpdatedAt: new Date(),
       }, { merge: true });
+      recordTransactionInTx(tx, uid, { type, amount, balanceAfter, description });
       return true;
     });
     console.log(`[credits] claimOnceFlag uid=${uid} flag=${flagField} granted=${granted}`);
@@ -125,11 +190,11 @@ async function claimOnceFlag(uid, flagField, amount) {
 }
 
 function claimInstagramFollow(uid) {
-  return claimOnceFlag(uid, 'instagramFollowClaimed', FREE_GRANTS.INSTAGRAM_FOLLOW);
+  return claimOnceFlag(uid, 'instagramFollowClaimed', FREE_GRANTS.INSTAGRAM_FOLLOW, 'instagram_follow', 'Followed on Instagram');
 }
 
 function claimYoutubeSubscribe(uid) {
-  return claimOnceFlag(uid, 'youtubeSubscribeClaimed', FREE_GRANTS.YOUTUBE_SUBSCRIBE);
+  return claimOnceFlag(uid, 'youtubeSubscribeClaimed', FREE_GRANTS.YOUTUBE_SUBSCRIBE, 'youtube_subscribe', 'Subscribed on YouTube');
 }
 
 // Grant credits (plan/pack purchase, referral, admin).
@@ -140,14 +205,18 @@ async function grant(uid, amount, reason = 'grant') {
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const current = snap.exists && typeof snap.data().credits === 'number' ? snap.data().credits : 0;
-    tx.set(ref, { credits: current + Math.floor(amount), creditsUpdatedAt: new Date() }, { merge: true });
+    const balanceAfter = current + Math.floor(amount);
+    tx.set(ref, { credits: balanceAfter, creditsUpdatedAt: new Date() }, { merge: true });
+    recordTransactionInTx(tx, uid, { type: reason, amount: Math.floor(amount), balanceAfter, description: reason });
   });
   console.log(`[credits] +${amount} to ${uid} (${reason})`);
 }
 
 // Spend credits atomically, idempotent by key. Returns true if charged (or
 // already charged for this key), false if insufficient balance.
-async function spend(uid, cost, idemKey) {
+// `description` is the human-readable line shown in Credit History (e.g. the
+// AI tool name) — pass it from the caller, which knows the endpoint/tool.
+async function spend(uid, cost, idemKey, description) {
   const db = getDb();
   if (!db || !uid) return false;
   if (!(cost > 0)) return true;
@@ -163,10 +232,42 @@ async function spend(uid, cost, idemKey) {
     const snap = await tx.get(ref);
     const current = snap.exists && typeof snap.data().credits === 'number' ? snap.data().credits : 0;
     if (current < cost) return false;
-    tx.set(ref, { credits: current - cost, creditsUpdatedAt: new Date() }, { merge: true });
+    const balanceAfter = current - cost;
+    tx.set(ref, { credits: balanceAfter, creditsUpdatedAt: new Date() }, { merge: true });
     if (keyRef) tx.set(keyRef, { cost, at: new Date() });
+    recordTransactionInTx(tx, uid, {
+      type: 'spend',
+      amount: -cost,
+      balanceAfter,
+      description: description || 'AI generation',
+    });
     return true;
   });
+}
+
+// Paginated credit history for the Credit History screen (bank-statement
+// style) — newest first. Pass `beforeId` (a transaction doc id from a
+// previous page) to fetch older entries.
+async function getHistory(uid, { limit = 30, beforeId } = {}) {
+  const db = getDb();
+  if (!db || !uid) return [];
+  let q = db
+    .collection('users')
+    .doc(uid)
+    .collection('credit_transactions')
+    .orderBy('at', 'desc')
+    .limit(limit);
+  if (beforeId) {
+    const cursorSnap = await db
+      .collection('users')
+      .doc(uid)
+      .collection('credit_transactions')
+      .doc(beforeId)
+      .get();
+    if (cursorSnap.exists) q = q.startAfter(cursorSnap);
+  }
+  const snap = await q.get();
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
 module.exports = {
@@ -177,8 +278,11 @@ module.exports = {
   claimYoutubeSubscribe,
   grant,
   spend,
+  getHistory,
+  recordTransactionInTx,
   endpointToCostKey,
   costForPath,
+  labelForEndpoint,
   PLAN_CREDITS,
   PACK_CREDITS,
 };

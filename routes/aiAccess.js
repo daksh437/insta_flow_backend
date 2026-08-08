@@ -9,6 +9,7 @@ const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, 
 const { requireAuth } = require('../middleware/verifyAuth');
 const { strictLimiter } = require('../middleware/rateLimiters');
 const { PLAN_CREDITS, PACK_CREDITS, FREE_GRANTS, REFERRAL_PURCHASE_BONUS_PCT } = require('../config/credits');
+const creditService = require('../services/creditService');
 const crypto = require('crypto');
 
 const router = express.Router();
@@ -270,8 +271,16 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
           const usnap = await tx.get(uref);
           const cur = usnap.exists && typeof usnap.data().credits === 'number' ? usnap.data().credits : 0;
           referredByUid = usnap.exists ? (usnap.data().referredByUid || null) : null;
-          tx.set(uref, { credits: cur + amount, creditsUpdatedAt: new Date() }, { merge: true });
+          const balanceAfter = cur + amount;
+          tx.set(uref, { credits: balanceAfter, creditsUpdatedAt: new Date() }, { merge: true });
           tx.set(grantRef, { uid, productId, amount, at: new Date() });
+          creditService.recordTransactionInTx(tx, uid, {
+            type: 'purchase',
+            amount,
+            balanceAfter,
+            description: `Purchased ${productId}`,
+            meta: { productId, purchaseToken },
+          });
         });
 
         if (!alreadyGranted) {
@@ -293,7 +302,8 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
                   const rref = firestore.collection('users').doc(referredByUid);
                   const rsnap = await tx.get(rref);
                   const rcur = rsnap.exists && typeof rsnap.data().credits === 'number' ? rsnap.data().credits : 0;
-                  tx.set(rref, { credits: rcur + bonus, creditsUpdatedAt: new Date() }, { merge: true });
+                  const rbalanceAfter = rcur + bonus;
+                  tx.set(rref, { credits: rbalanceAfter, creditsUpdatedAt: new Date() }, { merge: true });
                   tx.set(refGrantRef, {
                     uid: referredByUid,
                     productId,
@@ -301,6 +311,13 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
                     at: new Date(),
                     reason: 'referral_purchase_bonus',
                     referredUid: uid,
+                  });
+                  creditService.recordTransactionInTx(tx, referredByUid, {
+                    type: 'referral_purchase_bonus',
+                    amount: bonus,
+                    balanceAfter: rbalanceAfter,
+                    description: `Referral bonus — friend bought ${productId}`,
+                    meta: { productId, referredUid: uid },
                   });
                 });
                 console.log(`[credits] referral purchase bonus +${bonus} to ${referredByUid} (from ${uid}'s ${productId})`);

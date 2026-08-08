@@ -584,7 +584,7 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
   if (CREDITS_ENABLED) {
     try {
       const cost = creditService.costForPath(endpoint || '');
-      await creditService.spend(uid, cost, idempotencyKey || requestId);
+      await creditService.spend(uid, cost, idempotencyKey || requestId, creditService.labelForEndpoint(endpoint || ''));
     } catch (e) {
       console.warn('[credits] spend failed:', e.message);
     }
@@ -633,10 +633,17 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
           tx.update(ref, { referralAiRewardGranted: true });
           if (referrerRewardCount < FREE_GRANTS.REFERRAL_MAX) {
             const referrerCredits = typeof referrerData.credits === 'number' ? referrerData.credits : 0;
+            const referrerBalanceAfter = referrerCredits + FREE_GRANTS.REFERRAL_INVITER;
             tx.update(referrerRef, {
-              credits: referrerCredits + FREE_GRANTS.REFERRAL_INVITER,
+              credits: referrerBalanceAfter,
               referralRewardCount: referrerRewardCount + 1,
               creditsUpdatedAt: new Date(),
+            });
+            creditService.recordTransactionInTx(tx, data.referredByUid, {
+              type: 'referral_ai_use_reward',
+              amount: FREE_GRANTS.REFERRAL_INVITER,
+              balanceAfter: referrerBalanceAfter,
+              description: 'Referral bonus — friend tried an AI feature',
             });
             referralRewardGrantedTo = data.referredByUid;
           }

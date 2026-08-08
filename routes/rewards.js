@@ -4,6 +4,7 @@
  * POST /rewards/claim-daily           — once per UTC day
  * POST /rewards/claim-instagram-follow — one-time, honor system
  * POST /rewards/claim-youtube-subscribe — one-time, honor system
+ * GET  /rewards/history               — paginated credit ledger (bank-statement style)
  *
  * All grants used to be silent (auto-run on the first AI call or app open),
  * which made a brand-new user's AI generation look "free with no credits"
@@ -63,6 +64,29 @@ router.post('/claim-instagram-follow', requireAuth, async (req, res) => {
 router.post('/claim-youtube-subscribe', requireAuth, async (req, res) => {
   const granted = await creditService.claimYoutubeSubscribe(req.uid);
   return res.json({ success: true, granted, amount: FREE_GRANTS.YOUTUBE_SUBSCRIBE });
+});
+
+router.get('/history', requireAuth, async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
+    const beforeId = typeof req.query.beforeId === 'string' ? req.query.beforeId : undefined;
+    const items = await creditService.getHistory(req.uid, { limit, beforeId });
+    return res.json({
+      success: true,
+      items: items.map((it) => ({
+        id: it.id,
+        type: it.type,
+        amount: it.amount,
+        balanceAfter: it.balanceAfter,
+        description: it.description,
+        at: it.at && typeof it.at.toDate === 'function' ? it.at.toDate().toISOString() : null,
+      })),
+      hasMore: items.length === limit,
+    });
+  } catch (e) {
+    console.error('[rewards/history]', e);
+    return res.status(500).json({ success: false, error: 'SERVER_ERROR', message: e.message });
+  }
 });
 
 module.exports = router;
