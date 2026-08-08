@@ -328,34 +328,14 @@ async function getAiAccess(uid) {
   await activatePremiumFromReceiptIfNeeded(ref, user, now);
   let planType = resolvePlan(user);
 
+  // No more free trial: every new user is 'free' from day 1 and must use
+  // credits (claimed from the Gift screen or bought) for every AI action —
+  // see routes/rewards.js. This used to auto-start a 3-day "trial" (unlimited
+  // AI, no credits needed) for new users; removed per product decision.
+  // Kept for display only, in case an existing user still has an
+  // already-running trial window from before this change — it's never
+  // created anymore, only read.
   const trialEnd = toDate(user.trialEndDate) || toDate(user.trialEnd);
-  const trialStart = toDate(user.trialStartDate) || toDate(user.trialStart);
-
-  // Start a one-time 3-day trial for a genuinely-new user (never had a trial and
-  // not premium). After it ends they resolve to 'free' and the app gates them to
-  // the paywall — so effectively: 3 days free, then Premium.
-  if (planType === 'free' && !user.trialUsed && !trialEnd && !trialStart) {
-    const trialEndNew = new Date(now.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
-    try {
-      await ref.update({ planType: 'trial', trialStartDate: now, trialEndDate: trialEndNew, trialUsed: true });
-      user.planType = 'trial';
-      user.trialStartDate = now;
-      user.trialEndDate = trialEndNew;
-      user.trialUsed = true;
-      planType = 'trial';
-    } catch (e) {
-      console.warn('[aiAccess] start trial error:', e.message);
-    }
-  } else if (planType === 'trial' && !trialEnd) {
-    const trialEndNew = new Date(now.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
-    try {
-      await ref.update({ planType: 'trial', trialEndDate: trialEndNew, trialStartDate: trialStart || now, trialUsed: true });
-      user.trialEndDate = trialEndNew;
-      user.trialStartDate = trialStart || now;
-    } catch (e) {
-      console.warn('[aiAccess] recreate trial window error:', e.message);
-    }
-  }
 
   const storedPlan = (user.planType || user.plan_type || '').toLowerCase();
   if (storedPlan !== planType && ['trial', 'free', 'premium'].includes(planType)) {
