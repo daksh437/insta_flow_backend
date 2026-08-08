@@ -61,8 +61,10 @@ async function ensureSignupBonus(uid) {
       return true;
     });
     console.log(`[credits] ensureSignupBonus uid=${uid} granted=${granted}`);
+    return granted;
   } catch (e) {
     console.warn('[credits] signup bonus failed:', uid, e.message);
+    return false;
   }
 }
 
@@ -86,9 +88,48 @@ async function grantDailyLoginIfDue(uid) {
       return true;
     });
     console.log(`[credits] grantDailyLoginIfDue uid=${uid} granted=${granted}`);
+    return granted;
   } catch (e) {
     console.warn('[credits] daily grant failed:', uid, e.message);
+    return false;
   }
+}
+
+// One-time claim, generic: grants `amount` credits the first time, marking
+// `flagField` so a repeat claim is a no-op. Used for the Instagram-follow /
+// YouTube-subscribe Gift-screen rewards — honor system (no real follow/
+// subscribe verification), same trust model as the signup bonus.
+async function claimOnceFlag(uid, flagField, amount) {
+  const db = getDb();
+  if (!db || !uid) return false;
+  const ref = db.collection('users').doc(uid);
+  try {
+    const granted = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const d = snap.exists ? snap.data() : {};
+      if (d[flagField] === true) return false;
+      const current = typeof d.credits === 'number' ? d.credits : 0;
+      tx.set(ref, {
+        credits: current + amount,
+        [flagField]: true,
+        creditsUpdatedAt: new Date(),
+      }, { merge: true });
+      return true;
+    });
+    console.log(`[credits] claimOnceFlag uid=${uid} flag=${flagField} granted=${granted}`);
+    return granted;
+  } catch (e) {
+    console.warn(`[credits] claimOnceFlag(${flagField}) failed:`, uid, e.message);
+    return false;
+  }
+}
+
+function claimInstagramFollow(uid) {
+  return claimOnceFlag(uid, 'instagramFollowClaimed', FREE_GRANTS.INSTAGRAM_FOLLOW);
+}
+
+function claimYoutubeSubscribe(uid) {
+  return claimOnceFlag(uid, 'youtubeSubscribeClaimed', FREE_GRANTS.YOUTUBE_SUBSCRIBE);
 }
 
 // Grant credits (plan/pack purchase, referral, admin).
@@ -132,6 +173,8 @@ module.exports = {
   getBalance,
   ensureSignupBonus,
   grantDailyLoginIfDue,
+  claimInstagramFollow,
+  claimYoutubeSubscribe,
   grant,
   spend,
   endpointToCostKey,

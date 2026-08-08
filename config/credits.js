@@ -27,10 +27,15 @@ const CREDIT_COSTS = {
 // Default cost if an endpoint isn't mapped (safe fallback).
 const DEFAULT_COST = 2;
 
-// Free credit grants (NO rewarded ad).
+// Free credit grants (NO rewarded ad). All of these are CLAIMED explicitly
+// by the user from the in-app Gift screen (routes/rewards.js) — none are
+// auto-granted silently, so a brand-new user genuinely has 0 credits (and
+// AI generation is correctly blocked) until they claim something.
 const FREE_GRANTS = {
-  NEW_USER_BONUS: 50, // one-time on signup
-  DAILY_LOGIN: 5, // once per UTC day
+  NEW_USER_BONUS: 50, // one-time, claimed from the Gift screen
+  DAILY_LOGIN: 5, // once per UTC day, claimed from the Gift screen
+  INSTAGRAM_FOLLOW: 20, // one-time, honor-system (no real follow verification)
+  YOUTUBE_SUBSCRIBE: 20, // one-time, honor-system
   // Referral: the REFERRER gets this once their invited friend actually uses
   // an AI feature (proof of a real, engaged user — not just an install).
   REFERRAL_INVITER: 50,

@@ -14,6 +14,7 @@ const adminNotificationsRoutes = require('./routes/adminNotifications');
 const retentionRoutes = require('./routes/retention');
 const instagramRoutes = require('./routes/instagram');
 const schedulerRoutes = require('./routes/scheduler');
+const rewardsRoutes = require('./routes/rewards');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const { processPendingScheduledPosts } = require('./services/scheduler_service');
 const { sendPushToAllUsers } = require('./services/pushService');
@@ -78,6 +79,7 @@ app.use('/api', ttsRoutes);
 app.use('/admin', adminNotificationsRoutes);
 app.use('/retention', retentionRoutes);
 app.use('/scheduler', schedulerRoutes);
+app.use('/rewards', rewardsRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', success: true, message: 'OK' });

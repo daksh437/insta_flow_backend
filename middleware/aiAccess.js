@@ -497,10 +497,11 @@ async function requireAiAccess(req, res, next) {
   const cost = creditService.costForPath(endpointFinal);
   req._creditCost = cost;
 
-  // Free credit grants (idempotent): one-time signup bonus + daily login.
-  await creditService.ensureSignupBonus(uidTrim);
-  await creditService.grantDailyLoginIfDue(uidTrim);
-
+  // No auto-grants here (signup bonus / daily login) — those are claimed
+  // explicitly from the in-app Gift screen (routes/rewards.js). A brand-new
+  // user genuinely has 0 credits and is correctly blocked below until they
+  // claim something; AI was never "free" for them, it just looked that way
+  // before because this used to silently grant credits on first use.
   const balance = await creditService.getBalance(uidTrim);
   logAiAccess('info', { event: 'AI_ACCESS_MIDDLEWARE_HIT', uid: uidTrim, endpoint: endpointFinal, cost, balance });
 
