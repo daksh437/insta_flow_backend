@@ -14,7 +14,7 @@ function completeJobAndRecordUsage(jobId, status, data = {}) {
   const isSuccess = (status === 'completed' || status === 'done') && !data.error;
   if (job && job.uid && isSuccess && !job.usageRecorded) {
     job.usageRecorded = true;
-    recordAiUsage(job.uid, jobId);
+    recordAiUsage(job.uid, jobId, null, { endpoint: job.type || undefined });
   }
   updateJob(jobId, status, data);
 }
@@ -4106,6 +4106,7 @@ ${langLine}`;
       }),
     };
     console.log('[contentEngine] Response:', result);
+    if (req.uid) recordAiUsage(req.uid, null, req.idempotencyKey, { endpoint: req._aiEndpoint || req.path || '/ai/content-engine' });
     return result;
   } catch (error) {
     console.error('[contentEngine] Error:', error.message);
@@ -4151,6 +4152,7 @@ Return ONLY the rewritten text.`;
   try {
     const output = await runGemini(prompt, { maxTokens: 800, temperature: 0.8, topP: 0.95 });
     const rewritten = String(output || '').trim().replace(/^["']|["']$/g, '');
+    if (req.uid) recordAiUsage(req.uid, null, req.idempotencyKey, { endpoint: req._aiEndpoint || req.path || '/ai/rewrite' });
     return { rewritten: rewritten || text };
   } catch (error) {
     console.error('[rewriteText] Error:', error.message);
