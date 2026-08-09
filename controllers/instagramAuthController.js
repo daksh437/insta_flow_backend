@@ -1,10 +1,62 @@
 const axios = require('axios');
+const crypto = require('crypto');
 const { getDb } = require('../utils/firestoreAdmin');
 const instagramService = require('../services/instagram_service');
 const { verifyOAuthState } = require('../utils/oauthState');
 
 function sanitize(value) {
   return String(value || '').trim();
+}
+
+function base64UrlDecode(str) {
+  const padded = String(str || '').replace(/-/g, '+').replace(/_/g, '/');
+  const withPad = padded + '='.repeat((4 - (padded.length % 4)) % 4);
+  return Buffer.from(withPad, 'base64');
+}
+
+/** Verify + decode Meta's `signed_request` (deauthorize / data-deletion callbacks). */
+function parseSignedRequest(signedRequest, appSecret) {
+  const parts = String(signedRequest || '').split('.');
+  if (parts.length !== 2) return null;
+  const [encodedSig, payload] = parts;
+  if (!encodedSig || !payload) return null;
+  try {
+    const sig = base64UrlDecode(encodedSig);
+    const expectedSig = crypto.createHmac('sha256', appSecret).update(payload).digest();
+    if (sig.length !== expectedSig.length || !crypto.timingSafeEqual(sig, expectedSig)) return null;
+    return JSON.parse(base64UrlDecode(payload).toString('utf8'));
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Clear a user's stored Instagram connection (token + cached profile) by IG user id. */
+async function clearInstagramConnectionByIgUserId(igUserId) {
+  const db = getDb();
+  if (!db || !igUserId) return;
+  const snap = await db.collection('users').where('instagram.instagram_user_id', '==', String(igUserId)).get();
+  const now = new Date();
+  await Promise.all(
+    snap.docs.map(async (doc) => {
+      await doc.ref.set(
+        {
+          instagram: {
+            connected: false,
+            access_token: null,
+            instagram_user_id: null,
+            username: null,
+            account_type: null,
+            followers_count: 0,
+            media_count: 0,
+            deauthorized_at: now,
+            updated_at: now,
+          },
+        },
+        { merge: true }
+      );
+      await doc.ref.collection('instagram_data').doc('profile').delete().catch(() => {});
+    })
+  );
 }
 
 function requiredConfig() {
@@ -271,7 +323,67 @@ async function instagramStatus(req, res) {
   }
 }
 
+/**
+ * POST /auth/instagram/deauthorize — Meta calls this when a user removes the
+ * app from their Instagram "Apps and websites" list. Required config field:
+ * App Dashboard -> Instagram -> API setup with Instagram login -> Deauthorize
+ * Callback URL. Must always return 200; Meta does not retry on non-200 but
+ * treats it as a setup problem.
+ */
+async function instagramDeauthorize(req, res) {
+  try {
+    const appSecret = sanitize(process.env.INSTAGRAM_APP_SECRET);
+    const data = parseSignedRequest(req.body?.signed_request, appSecret);
+    if (data && data.user_id) {
+      await clearInstagramConnectionByIgUserId(String(data.user_id));
+      console.log('[instagramAuth] Deauthorized ig user_id=', data.user_id);
+    } else {
+      console.warn('[instagramAuth] Deauthorize: invalid or unverifiable signed_request');
+    }
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('[instagramAuth] Deauthorize error:', error?.message || error);
+    return res.status(200).json({ success: true });
+  }
+}
+
+/**
+ * POST /auth/instagram/data-deletion — Meta calls this when a user requests
+ * their data be deleted. Required config field: App Dashboard -> Instagram ->
+ * API setup with Instagram login -> Data Deletion Request URL. Must respond
+ * 200 with { url, confirmation_code } per Meta's spec.
+ */
+async function instagramDataDeletion(req, res) {
+  const appSecret = sanitize(process.env.INSTAGRAM_APP_SECRET);
+  const data = parseSignedRequest(req.body?.signed_request, appSecret);
+  const confirmationCode = data && data.user_id ? String(data.user_id) : `unverified-${Date.now()}`;
+  try {
+    if (data && data.user_id) {
+      await clearInstagramConnectionByIgUserId(String(data.user_id));
+      console.log('[instagramAuth] Data deletion processed for ig user_id=', data.user_id);
+    } else {
+      console.warn('[instagramAuth] Data deletion: invalid or unverifiable signed_request');
+    }
+  } catch (error) {
+    console.error('[instagramAuth] Data deletion error:', error?.message || error);
+  }
+  const origin = `${req.protocol}://${req.get('host')}`;
+  return res.status(200).json({
+    url: `${origin}/auth/instagram/deletion-status?id=${encodeURIComponent(confirmationCode)}`,
+    confirmation_code: confirmationCode,
+  });
+}
+
+/** GET /auth/instagram/deletion-status?id=... — human-readable confirmation page linked from the JSON response above. */
+async function instagramDeletionStatus(req, res) {
+  const id = sanitize(req.query.id);
+  return res.status(200).send(callbackHtml(true, `Your InstaFlow Instagram data has been deleted. Confirmation code: ${id || 'n/a'}`));
+}
+
 module.exports = {
   instagramCallback,
   instagramStatus,
+  instagramDeauthorize,
+  instagramDataDeletion,
+  instagramDeletionStatus,
 };
