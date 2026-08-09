@@ -78,15 +78,14 @@ async function graphPost(path, body = {}) {
 async function getUserProfile(accessToken) {
   const token = sanitizeToken(accessToken);
   if (!token) throw toApiError('Missing Instagram access token', 401, 'missing_token');
-  // Instagram API with Instagram Login exposes `user_id` (not `id`) on /me, and
-  // supports business fields (followers_count etc.). Requesting `id` here makes
-  // the whole call fail with a "nonexisting field" error → empty profile.
+  // Current IG User field list (per Meta's Instagram Platform docs) does NOT
+  // include `user_id` or `account_type` — requesting either makes the whole
+  // /me call fail with a generic "Unsupported request - method type: get"
+  // error, which silently degrades every profile fetch to empty/zero fields.
   const data = await graphGet('/me', {
-    fields: 'user_id,username,account_type,media_count,followers_count,follows_count',
+    fields: 'id,username,media_count,followers_count,follows_count',
     access_token: token,
   });
-  // Normalize to `id` for all downstream callers.
-  if (data && !data.id && data.user_id) data.id = String(data.user_id);
   return data;
 }
 
