@@ -644,7 +644,14 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
               amount: FREE_GRANTS.REFERRAL_INVITER,
               balanceAfter: referrerBalanceAfter,
               description: 'Referral bonus — friend tried an AI feature',
+              meta: { referredUid: uid },
             });
+            // Per-friend running total for the Refer & Earn breakdown list.
+            const referralRowRef = referrerRef.collection('referrals').doc(uid);
+            const adminSdk = getAdmin();
+            tx.set(referralRowRef, {
+              totalCreditsEarned: adminSdk.firestore.FieldValue.increment(FREE_GRANTS.REFERRAL_INVITER),
+            }, { merge: true });
             referralRewardGrantedTo = data.referredByUid;
           }
         }

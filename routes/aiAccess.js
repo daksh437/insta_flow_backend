@@ -204,13 +204,23 @@ router.post('/referral/redeem', requireAuth, strictLimiter, async (req, res) => 
       return res.status(400).json({ success: false, error: 'SELF_REFERRAL', message: "You can't refer yourself." });
     }
     const admin = require('firebase-admin');
+    const now = admin.firestore.FieldValue.serverTimestamp();
     await meRef.set({
       referredBy: code,
       referredByUid: referrer.id,
-      referredAt: admin.firestore.FieldValue.serverTimestamp(),
+      referredAt: now,
     }, { merge: true });
     await referrer.ref.set({
       referralCount: admin.firestore.FieldValue.increment(1),
+    }, { merge: true });
+    // Per-friend row for the Refer & Earn screen's breakdown list — created
+    // now (0 earned so far) so the friend shows up immediately, then
+    // totalCreditsEarned is incremented alongside each reward below.
+    await referrer.ref.collection('referrals').doc(uid).set({
+      referredUid: uid,
+      referredEmail: me.data()?.email || '',
+      joinedAt: now,
+      totalCreditsEarned: 0,
     }, { merge: true });
     return res.json({
       success: true,
@@ -218,6 +228,34 @@ router.post('/referral/redeem', requireAuth, strictLimiter, async (req, res) => 
     });
   } catch (e) {
     console.error('[referral/redeem]', e);
+    return res.status(500).json({ success: false, error: 'SERVER_ERROR', message: e.message });
+  }
+});
+
+/** GET /referral/my-referrals — list of friends this user referred, with total credits earned from each. */
+router.get('/referral/my-referrals', requireAuth, async (req, res) => {
+  const uid = req.uid;
+  const db = getDb();
+  if (!db) return res.status(503).json({ success: false, error: 'FIRESTORE_UNAVAILABLE' });
+  try {
+    const snap = await db
+      .collection('users')
+      .doc(uid)
+      .collection('referrals')
+      .orderBy('totalCreditsEarned', 'desc')
+      .get();
+    const items = snap.docs.map((d) => {
+      const data = d.data();
+      return {
+        referredUid: data.referredUid || d.id,
+        referredEmail: data.referredEmail || '',
+        totalCreditsEarned: typeof data.totalCreditsEarned === 'number' ? data.totalCreditsEarned : 0,
+        joinedAt: data.joinedAt && typeof data.joinedAt.toDate === 'function' ? data.joinedAt.toDate().toISOString() : null,
+      };
+    });
+    return res.json({ success: true, items });
+  } catch (e) {
+    console.error('[referral/my-referrals]', e);
     return res.status(500).json({ success: false, error: 'SERVER_ERROR', message: e.message });
   }
 });
@@ -319,6 +357,12 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
                     description: `Referral bonus — friend bought ${productId}`,
                     meta: { productId, referredUid: uid },
                   });
+                  // Per-friend running total for the Refer & Earn breakdown list.
+                  const admin = require('firebase-admin');
+                  const referralRowRef = firestore.collection('users').doc(referredByUid).collection('referrals').doc(uid);
+                  tx.set(referralRowRef, {
+                    totalCreditsEarned: admin.firestore.FieldValue.increment(bonus),
+                  }, { merge: true });
                 });
                 console.log(`[credits] referral purchase bonus +${bonus} to ${referredByUid} (from ${uid}'s ${productId})`);
               } catch (e) {
