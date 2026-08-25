@@ -270,9 +270,18 @@ router.get('/referral/my-referrals', requireAuth, async (req, res) => {
 router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) => {
   const uid = req.uid;
   const purchaseToken = (req.body?.purchaseToken || '').trim();
-  const productId = (req.body?.productId || 'premium_monthly').trim();
+  // No default: this used to fall back to 'premium_monthly', so a client that
+  // omitted productId silently claimed a premium subscription. The caller must
+  // name the product it actually bought.
+  const productId = (req.body?.productId || '').trim();
   if (!purchaseToken) {
     return res.status(400).json({ success: false, ok: false, error: 'MISSING_TOKEN', message: 'purchaseToken is required' });
+  }
+  if (!productId) {
+    return res.status(400).json({ success: false, ok: false, error: 'MISSING_PRODUCT_ID', message: 'productId is required' });
+  }
+  if (!PLAN_CREDITS[productId] && !PACK_CREDITS[productId]) {
+    return res.status(400).json({ success: false, ok: false, error: 'UNKNOWN_PRODUCT', message: 'Unknown productId' });
   }
   const firestore = getDb();
   if (!firestore) {

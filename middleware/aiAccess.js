@@ -153,9 +153,19 @@ async function loadUser(uid) {
   }
 }
 
-// Duration (days) for each product / base plan. Monthly = 30 (weekly intro is
-// still part of the monthly subscription, so 30 days is correct).
-const PRODUCT_DAYS = { premium_monthly: 30, premium_3month: 90, premium_6month: 180, premium_12month: 365 };
+// Products that grant unlimited-premium status, and for how many days.
+//
+// DELIBERATELY EMPTY. The only paid products are the credit plans and packs in
+// config/credits.js (instaflow_starter_299 / instaflow_pro_599 /
+// instaflow_business_999 / credits_79 / credits_149) — those grant CREDITS, not
+// premium status, and are handled in routes/aiAccess.js.
+//
+// This used to be { premium_monthly: 30, premium_3month: 90, premium_6month:
+// 180, premium_12month: 365 }, a second subscription family that granted
+// uncapped AI access alongside the credit system. Adding an entry back here
+// re-opens that path, so don't — unless a premium product is genuinely
+// relaunched in Play Console.
+const PRODUCT_DAYS = {};
 
 const PURCHASE_TOKENS = 'purchase_tokens';
 function tokenDocId(token) {
@@ -203,7 +213,11 @@ async function activatePremiumFromReceiptIfNeeded(ref, user, now) {
   const sub = user.subscription;
   if (!sub || typeof sub !== 'object' || !sub.productId) return false;
   const productId = String(sub.productId);
-  if (!productId.startsWith('premium')) return false;
+  // Explicit allowlist, not a `startsWith('premium')` prefix match. PRODUCT_DAYS
+  // is empty by design (see above), so no purchase grants premium any more —
+  // the credit plans/packs grant credits instead. An unknown product here is a
+  // no-op, not an accidental premium grant.
+  if (!Object.prototype.hasOwnProperty.call(PRODUCT_DAYS, productId)) return false;
 
   const currentExpiry = toDate(user.premiumExpiry || user.premium_expiry);
   const hasActivePremium = currentExpiry && currentExpiry > now;

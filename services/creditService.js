@@ -30,6 +30,7 @@ function recordTransactionInTx(tx, uid, { type, amount, balanceAfter, descriptio
 // Map an AI endpoint path to a credit-cost key.
 function endpointToCostKey(endpoint) {
   const p = String(endpoint || '').toLowerCase();
+  if (p.includes('daily-drop')) return 'daily_drop';
   if (p.includes('caption-from-media')) return 'caption_from_media';
   if (p.includes('image-captions')) return 'caption_from_media';
   if (p.includes('/image')) return 'image';
@@ -76,6 +77,7 @@ const COST_KEY_LABELS = {
   thumbnail: 'Thumbnail Maker',
   logo: 'Logo Maker',
   image_edit: 'Image Edit',
+  daily_drop: 'Daily Viral Drop',
 };
 
 function labelForEndpoint(endpoint) {

@@ -22,6 +22,10 @@ const CREDIT_COSTS = {
   thumbnail: 30,
   logo: 30,
   image_edit: 35,
+  // Daily Viral Drop — opt-in. Charged once per UTC day, on the day's first
+  // fetch; re-reading the same day's cached drop is free. Users with the
+  // toggle off are never generated for, so they cost nothing.
+  daily_drop: 5,
 };
 
 // Default cost if an endpoint isn't mapped (safe fallback).
