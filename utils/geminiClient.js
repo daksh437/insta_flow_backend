@@ -6,6 +6,69 @@ const FALLBACK_MODEL = 'gemini-3.1-pro-preview';
 const LEGACY_MODEL = 'gemini-pro';
 const envModel = process.env.GEMINI_MODEL;
 
+// Vision (image-in) model. Used to be hard-coded to gemini-3.1-pro-preview,
+// which is 4x the price of flash ($2/$12 per 1M vs $0.50/$3) on every
+// caption-from-media / image-caption / full-assist call — tools that only
+// charge 2-3 credits. Flash handles these fine; override via env if a
+// specific tool ever needs pro again.
+const VISION_MODEL = process.env.GEMINI_VISION_MODEL || PRIMARY_MODEL;
+
+// Gemini 3 models think by default at thinking_level "high", and thinking
+// tokens are billed at the OUTPUT rate ($3/1M on flash). For short generative
+// tasks (captions, hashtags, bios) that reasoning budget is pure cost with no
+// quality gain, so we default everything to "low" and let individual callers
+// opt up to "medium"/"high" where the task is genuinely structural.
+const DEFAULT_THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || 'low';
+const VALID_THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high']);
+
+// thinking_level only exists on the Gemini 3 family. Sending it to 2.5/1.0
+// would be an unknown-field 400.
+function supportsThinking(modelName) {
+  return /gemini-3/.test(String(modelName || ''));
+}
+
+function resolveThinkingLevel(modelName, opts) {
+  if (!supportsThinking(modelName)) return null;
+  if (opts && opts.thinkingLevel === false) return null; // explicit opt-out
+  const level = (opts && opts.thinkingLevel) || DEFAULT_THINKING_LEVEL;
+  return VALID_THINKING_LEVELS.has(level) ? level : 'low';
+}
+
+// Set to true if the API ever rejects thinking_level, so we stop sending it
+// instead of failing every subsequent request. Belt-and-braces: the field is
+// documented, but a preview model changing its schema must not take the app
+// down.
+let thinkingLevelRejected = false;
+
+// Per-1M-token USD rates, for the cost line in the usage log.
+const PRICING = {
+  'gemini-3-flash-preview': { in: 0.5, out: 3 },
+  'gemini-3.1-pro-preview': { in: 2, out: 12 },
+};
+
+/**
+ * Log what a call actually consumed. Until now nothing recorded token usage,
+ * so real per-tool cost was unmeasurable — this is what makes the credit
+ * prices in config/credits.js verifiable against reality. `thoughtsTokenCount`
+ * is the thinking spend, billed as output.
+ */
+function logUsage(modelName, usage, label) {
+  if (!usage) return;
+  const inTok = usage.promptTokenCount || 0;
+  const outTok = usage.candidatesTokenCount || 0;
+  const thoughtTok = usage.thoughtsTokenCount || 0;
+  const rate = PRICING[modelName];
+  let costStr = '';
+  if (rate) {
+    const usd = (inTok * rate.in + (outTok + thoughtTok) * rate.out) / 1e6;
+    costStr = ` cost=$${usd.toFixed(5)}`;
+  }
+  console.log(
+    `[GeminiUsage] model=${modelName}${label ? ` tool=${label}` : ''} ` +
+    `in=${inTok} out=${outTok} thoughts=${thoughtTok}${costStr}`
+  );
+}
+
 if (!apiKey || apiKey.trim() === '') {
   console.warn('[GeminiClient] ⚠️ GEMINI_API_KEY not set');
 }
@@ -152,32 +215,50 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
     throw new Error('Invalid contents: No valid content items found');
   }
   
-  const generationConfig = {
-    temperature: opts.temperature ?? 1.0,
-    maxOutputTokens: opts.maxTokens ?? 2048,
-    topP: opts.topP ?? 0.95,
-    topK: opts.topK ?? 50,
+  const buildConfig = (withThinking) => {
+    const generationConfig = {
+      temperature: opts.temperature ?? 1.0,
+      maxOutputTokens: opts.maxTokens ?? 2048,
+      topP: opts.topP ?? 0.95,
+      topK: opts.topK ?? 50,
+    };
+    const level = withThinking ? resolveThinkingLevel(actualModelName, opts) : null;
+    if (level) generationConfig.thinkingConfig = { thinkingLevel: level };
+    return generationConfig;
   };
-  
-  const requestBody = {
-    contents: validatedContents,
-    generationConfig: generationConfig,
-  };
-  
-  try {
-    const response = await axios.post(url, requestBody, {
+
+  const post = (withThinking) => axios.post(
+    url,
+    { contents: validatedContents, generationConfig: buildConfig(withThinking) },
+    {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
       timeout: timeoutMs,
       validateStatus: (status) => status < 500,
-    });
-    
+    }
+  );
+
+  try {
+    let response = await post(!thinkingLevelRejected);
+
+    // If this preview model doesn't accept thinkingLevel, drop it permanently
+    // and retry once rather than surfacing a 400 to the user.
+    if (
+      response.status === 400 &&
+      !thinkingLevelRejected &&
+      /thinking/i.test(response.data?.error?.message || '')
+    ) {
+      console.warn('[GeminiClient] thinkingLevel rejected by API — disabling it for this process');
+      thinkingLevelRejected = true;
+      response = await post(false);
+    }
+
     if (response.status >= 400) {
       const errorData = response.data?.error || {};
       const message = errorData.message || `HTTP ${response.status}`;
-      
+
       if (response.status === 404) {
         throw new Error(`GEMINI_MODEL_NOT_FOUND: Model "${actualModelName}" not found`);
       }
@@ -186,7 +267,9 @@ async function callGeminiViaRestAPI(modelName, contents, opts) {
       }
       throw new Error(`GEMINI_API_ERROR: ${message}`);
     }
-    
+
+    logUsage(actualModelName, response.data?.usageMetadata, opts.label);
+
     if (response.data?.candidates?.[0]?.content?.parts) {
       let fullText = '';
       for (const part of response.data.candidates[0].content.parts) {
@@ -277,7 +360,7 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
   }
   
   const baseUrl = 'https://generativelanguage.googleapis.com';
-  const modelName = 'gemini-3.1-pro-preview';
+  const modelName = opts.model || VISION_MODEL;
   const apiVersion = 'v1beta';
   const apiPath = `/${apiVersion}/models/${modelName}:generateContent`;
   const url = `${baseUrl}${apiPath}?key=${apiKey}`;
@@ -298,22 +381,52 @@ async function runGeminiWithImage(prompt, imageBase64, imageMimeType = 'image/jp
     ]
   }];
   
-  const requestBody = {
-    contents: contents,
-    generationConfig: {
+  const buildConfig = (withThinking) => {
+    const generationConfig = {
       temperature: opts.temperature ?? 0.7,
       maxOutputTokens: opts.maxTokens ?? 2048,
       topP: opts.topP ?? 0.95,
       topK: opts.topK ?? 40,
-    },
+    };
+    const level = withThinking ? resolveThinkingLevel(modelName, opts) : null;
+    if (level) generationConfig.thinkingConfig = { thinkingLevel: level };
+    return generationConfig;
   };
-  
-  try {
-    const response = await axios.post(url, requestBody, {
+
+  const post = (withThinking) => axios.post(
+    url,
+    { contents: contents, generationConfig: buildConfig(withThinking) },
+    {
       headers: { 'Content-Type': 'application/json' },
       timeout: opts.timeout ?? 60000,
-    });
-    
+      validateStatus: (status) => status < 500,
+    }
+  );
+
+  try {
+    let response = await post(!thinkingLevelRejected);
+
+    // Same guard as the text path: if thinkingConfig is rejected, drop it for
+    // the rest of the process and retry once instead of failing the request.
+    if (
+      response.status === 400 &&
+      !thinkingLevelRejected &&
+      /thinking/i.test(response.data?.error?.message || '')
+    ) {
+      console.warn('[GeminiClient] thinkingConfig rejected on vision — disabling it for this process');
+      thinkingLevelRejected = true;
+      response = await post(false);
+    }
+
+    if (response.status >= 400) {
+      const message = response.data?.error?.message || `HTTP ${response.status}`;
+      if (response.status === 404) throw new Error('GEMINI_MODEL_NOT_FOUND: Model not found');
+      if (response.status === 403) throw new Error('GEMINI_PERMISSION_DENIED: API key permission denied');
+      throw new Error(`GEMINI_API_ERROR: ${message}`);
+    }
+
+    logUsage(modelName, response.data?.usageMetadata, opts.label);
+
     if (response.data?.candidates?.[0]?.content?.parts) {
       let fullText = '';
       for (const part of response.data.candidates[0].content.parts) {
@@ -375,6 +488,8 @@ async function runGeminiImageGen(prompt, opts = {}) {
       headers: { 'Content-Type': 'application/json' },
       timeout: opts.timeout ?? 90000,
     });
+    logUsage(modelName, response.data?.usageMetadata, opts.label || 'image');
+
     const respParts = response.data?.candidates?.[0]?.content?.parts || [];
     for (const p of respParts) {
       const inline = p.inlineData || p.inline_data;

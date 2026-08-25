@@ -321,6 +321,8 @@ async function generateDailyDrop() {
         userPrompt: prompt,
         temperature: 0.7,
         maxTokens: 2048,
+        thinkingLevel: 'low',
+        label: 'daily-drop',
       });
       json = parseDropJson(raw);
       if (json) break;
@@ -414,6 +416,8 @@ async function generatePersonalizedDrop(uid) {
         userPrompt: prompt,
         temperature: 0.7,
         maxTokens: 2048,
+        thinkingLevel: 'low',
+        label: 'daily-drop-personalized',
       });
       json = parseDropJson(raw);
       if (json) break;

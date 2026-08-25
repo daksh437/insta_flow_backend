@@ -112,6 +112,8 @@ async function fullAssist(req, res) {
     const raw = await runGeminiWithImage(prompt, processed.base64, processed.mimeType, {
       timeout: GEMINI_TIMEOUT_MS,
       maxTokens: 2048,
+      thinkingLevel: 'low',
+      label: 'full-assist',
       temperature: 0.75,
     });
 
@@ -192,6 +194,8 @@ async function viralCaption(req, res) {
       const raw = await runGeminiWithImage(VIRAL_CAPTION_PROMPT(topic), processed.base64, processed.mimeType, {
         timeout: GEMINI_TIMEOUT_MS,
         maxTokens: 1024,
+        thinkingLevel: 'minimal',
+        label: 'viral-caption-vision',
         temperature: 0.85,
       });
       if (req.uid) {
@@ -200,7 +204,7 @@ async function viralCaption(req, res) {
       return res.json({ success: true, caption: String(raw).trim() });
     }
 
-    const raw = await runGemini(VIRAL_CAPTION_PROMPT(topic), { timeout: GEMINI_TIMEOUT_MS, maxTokens: 1024 });
+    const raw = await runGemini(VIRAL_CAPTION_PROMPT(topic), { timeout: GEMINI_TIMEOUT_MS, maxTokens: 1024, thinkingLevel: 'minimal', label: 'viral-caption' });
     if (req.uid) {
       recordAiUsage(req.uid, null, req.idempotencyKey, { endpoint: req._aiEndpoint || '/ai/caption' });
     }
@@ -227,6 +231,8 @@ async function postAnalyze(req, res) {
     const raw = await runGemini(POST_ANALYZE_PROMPT(String(caption), tagStr), {
       timeout: 60000,
       maxTokens: 1024,
+      thinkingLevel: 'low',
+      label: 'post-analyze',
       temperature: 0.6,
     });
     let parsed = parseJsonFromGeminiText(raw);

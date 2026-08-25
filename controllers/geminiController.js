@@ -638,6 +638,8 @@ async function buildAdvisor(feature, context, sampleOutput) {
       maxTokens: 900,
       temperature: 0.5,
       topP: 0.9,
+      thinkingLevel: 'low',
+      label: `advisor:${feature}`,
     });
     let advice = normalizeAdvice(tryParseJson(first, {}), feature, context);
     normalized = true;
@@ -648,6 +650,8 @@ async function buildAdvisor(feature, context, sampleOutput) {
         maxTokens: 900,
         temperature: 0.45,
         topP: 0.9,
+        thinkingLevel: 'low',
+        label: `advisor-retry:${feature}`,
       });
       advice = normalizeAdvice(tryParseJson(second, {}), feature, context);
       score = scoreAdvice(advice, context);
@@ -940,6 +944,8 @@ async function processCaptions(jobId, userInput, regenerate, requestId) {
         systemPrompt: systemPrompt,
         userPrompt: userPrompt,
         maxTokens: 2000,
+        thinkingLevel: 'low',
+        label: 'captions',
         temperature: 1.0,
         topP: 0.95,
         topK: 50,
@@ -1066,6 +1072,8 @@ async function processCalendar(jobId, topic, days, tone, goal) {
     console.log(`[processCalendar] Calling Gemini API (maxTokens=${maxTokens} for ${targetDays} days)...`);
     const output = await runGemini(uniquePrompt, {
       maxTokens,
+      thinkingLevel: 'medium',
+      label: 'calendar',
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
@@ -1235,7 +1243,9 @@ async function processStrategy(jobId, niche) {
     
     console.log('[processStrategy] Calling Gemini API with unique prompt...');
     const output = await runGemini(uniquePrompt, { 
-      maxTokens: 4096, 
+      maxTokens: 4096,
+      thinkingLevel: 'medium',
+      label: 'strategy',
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
@@ -1318,8 +1328,10 @@ async function processNicheAnalysis(jobId, topic) {
     const uniquePrompt = `${nicheAnalysisPrompt(topic)}\n\n🎲 UNIQUE_SEED: ${uniqueSeed}\n📅 TIMESTAMP: ${timestamp}\n🔄 REQUEST_ID: ${jobId}`;
     
     console.log('[processNicheAnalysis] Calling Gemini API with unique prompt...');
-    const output = await runGemini(uniquePrompt, { 
-      maxTokens: 4096, 
+    const output = await runGemini(uniquePrompt, {
+      maxTokens: 4096,
+      thinkingLevel: 'medium',
+      label: 'niche-analysis',
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
@@ -1404,7 +1416,9 @@ async function generateImageCaptions(req, res) {
     console.log('[generateImageCaptions] Calling Gemini Vision API...');
     const prompt = imageAnalysisPrompt();
     const output = await runGeminiWithImage(prompt, imageBase64, imageMimeType, { 
-      maxTokens: 2048, 
+      maxTokens: 2048,
+      thinkingLevel: 'low',
+      label: 'image-captions',
       temperature: 0.8 
     });
     console.log('[generateImageCaptions] Gemini response received, length:', output?.length || 0);
@@ -1464,7 +1478,7 @@ async function generateCaptionFromMedia(req, res) {
       imageCaptionPrompt(),
       processedImage.base64,
       processedImage.mimeType,
-      { maxTokens: 1200, temperature: 0.85, topP: 0.9 }
+      { maxTokens: 1200, temperature: 0.85, topP: 0.9, thinkingLevel: 'low', label: 'caption-from-media' }
     );
 
     console.log('[generateCaptionFromMedia] Vision output length:', (output || '').length);
@@ -1488,7 +1502,7 @@ async function generateCaptionFromMedia(req, res) {
       const fb = tryParseJson(
         await runGemini(
           captionGenerationPrompt(data.analysis.scene, data.analysis.setting, data.analysis.mood, data.analysis.time, data.analysis.occasion),
-          { maxTokens: 1024, temperature: 0.8 }
+          { maxTokens: 1024, temperature: 0.8, thinkingLevel: 'low', label: 'caption-from-media-retry' }
         ),
         { captions: [] }
       );
@@ -2305,6 +2319,8 @@ async function processReelsScript(jobId, userInput, extractedParams, regenerate,
     
     const output = await runGemini(prompt, {
       maxTokens: 2048,
+      thinkingLevel: 'medium',
+      label: 'reels-script',
       temperature: 0.9,
       topP: 1,
       topK: 40,
@@ -2849,7 +2865,9 @@ Return the ideas as a JSON array with this structure:
     
     console.log('[processPostIdeas] Calling Gemini API with unique prompt...');
     const output = await runGemini(prompt, { 
-      maxTokens: 2048, 
+      maxTokens: 2048,
+      thinkingLevel: 'low',
+      label: 'post-ideas',
       temperature: 0.9,
       topP: 0.95,
       topK: 50,
@@ -2967,8 +2985,10 @@ Return ONLY a JSON array of exactly ${count} strings:
 🔄 REQUEST_ID: ${jobId}`;
     
     console.log('[processHashtags] Calling Gemini API with unique prompt...');
-    const output = await runGemini(prompt, { 
-      maxTokens: 1024, 
+    const output = await runGemini(prompt, {
+      maxTokens: 1280,
+      thinkingLevel: 'minimal',
+      label: 'hashtags',
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
@@ -3102,8 +3122,10 @@ Return ONLY the bio text. No explanations, no labels.
 🔄 REQUEST_ID: ${jobId}`;
     
     console.log('[processBio] Calling Gemini API with unique prompt...');
-    const output = await runGemini(prompt, { 
-      maxTokens: 512, 
+    const output = await runGemini(prompt, {
+      maxTokens: 768,
+      thinkingLevel: 'minimal',
+      label: 'bio',
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
@@ -3222,8 +3244,10 @@ Return EXACTLY ${count} hooks, each on a separate line starting with "• ". No 
 🎲 RANDOM_CONTEXT: ${randomContext}`;
     
     console.log('[processHooks] Calling Gemini API with unique prompt...');
-    const output = await runGemini(prompt, { 
-      maxTokens: 512, 
+    const output = await runGemini(prompt, {
+      maxTokens: 768,
+      thinkingLevel: 'minimal',
+      label: 'hooks',
       temperature: 0.9,
       topP: 0.95,
       topK: 50,
@@ -3390,7 +3414,9 @@ Return ONLY the reply text. No explanations, no labels.${meta}`;
     
     console.log('[processCommentReply] Calling Gemini API with unique prompt...');
     const output = await runGemini(prompt, { 
-      maxTokens: 256, 
+      maxTokens: 512,
+      thinkingLevel: 'minimal',
+      label: 'comment-reply',
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
@@ -3507,8 +3533,10 @@ All should be CURRENT and RELEVANT to Instagram trends.
 🎲 RANDOM_CONTEXT: ${randomContext}`;
     
     console.log('[processTrends] Calling Gemini API with unique prompt...');
-    const output = await runGemini(prompt, { 
-      maxTokens: 1024, 
+    const output = await runGemini(prompt, {
+      maxTokens: 1024,
+      thinkingLevel: 'low',
+      label: 'trends',
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
@@ -3705,6 +3733,8 @@ Return ONLY valid JSON. No explanations. No markdown code blocks.
     console.log(`[processCarousel] Calling Gemini API (slides: ${slides}, maxTokens: ${carouselTokens})...`);
     const output = await runGemini(prompt, {
       maxTokens: carouselTokens,
+      thinkingLevel: 'medium',
+      label: 'carousel',
       temperature: 0.8,
       topP: 0.95,
       topK: 50,
@@ -4075,6 +4105,8 @@ ${langLine}`;
   try {
     const raw = await runGemini(prompt, {
       maxTokens: 1200,
+      thinkingLevel: 'low',
+      label: 'content-engine',
       temperature: 0.75,
       topP: 0.95,
     });
@@ -4150,7 +4182,7 @@ TEXT:
 Return ONLY the rewritten text.`;
 
   try {
-    const output = await runGemini(prompt, { maxTokens: 800, temperature: 0.8, topP: 0.95 });
+    const output = await runGemini(prompt, { maxTokens: 800, thinkingLevel: 'minimal', label: 'rewrite', temperature: 0.8, topP: 0.95 });
     const rewritten = String(output || '').trim().replace(/^["']|["']$/g, '');
     if (req.uid) recordAiUsage(req.uid, null, req.idempotencyKey, { endpoint: req._aiEndpoint || req.path || '/ai/rewrite' });
     return { rewritten: rewritten || text };
