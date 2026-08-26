@@ -36,6 +36,7 @@ function endpointToCostKey(endpoint) {
   if (p.includes('analyze-post')) return 'post_analyze';
   if (p.includes('full-assist')) return 'full_assist';
   if (p.includes('growth-coach')) return 'growth_coach';
+  if (p.includes('viral-score')) return 'viral_score';
   if (p.includes('hook')) return 'hooks';
   if (p.includes('caption-from-media')) return 'caption_from_media';
   if (p.includes('image-captions')) return 'caption_from_media';
@@ -84,6 +85,7 @@ const COST_KEY_LABELS = {
   image_edit: 'Image Edit',
   daily_drop: 'Daily Viral Drop',
   growth_coach: 'Growth Coach',
+  viral_score: 'Viral Score',
 };
 
 function labelForEndpoint(endpoint) {

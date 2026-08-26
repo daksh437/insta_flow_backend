@@ -33,6 +33,7 @@ const CREDIT_COSTS = {
   post_analyze: 2,
   full_assist: 2,
   growth_coach: 2,
+  viral_score: 2,
 };
 
 // Default cost if an endpoint isn't mapped (safe fallback).
