@@ -88,7 +88,7 @@ app.get('/health', (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-08-26-charge-before-ai-call' });
+  res.json({ success: true, build: '2026-08-26-real-trends-coach-score' });
 });
 
 // eslint-disable-next-line no-unused-vars

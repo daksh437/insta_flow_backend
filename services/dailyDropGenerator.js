@@ -439,6 +439,9 @@ async function generatePersonalizedDrop(uid) {
 
 module.exports = {
   generateDailyDrop,
+  // Shared with the Trending Hashtags tool so it works off the same live
+  // Google Trends feed instead of asking the model to invent trends.
+  fetchTrendKeywords,
   generatePersonalizedDrop,
   getTodayDrop,
   dateKey,

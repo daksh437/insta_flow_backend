@@ -31,7 +31,6 @@ const router = express.Router();
 
 // Job status polling (no AI access check)
 router.get('/job-status/:jobId', getJobStatus);
-router.get('/growth-coach', getGrowthCoach);
 
 // All POST AI endpoints require access check (sets req._aiEndpoint for logging)
 const aiAccessMiddleware = (req, res, next) => {
@@ -60,6 +59,11 @@ router.post('/trends', wrapAiHandler(generateTrends));
 router.post('/carousel', wrapAiHandler(generateCarousel));
 router.post('/content-engine', wrapAiHandler(contentEngine));
 router.post('/rewrite', wrapAiHandler(rewriteText));
+// Growth Coach was a GET, which the middleware below deliberately skips — fine
+// when it returned canned text, but it now makes a real Gemini call. As a POST
+// it goes through requireAiAccess like every other AI route, so it is
+// authenticated and metered instead of being a free, uncapped generation.
+router.post('/growth-coach', wrapAiHandler(getGrowthCoach));
 router.post('/viral-score', wrapAiHandler(viralScore));
 
 /** Instagram growth pack: full pipeline, viral caption, post insights */

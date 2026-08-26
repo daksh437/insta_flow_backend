@@ -5,7 +5,8 @@ const { randomUUID } = require('crypto');
 const { processImageForGemini } = require('../utils/imageProcessor');
 const { v4: uuidv4 } = require('uuid');
 const { createJob, updateJob, generateJobId, getJob } = require('../utils/jobStore');
-const { recordAiUsage } = require('../middleware/aiAccess');
+const { recordAiUsage, refundAiCharge } = require('../middleware/aiAccess');
+const { fetchTrendKeywords } = require('../services/dailyDropGenerator');
 const { loadCreatorContext, formatForPrompt } = require('../utils/creatorContext');
 
 /**
@@ -3513,107 +3514,148 @@ async function generateTrends(req, res) {
 /**
  * Background processing for trends generation
  */
+/**
+ * Trending Hashtags.
+ *
+ * This used to ask Gemini to "provide REAL, CURRENT trending topics" — which a
+ * language model cannot know. It invented them, and stale entries (an old IPL
+ * season, an event that had already finished) came out looking authoritative.
+ *
+ * It now runs off the same live Google Trends feed the Daily Viral Drop uses,
+ * and the model does translation rather than invention: take searches people
+ * are actually running in India today, judge which ones a creator in this niche
+ * can genuinely use, and turn those into angles a Reel can be built on. Anything
+ * the model cannot trace back to a real keyword is dropped before it ships, so
+ * "trending" means trending.
+ */
 async function processTrends(jobId, niche, category) {
   console.log(`[processTrends] Starting background processing for job: ${jobId}`);
-  
+
   try {
     updateJob(jobId, 'processing', {});
-    
-    const timestamp = Date.now();
-    const uniqueSeed = timestamp + Math.floor(Math.random() * 1000000);
-    const randomContext = `${Math.random().toString(36).substring(2, 15)}-${Math.floor(Math.random() * 10000)}`;
-    
-    const nicheContext = niche && niche !== 'All' ? `Focus on ${niche} niche specifically.` : 'Cover all popular niches and general trends.';
-    
-    const prompt = `Generate current trending content for Instagram in ${category === 'All' ? 'all categories' : category} niche.
 
-${nicheContext}
+    const trendKeywords = await fetchTrendKeywords();
+    console.log(`[processTrends] live trend keywords: ${trendKeywords.length}`);
 
-CRITICAL REQUIREMENTS:
-- Provide REAL, CURRENT trending topics (as of ${new Date().toLocaleDateString()})
-- Include trending hashtags that are actually being used right now
-- Suggest trending content ideas that creators are posting
-- Focus on what's viral and engaging on Instagram Reels and Posts
-- Include mix of general trends and niche-specific trends
-- Make it relevant to current events, seasons, and social media culture
+    const nicheLabel = niche && niche !== 'All'
+      ? niche
+      : (category && category !== 'All' ? category : null);
+    const nicheLine = nicheLabel
+      ? `The creator's niche is "${nicheLabel}".`
+      : 'The creator has not named a niche, so treat them as a general lifestyle creator.';
+    const today = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
 
-OUTPUT FORMAT (JSON):
+    const prompt = `You are an Instagram trend strategist working from live search data.
+
+REAL SEARCH TRENDS IN INDIA RIGHT NOW (${today}), pulled from Google Trends moments ago:
+${trendKeywords.map((t, idx) => `${idx + 1}. ${t}`).join('\n')}
+
+${nicheLine}
+
+Your job is TRANSLATION, not invention. Work only from the list above plus your
+evergreen knowledge of this niche.
+
+STEP 1 — Silently judge every trend: could a creator in this niche make a Reel
+about it without it feeling forced? Most will NOT fit. Sports scores, local
+weather and breaking news rarely do. Keep only the ones with a real angle — a
+weak connection is worse than no connection.
+
+STEP 2 — Build the output.
+
+RULES:
+- Every "trending" entry MUST trace back to a keyword in the list above, and
+  name that keyword in "from" so the creator can see why it is there.
+- If fewer than 4 trends genuinely fit, return fewer. Do NOT pad the list. An
+  honest short list is the entire point of this tool.
+- "evergreen" is your niche knowledge, NOT today's trends. Never blur the two.
+- Hashtags: specific and usable. No #love #instagood #viral #followforfollow, no
+  invented event tags, nothing for an event that has already ended.
+- Ideas must be shootable today on a phone. Name the hook and the format.
+
+Return STRICT JSON, no markdown:
 {
-  "hashtags": ["#trending1", "#trending2", "#trending3", ...],
-  "topics": ["Trending topic 1", "Trending topic 2", "Trending topic 3", ...],
-  "ideas": ["Content idea 1", "Content idea 2", "Content idea 3", ...]
-}
+  "trending": [
+    {
+      "topic": "the angle, in creator language",
+      "from": "the exact keyword from the list this came from",
+      "why": "one line on why it fits this niche right now",
+      "hashtags": ["#tag1", "#tag2", "#tag3"],
+      "idea": "a specific Reel concept including its hook"
+    }
+  ],
+  "evergreen": {
+    "topics": ["reliable angle 1", "reliable angle 2", "reliable angle 3"],
+    "hashtags": ["#niche1", "#niche2", "#niche3", "#niche4", "#niche5", "#niche6"]
+  }
+}`;
 
-Return EXACTLY 20 trending hashtags, 10 trending topics, and 10 content ideas.
-All should be CURRENT and RELEVANT to Instagram trends.
-
-🎲 UNIQUE_SEED: ${uniqueSeed}
-📅 TIMESTAMP: ${timestamp}
-🔄 REQUEST_ID: ${jobId}
-🎲 RANDOM_CONTEXT: ${randomContext}`;
-    
-    console.log('[processTrends] Calling Gemini API with unique prompt...');
+    console.log(`[processTrends] Calling Gemini with ${trendKeywords.length} live keywords...`);
     const output = await runGemini(prompt, {
-      maxTokens: 1024,
+      maxTokens: 2048,
       thinkingLevel: 'low',
       label: 'trends',
-      temperature: 0.8,
+      temperature: 0.7,
       topP: 0.95,
-      topK: 50,
-      randomSeed: uniqueSeed
     });
-    console.log('[processTrends] Gemini response received, length:', output?.length || 0);
-    
-    if (!output || output.trim().length === 0) {
-      throw new Error('Empty response from Gemini API');
+
+    const parsed = extractJsonFromText(output) || {};
+    const rawTrending = Array.isArray(parsed.trending) ? parsed.trending : [];
+    const evergreen = (parsed.evergreen && typeof parsed.evergreen === 'object') ? parsed.evergreen : {};
+
+    // Keep only entries that actually cite one of the real keywords. Without
+    // this the model can still slip an invented "trend" through, which is the
+    // exact failure this rewrite exists to stop.
+    const keys = trendKeywords.map((t) => String(t).toLowerCase());
+    const trending = rawTrending.filter((t) => {
+      const from = String((t && t.from) || '').toLowerCase().trim();
+      if (!from) return false;
+      return keys.some((k) => k === from || k.includes(from) || from.includes(k));
+    });
+    if (trending.length !== rawTrending.length) {
+      console.log(`[processTrends] dropped ${rawTrending.length - trending.length} ungrounded entries`);
     }
-    
-    // Try to parse JSON from output
-    let trendsData = null;
-    try {
-      // Extract JSON from markdown code blocks if present
-      const jsonMatch = output.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
-      if (jsonMatch) {
-        trendsData = JSON.parse(jsonMatch[1]);
-      } else {
-        // Try direct JSON parse
-        trendsData = JSON.parse(output.trim());
-      }
-    } catch (parseError) {
-      // If JSON parsing fails, extract from text
-      console.log('[processTrends] JSON parsing failed, extracting from text...');
-      trendsData = extractTrendsFromText(output);
-    }
-    
-    if (!trendsData || !trendsData.hashtags || !Array.isArray(trendsData.hashtags)) {
-      throw new Error('Invalid trends data from Gemini API');
-    }
-    
-    // Ensure all hashtags start with #
-    trendsData.hashtags = trendsData.hashtags.map(tag => 
-      tag.startsWith('#') ? tag : `#${tag.replace(/^#+/, '')}`
-    );
-    
-    // Ensure we have arrays
-    trendsData.topics = trendsData.topics || [];
-    trendsData.ideas = trendsData.ideas || [];
+
+    const withHash = (t) => {
+      const v = String(t || '').trim();
+      return v.startsWith('#') ? v : `#${v.replace(/^#+/, '')}`;
+    };
+
+    // Flat lists for the existing screen, which reads hashtags/topics/ideas.
+    const hashtags = [
+      ...trending.flatMap((t) => (Array.isArray(t.hashtags) ? t.hashtags : [])),
+      ...(Array.isArray(evergreen.hashtags) ? evergreen.hashtags : []),
+    ].filter(Boolean).map(withHash).slice(0, 20);
+    const topics = [
+      ...trending.map((t) => t.topic),
+      ...(Array.isArray(evergreen.topics) ? evergreen.topics : []),
+    ].filter(Boolean).slice(0, 10);
+    const ideas = trending.map((t) => t.idea).filter(Boolean).slice(0, 10);
+
+    const trendsData = {
+      hashtags,
+      topics,
+      ideas,
+      // Structured form so the UI can show what is genuinely trending (with the
+      // search keyword behind it) apart from evergreen niche picks.
+      trending,
+      evergreen,
+      source: 'google_trends_in',
+      fetchedAt: new Date().toISOString(),
+    };
+
     trendsData.ai_advice = await buildAdvisor(
-      'growth_suggestions',
-      { niche, category },
-      {
-        topics: trendsData.topics.slice(0, 5),
-        ideas: trendsData.ideas.slice(0, 5),
-      }
+      'trending',
+      { niche: nicheLabel || 'general', liveTrends: trendKeywords.slice(0, 8) },
+      trendsData
     );
-    
-    completeJobAndRecordUsage(jobId, 'completed', { data: trendsData });
-    console.log(`[processTrends] ✅ Job ${jobId} completed successfully - hashtags: ${trendsData.hashtags.length}, topics: ${trendsData.topics.length}, ideas: ${trendsData.ideas.length}`);
+
+    completeJobAndRecordUsage(jobId, 'done', { data: trendsData });
+    console.log(`[processTrends] done: ${trending.length} grounded trends, ${hashtags.length} hashtags`);
   } catch (error) {
-    console.error(`[processTrends] ❌ Error processing job ${jobId}:`, error.message);
-    console.error(`[processTrends] Error stack:`, error.stack);
-    completeJobAndRecordUsage(jobId, 'failed', { 
-      data: { hashtags: [], topics: [], ideas: [] }, 
-      error: error.message || 'AI generation failed' 
+    console.error(`[processTrends] Failed for job ${jobId}:`, error.message);
+    completeJobAndRecordUsage(jobId, 'failed', {
+      data: { hashtags: [], topics: [], ideas: [], trending: [], evergreen: {} },
+      error: error.message || 'Trend lookup failed',
     });
   }
 }
@@ -4049,15 +4091,82 @@ async function viralScore(req, res) {
       suggestions: Array.from(new Set(suggestions)).slice(0, 6),
     };
 
-    console.log('[viralScore] Request:', req.body);
-    console.log('[viralScore] Response:', response);
+    // The numbers above are deterministic on purpose — the same post always
+    // scores the same, and the creator can see exactly which rule moved it.
+    // What the rules CANNOT do is fix the writing: they only ever produced
+    // template advice like "Use a stronger hook with emotional trigger", which
+    // is true of every weak hook ever written and helps nobody.
+    //
+    // So the scoring stays local and free, and the AI is spent where it is
+    // actually worth credits: rewriting THIS creator's weakest line into
+    // something they can paste straight back in.
+    if (hook || caption || script.length) {
+      const weakest = [
+        { part: 'hook', score: hookScore },
+        { part: 'script', score: scriptScore },
+        { part: 'caption', score: captionScore },
+        { part: 'hashtags', score: hashtagScore },
+      ].sort((a, b) => a.score - b.score)[0];
+
+      const critiquePrompt = `You are an Instagram Reels editor reviewing one specific post.
+
+THE POST:
+Hook: ${hook || '(none written yet)'}
+Script beats: ${script.length ? script.map((l, i) => `${i + 1}. ${l}`).join(' | ') : '(none)'}
+Caption: ${caption || '(none)'}
+Hashtags (${hashtags.length}): ${hashtags.join(' ') || '(none)'}
+
+A rules-based scorer already rated it: hook ${hookScore}/100, script ${scriptScore}/100,
+caption ${captionScore}/100, hashtags ${hashtagScore}/100. Weakest part: ${weakest.part}.
+
+Do NOT restate the scores and do NOT give generic advice. Work on THEIR words.
+
+Rewrite the weakest part properly, and give two more fixes that name something
+specific in the text above. If a part is genuinely fine, say so instead of
+inventing a criticism.
+
+Return STRICT JSON, no markdown:
+{
+  "verdict": "one blunt sentence on whether this post will hold attention",
+  "weakest_part": "${weakest.part}",
+  "rewrite": "your improved version of that part, ready to paste",
+  "why_better": "one line on what the rewrite changes",
+  "fixes": ["two more fixes, each quoting or naming something from their post"]
+}`;
+
+      try {
+        const critiqueRaw = await runGemini(critiquePrompt, {
+          maxTokens: 800,
+          thinkingLevel: 'low',
+          label: 'viral-score',
+          temperature: 0.7,
+        });
+        const critique = extractJsonFromText(critiqueRaw);
+        if (critique && typeof critique === 'object') {
+          response.verdict = String(critique.verdict || '').trim();
+          response.weakest_part = weakest.part;
+          response.rewrite = String(critique.rewrite || '').trim();
+          response.why_better = String(critique.why_better || '').trim();
+          // AI fixes lead; the rule-based lines stay as a backstop underneath.
+          const aiFixes = Array.isArray(critique.fixes)
+            ? critique.fixes.map((x) => String(x).trim()).filter(Boolean)
+            : [];
+          response.suggestions = Array.from(new Set([...aiFixes, ...suggestions])).slice(0, 6);
+        }
+      } catch (e) {
+        // Scores are already computed and useful on their own, so a critique
+        // failure degrades the response rather than failing the request.
+        console.warn('[viralScore] critique failed, returning scores only:', e.message);
+      }
+    }
+
+    console.log('[viralScore] score=%d weakest=%s ai=%s', overall, response.weakest_part || '-', !!response.rewrite);
     return response;
   } catch (error) {
     console.error('[viralScore] Error:', error?.message || error);
     return _defaultViralScoreResponse();
   }
 }
-
 function _contentEngineFallback(niche = 'instagram growth') {
   const fallback = {
     idea: `3 practical ${niche} tactics creators can apply today`,
@@ -4213,37 +4322,92 @@ Return ONLY the rewritten text.`;
   }
 }
 
+/**
+ * Growth Coach.
+ *
+ * This used to return hardcoded strings — no AI call at all, and barely any
+ * variation between users ("Post 1 high-retention short reel", "Engage with 20
+ * relevant comments"). It sat in the AI menu looking like a personalised coach
+ * while giving everyone the same three bullets.
+ *
+ * It now reads the creator's actual Instagram — the same 25-post analysis the
+ * Daily Viral Drop uses — and coaches against what their own numbers say. If
+ * Instagram is not connected it still runs, but on the follower/post counts the
+ * caller supplies, and it says so rather than pretending to have looked.
+ *
+ * Note this is a POST route: as a GET it skipped the AI middleware entirely,
+ * which was fine for canned text but would be a free, unmetered Gemini call now.
+ */
 async function getGrowthCoach(req, res) {
-  const followers = Number(req.query.followers ?? req.body?.followers ?? 0) || 0;
-  const posts = Number(req.query.posts ?? req.body?.posts ?? 0) || 0;
-  const activity = String(req.query.activity ?? req.body?.activity ?? 'medium').toLowerCase();
+  const followers = Number(req.body?.followers ?? req.query?.followers ?? 0) || 0;
+  const posts = Number(req.body?.posts ?? req.query?.posts ?? 0) || 0;
+  const activity = String(req.body?.activity ?? req.query?.activity ?? 'medium').toLowerCase();
 
-  const dailyPlan = [
-    'Post 1 high-retention short reel with clear hook.',
-    'Engage with 20 relevant comments in your niche.',
-    'Publish 3 stories: poll, value tip, CTA.',
-  ];
-  if (activity === 'low') dailyPlan.unshift('Start with one simple post today to rebuild consistency.');
-  if (posts < 15) dailyPlan.push('Focus on consistency over perfection for next 7 days.');
+  // loadCreatorContext already handles "not connected" and expired tokens and
+  // never throws — null just means there is no real data to coach against.
+  const ctx = await loadCreatorContext(req.uid);
+  const accountBlock = ctx
+    ? formatForPrompt(ctx)
+    : `NO INSTAGRAM CONNECTION. All you know is what the app passed in:
+- Followers: ${followers}
+- Total posts: ${posts}
+- Self-reported posting activity: ${activity}`;
 
-  const tips = [
-    'Use one clear CTA in every caption.',
-    'Keep first 2 seconds visually dynamic.',
-    'Mix broad + niche hashtags for balanced reach.',
-  ];
-  if (followers < 1000) tips.push('Prioritize shareable educational content to grow discovery.');
+  const prompt = `You are a blunt, experienced Instagram growth coach. You have coached
+creators from zero to six figures and you do not deal in motivational filler.
 
-  const warnings = [];
-  if (activity === 'low') warnings.push('Low activity may reduce distribution over time.');
-  if (posts < 10) warnings.push('Too few posts for strong pattern learning; increase posting frequency.');
-  if (warnings.length === 0) warnings.push('No major risk detected — keep momentum and test new hooks.');
+${accountBlock}
 
+Write today's coaching. Ground EVERY point in the data above — quote their own
+numbers back at them. A stranger reading this should be able to tell it was
+written for this specific account and no other.
+
+HARD RULES:
+- Never say "post consistently", "engage with your audience", "use relevant
+  hashtags" or anything else that would be true for every account on Instagram.
+- Each action must name a number, a time, or a format taken from the data.
+- ${ctx
+    ? 'You can see their real numbers — use the exact best-hour and best-format values, and reference their actual themes.'
+    : 'You cannot see their posts. Say so plainly in "blind_spot" and make the actions the ones that make sense at this follower count. Do NOT invent details about their content.'}
+- Warnings should be real risks visible in the data, not generic caution.
+- Keep every line short enough to read on a phone.
+
+Return STRICT JSON, no markdown:
+{
+  "headline": "one sentence on where this account stands right now",
+  "daily_plan": ["3 actions for today, each specific and doable in under an hour"],
+  "tips": ["3 tips tied to what their data shows"],
+  "warnings": ["1-2 real risks visible in the data"],
+  "blind_spot": "what you could NOT see, and what connecting it would unlock",
+  "next_milestone": "the next concrete number to aim at and a realistic timeframe"
+}`;
+
+  const output = await runGemini(prompt, {
+    maxTokens: 1200,
+    thinkingLevel: 'low',
+    label: 'growth-coach',
+    temperature: 0.7,
+    topP: 0.9,
+  });
+
+  const parsed = extractJsonFromText(output);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('GROWTH_COACH_PARSE_FAILED');
+  }
+
+  const arr = (v, n) => (Array.isArray(v) ? v.filter(Boolean).slice(0, n) : []);
   const response = {
-    daily_plan: dailyPlan,
-    tips,
-    warnings,
+    headline: String(parsed.headline || '').trim(),
+    daily_plan: arr(parsed.daily_plan, 3),
+    tips: arr(parsed.tips, 3),
+    warnings: arr(parsed.warnings, 2),
+    blind_spot: String(parsed.blind_spot || '').trim(),
+    next_milestone: String(parsed.next_milestone || '').trim(),
+    // So the UI can show "based on your Instagram" vs "connect for real coaching".
+    personalized: !!ctx,
   };
-  console.log('[growthCoach] Response:', response);
+
+  console.log(`[growthCoach] uid=${req.uid} personalized=${response.personalized}`);
   return response;
 }
 
