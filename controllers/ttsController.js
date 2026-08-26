@@ -1,6 +1,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const creditService = require('../services/creditService');
+const { CREDITS_ENABLED } = require('../middleware/aiAccess');
 
 const DEFAULT_LANGUAGE = 'en-IN';
 
@@ -120,9 +121,11 @@ async function synthesizeTts(req, res) {
     .slice(0, 32);
   const idemKey = `tts:${todayKey()}:${textHash}`;
 
-  let charged;
+  // Follows the same master switch as the /ai/* routes — with credits off,
+  // voice playback is free rather than being the one thing that still bills.
+  let charged = true;
   try {
-    charged = await creditService.spend(uid, cost, idemKey, 'Voice Playback');
+    if (CREDITS_ENABLED) charged = await creditService.spend(uid, cost, idemKey, 'Voice Playback');
   } catch (e) {
     console.error('[TTS] credit spend failed:', e.message);
     return res.status(500).json({ error: 'TTS unavailable' });

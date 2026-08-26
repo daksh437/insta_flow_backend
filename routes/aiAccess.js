@@ -281,6 +281,20 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
     return res.status(400).json({ success: false, ok: false, error: 'MISSING_PRODUCT_ID', message: 'productId is required' });
   }
   if (!PLAN_CREDITS[productId] && !PACK_CREDITS[productId]) {
+    // A retired premium_* subscription is a REAL receipt, not a bad request:
+    // Google Play restores it to the client on every launch, so 400-ing it made
+    // the app throw on each start. It simply no longer grants anything — answer
+    // calmly with the plan the user actually has.
+    if (/^premium/.test(productId)) {
+      console.log(`[activate-premium] retired product ${productId} uid=${uid} — no premium granted`);
+      return res.json({
+        success: true,
+        ok: true,
+        planType: 'free',
+        retired: true,
+        message: 'This subscription is no longer offered. Credits are the current plan.',
+      });
+    }
     return res.status(400).json({ success: false, ok: false, error: 'UNKNOWN_PRODUCT', message: 'Unknown productId' });
   }
   const firestore = getDb();

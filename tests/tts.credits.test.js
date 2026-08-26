@@ -14,6 +14,10 @@ async function t(name, fn) {
 
 const state = { balance: 100, spends: {}, apiCalls: 0 };
 
+// Charging follows the CREDITS_ENABLED master switch, so the metering tests
+// have to run with it on — otherwise they assert against a disabled system.
+process.env.CREDITS_ENABLED = 'true';
+
 const stubs = {
   axios: {
     post: async () => { state.apiCalls++; return { data: { audioContent: 'BASE64' } }; },

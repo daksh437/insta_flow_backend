@@ -24,6 +24,7 @@ const {
 const { requireAuth } = require('../middleware/verifyAuth');
 const { getDb } = require('../utils/firestoreAdmin');
 const creditService = require('../services/creditService');
+const { CREDITS_ENABLED } = require('../middleware/aiAccess');
 const { CREDIT_COSTS } = require('../config/credits');
 
 const router = express.Router();
@@ -106,9 +107,12 @@ router.get('/today', requireAuth, async (req, res) => {
   // Charge BEFORE generating, atomically. The idempotency key is the UTC day,
   // so today's later fetches are free, and two concurrent first-fetches cannot
   // both slip through the way a read-then-write balance check would.
-  let charged;
+  // The opt-in toggle above always applies — it exists to stop the API spend,
+  // not to sell credits. Charging, though, follows the same master switch as
+  // every other AI route: with credits off, nothing is billed anywhere.
+  let charged = true;
   try {
-    charged = await creditService.spend(
+    if (CREDITS_ENABLED) charged = await creditService.spend(
       uid,
       DROP_COST,
       `daily-drop:${todayKey()}`,

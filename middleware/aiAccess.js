@@ -891,6 +891,10 @@ module.exports = {
   todayDateStr,
   getNextMidnightUtc,
   DAILY_CREDITS_FREE,
+  // Exported so the routes that charge directly (Daily Drop, TTS) honour the
+  // same master switch as the /ai/* routes, instead of billing while the
+  // credit system is off.
+  CREDITS_ENABLED,
   DEV_SKIP_LIMITS,
   EVENTS,
   AI_REQUEST_KEYS,

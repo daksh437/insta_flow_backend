@@ -24,6 +24,10 @@ const state = {
 };
 
 const origResolve = Module._resolveFilename;
+// Charging follows the CREDITS_ENABLED master switch, so the metering tests
+// have to run with it on — otherwise they assert against a disabled system.
+process.env.CREDITS_ENABLED = 'true';
+
 const stubs = {
   '../middleware/verifyAuth': { requireAuth: (req, _res, next) => { req.uid = 'u1'; next(); } },
   '../utils/firestoreAdmin': {
