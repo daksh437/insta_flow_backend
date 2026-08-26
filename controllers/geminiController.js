@@ -8,13 +8,22 @@ const { createJob, updateJob, generateJobId, getJob } = require('../utils/jobSto
 const { recordAiUsage } = require('../middleware/aiAccess');
 const { loadCreatorContext, formatForPrompt } = require('../utils/creatorContext');
 
-/** Only record AI usage when job completes successfully. Request lock: never double-count same job. */
+/**
+ * Record usage on success, refund on failure. Credits are now taken up front by
+ * requireAiAccess, so a job that fails has already been paid for — without the
+ * refund the user would lose credits for a generation they never received.
+ * Request lock: never double-count or double-refund the same job.
+ */
 function completeJobAndRecordUsage(jobId, status, data = {}) {
   const job = getJob(jobId);
   const isSuccess = (status === 'completed' || status === 'done') && !data.error;
-  if (job && job.uid && isSuccess && !job.usageRecorded) {
+  if (job && job.uid && !job.usageRecorded) {
     job.usageRecorded = true;
-    recordAiUsage(job.uid, jobId, null, { endpoint: job.type || undefined });
+    if (isSuccess) {
+      recordAiUsage(job.uid, jobId, null, { endpoint: job.type || undefined });
+    } else {
+      refundAiCharge(job.uid, job.idempotencyKey, job.type || undefined);
+    }
   }
   updateJob(jobId, status, data);
 }
@@ -1021,6 +1030,7 @@ async function generateCaptions(req, res) {
   
   // Create job with pending status
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'captions',
     uid: req.uid,
     userInput: userInput.trim(),
@@ -1173,7 +1183,7 @@ async function processCalendar(jobId, topic, days, tone, goal) {
   } catch (error) {
     console.error(`[processCalendar] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processCalendar] Error stack:`, error.stack);
-    updateJob(jobId, 'failed', { 
+    completeJobAndRecordUsage(jobId, 'failed', { 
       data: [], 
       error: error.message || 'AI generation failed' 
     });
@@ -1198,6 +1208,7 @@ async function generateCalendar(req, res) {
   
   // Create job with pending status
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'calendar',
     uid: req.uid,
     topic: topic.trim(),
@@ -1287,6 +1298,7 @@ async function generateStrategy(req, res) {
   
   // Create job with pending status
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'strategy',
     uid: req.uid,
     niche: niche.trim(),
@@ -1371,6 +1383,7 @@ async function analyzeNiche(req, res) {
   
   // Create job with pending status
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'analyze',
     uid: req.uid,
     topic: topic.trim(),
@@ -2348,7 +2361,7 @@ async function processReelsScript(jobId, userInput, extractedParams, regenerate,
   } catch (error) {
     console.error(`[processReelsScript] ❌ Job ${jobId} error:`, error.message);
     console.error(`[processReelsScript] Error stack:`, error.stack);
-    updateJob(jobId, 'failed', { 
+    completeJobAndRecordUsage(jobId, 'failed', { 
       data: null,
       error: error.message || 'AI generation failed - Gemini API error'
     });
@@ -2596,6 +2609,7 @@ async function generateReelsScript(req, res) {
   
   // Create job with queued status in jobStore
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'reels-script',
     uid: req.uid,
     status: 'queued',
@@ -2769,6 +2783,7 @@ async function generatePostIdeas(req, res) {
   const jobId = generateJobId('POST_IDEAS');
 
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'post-ideas',
     uid: req.uid,
     topic: topic.trim(),
@@ -2893,7 +2908,7 @@ Return the ideas as a JSON array with this structure:
   } catch (error) {
     console.error(`[processPostIdeas] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processPostIdeas] Error stack:`, error.stack);
-    updateJob(jobId, 'failed', { 
+    completeJobAndRecordUsage(jobId, 'failed', { 
       data: [], 
       error: error.message || 'AI generation failed' 
     });
@@ -2915,6 +2930,7 @@ async function generateHashtags(req, res) {
   const jobId = generateJobId('HASHTAGS');
   
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'hashtags',
     uid: req.uid,
     topic: topic || '',
@@ -3029,7 +3045,7 @@ Return ONLY a JSON array of exactly ${count} strings:
   } catch (error) {
     console.error(`[processHashtags] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processHashtags] Error stack:`, error.stack);
-    updateJob(jobId, 'failed', { 
+    completeJobAndRecordUsage(jobId, 'failed', { 
       data: [], 
       error: error.message || 'AI generation failed' 
     });
@@ -3051,6 +3067,7 @@ async function generateBio(req, res) {
   const jobId = generateJobId('BIO');
   
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'bio',
     uid: req.uid,
     description: description.trim(),
@@ -3154,7 +3171,7 @@ Return ONLY the bio text. No explanations, no labels.
   } catch (error) {
     console.error(`[processBio] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processBio] Error stack:`, error.stack);
-    updateJob(jobId, 'failed', { 
+    completeJobAndRecordUsage(jobId, 'failed', { 
       data: null, 
       error: error.message || 'AI generation failed' 
     });
@@ -3176,6 +3193,7 @@ async function generateHooks(req, res) {
   const jobId = generateJobId('HOOK');
   
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'hooks',
     uid: req.uid,
     topic: topic.trim(),
@@ -3296,7 +3314,7 @@ Return EXACTLY ${count} hooks, each on a separate line starting with "• ". No 
   } catch (error) {
     console.error(`[processHooks] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processHooks] Error stack:`, error.stack);
-    updateJob(jobId, 'failed', { 
+    completeJobAndRecordUsage(jobId, 'failed', { 
       data: [], 
       error: error.message || 'AI generation failed' 
     });
@@ -3319,6 +3337,7 @@ async function generateCommentReply(req, res) {
   const jobId = generateJobId('REPLY');
 
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'comment-reply',
     uid: req.uid,
     comment: comment.trim(),
@@ -3446,7 +3465,7 @@ Return ONLY the reply text. No explanations, no labels.${meta}`;
   } catch (error) {
     console.error(`[processCommentReply] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processCommentReply] Error stack:`, error.stack);
-    updateJob(jobId, 'failed', { 
+    completeJobAndRecordUsage(jobId, 'failed', { 
       data: null, 
       error: error.message || 'AI generation failed' 
     });
@@ -3464,6 +3483,7 @@ async function generateTrends(req, res) {
   const jobId = generateJobId('TREND');
   
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'trends',
     uid: req.uid,
     niche: niche || category,
@@ -3591,7 +3611,7 @@ All should be CURRENT and RELEVANT to Instagram trends.
   } catch (error) {
     console.error(`[processTrends] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processTrends] Error stack:`, error.stack);
-    updateJob(jobId, 'failed', { 
+    completeJobAndRecordUsage(jobId, 'failed', { 
       data: { hashtags: [], topics: [], ideas: [] }, 
       error: error.message || 'AI generation failed' 
     });
@@ -3647,6 +3667,7 @@ async function generateCarousel(req, res) {
   const jobId = generateJobId('CAROUSEL');
   
   createJob(jobId, {
+    idempotencyKey: req.idempotencyKey,
     type: 'carousel',
     uid: req.uid,
     topic: topic.trim(),
@@ -3807,7 +3828,7 @@ Return ONLY valid JSON. No explanations. No markdown code blocks.
   } catch (error) {
     console.error(`[processCarousel] ❌ Error processing job ${jobId}:`, error.message);
     console.error(`[processCarousel] Error stack:`, error.stack);
-    updateJob(jobId, 'failed', { 
+    completeJobAndRecordUsage(jobId, 'failed', { 
       data: null, 
       error: error.message || 'AI generation failed' 
     });

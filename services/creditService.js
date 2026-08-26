@@ -31,6 +31,11 @@ function recordTransactionInTx(tx, uid, { type, amount, balanceAfter, descriptio
 function endpointToCostKey(endpoint) {
   const p = String(endpoint || '').toLowerCase();
   if (p.includes('daily-drop')) return 'daily_drop';
+  // Specific routes first — 'analyze-post' would otherwise be caught by the
+  // 'analyze' check below and priced as a full niche analysis.
+  if (p.includes('analyze-post')) return 'post_analyze';
+  if (p.includes('full-assist')) return 'full_assist';
+  if (p.includes('hook')) return 'hooks';
   if (p.includes('caption-from-media')) return 'caption_from_media';
   if (p.includes('image-captions')) return 'caption_from_media';
   if (p.includes('/image')) return 'image';
@@ -46,7 +51,6 @@ function endpointToCostKey(endpoint) {
   if (p.includes('rewrite')) return 'rewrite';
   if (p.includes('trend')) return 'trending';
   if (p.includes('content-engine')) return 'content_engine';
-  if (p.includes('hook')) return 'caption';
   if (p.includes('ideas') || p.includes('post')) return 'post_ideas';
   return null; // → DEFAULT_COST
 }
@@ -247,6 +251,42 @@ async function spend(uid, cost, idemKey, description) {
   });
 }
 
+// Reverse a spend made with `idemKey`. Credits are now taken BEFORE the AI
+// call (so concurrent requests can't all pass one balance check), which means
+// a generation that fails has already been paid for. This puts the user back
+// exactly where they were: balance restored and the idempotency key cleared,
+// so a retry is charged fresh rather than silently running free.
+// Returns true if a refund happened, false if there was nothing to reverse.
+async function refund(uid, idemKey, description) {
+  const db = getDb();
+  if (!db || !uid || !idemKey) return false;
+  const ref = db.collection('users').doc(uid);
+  const keyRef = db.collection('users').doc(uid).collection('credit_spends').doc(String(idemKey));
+  try {
+    return await db.runTransaction(async (tx) => {
+      const keySnap = await tx.get(keyRef);
+      if (!keySnap.exists) return false; // never charged, or already refunded
+      const cost = keySnap.data().cost;
+      if (!(cost > 0)) { tx.delete(keyRef); return false; }
+      const snap = await tx.get(ref);
+      const current = snap.exists && typeof snap.data().credits === 'number' ? snap.data().credits : 0;
+      const balanceAfter = current + cost;
+      tx.set(ref, { credits: balanceAfter, creditsUpdatedAt: new Date() }, { merge: true });
+      tx.delete(keyRef);
+      recordTransactionInTx(tx, uid, {
+        type: 'refund',
+        amount: cost,
+        balanceAfter,
+        description: description ? `Refund — ${description}` : 'Refund — generation failed',
+      });
+      return true;
+    });
+  } catch (e) {
+    console.warn('[credits] refund failed:', uid, e.message);
+    return false;
+  }
+}
+
 // Paginated credit history for the Credit History screen (bank-statement
 // style) — newest first. Pass `beforeId` (a transaction doc id from a
 // previous page) to fetch older entries.
@@ -274,6 +314,7 @@ async function getHistory(uid, { limit = 30, beforeId } = {}) {
 
 module.exports = {
   getBalance,
+  refund,
   ensureSignupBonus,
   grantDailyLoginIfDue,
   claimInstagramFollow,

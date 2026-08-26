@@ -26,6 +26,12 @@ const CREDIT_COSTS = {
   // fetch; re-reading the same day's cached drop is free. Users with the
   // toggle off are never generated for, so they cost nothing.
   daily_drop: 5,
+  // Explicit entries for endpoints that used to fall through to a substring
+  // match or DEFAULT_COST. /ai/analyze-post was the costly one: 'analyze'
+  // matched niche_analysis, charging 5 credits for a ~Rs0.31 call.
+  hooks: 1,
+  post_analyze: 2,
+  full_assist: 2,
 };
 
 // Default cost if an endpoint isn't mapped (safe fallback).

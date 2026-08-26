@@ -496,10 +496,28 @@ async function requireAiAccess(req, res, next) {
   // user genuinely has 0 credits and is correctly blocked below until they
   // claim something; AI was never "free" for them, it just looked that way
   // before because this used to silently grant credits on first use.
-  const balance = await creditService.getBalance(uidTrim);
-  logAiAccess('info', { event: 'AI_ACCESS_MIDDLEWARE_HIT', uid: uidTrim, endpoint: endpointFinal, cost, balance });
+  // Charge HERE, before the handler runs, and atomically.
+  //
+  // This used to be a read-only balance check, with the deduction happening in
+  // recordAiUsage after the AI call — and recordAiUsage ignored whether the
+  // deduction actually succeeded. Any screen that fires parallel requests
+  // (Rewrite Tool sends 5 tones at once, Bio Maker 3 styles) had every request
+  // pass the same stale balance read, so a user with 1 credit received all 5
+  // generations while being charged 1 and we paid for 5 API calls.
+  //
+  // spend() is a transaction, so exactly as many requests succeed as the
+  // balance allows. The spend is idempotent on the request's idempotency key,
+  // so a genuine retry of the same request is not charged twice; a failed
+  // generation is refunded (see refundAiCharge).
+  const charged = await creditService.spend(
+    uidTrim,
+    cost,
+    req.idempotencyKey,
+    creditService.labelForEndpoint(endpointFinal)
+  );
 
-  if (balance < cost) {
+  if (!charged) {
+    const balance = await creditService.getBalance(uidTrim);
     console.warn('AI_CREDIT_BLOCK', uidTrim, 'balance', balance, 'cost', cost);
     logAiAccess('warn', {
       event: EVENTS.AI_BLOCKED_LIMIT,
@@ -519,9 +537,30 @@ async function requireAiAccess(req, res, next) {
     });
   }
 
-  req.aiAccess = { allowed: true, balance, cost };
+  logAiAccess('info', { event: 'AI_ACCESS_MIDDLEWARE_HIT', uid: uidTrim, endpoint: endpointFinal, cost, charged: true });
+
+  req.aiAccess = { allowed: true, cost };
   req.aiAccessAllowed = true;
+  req._creditCharged = true;
   next();
+}
+
+/**
+ * Put back credits taken up front when the generation did not produce a usable
+ * result. Clears the idempotency key too, so the user's retry is charged fresh
+ * instead of running free. Safe to call more than once — the second call finds
+ * nothing to reverse.
+ */
+async function refundAiCharge(uid, idempotencyKey, endpoint) {
+  if (!CREDITS_ENABLED || !uid || !idempotencyKey) return false;
+  try {
+    const done = await creditService.refund(uid, idempotencyKey, creditService.labelForEndpoint(endpoint || ''));
+    if (done) console.log(`[credits] refunded uid=${uid} endpoint=${endpoint || '?'}`);
+    return done;
+  } catch (e) {
+    console.warn('[credits] refund failed:', e.message);
+    return false;
+  }
 }
 
 /**
@@ -556,6 +595,11 @@ function wrapAiHandler(handler) {
         return value;
       })
       .catch((error) => {
+        // The user was charged before the handler ran, and the handler blew up,
+        // so give the credits back. The response below is a canned fallback,
+        // not a real generation — charging for it would be charging for
+        // nothing.
+        refundAiCharge(req.uid, req.idempotencyKey, req._aiEndpoint || req.path);
         if (res.headersSent) return;
         console.error('[AI Controller Error]', req._aiEndpoint || req.path, error?.message || error);
         const fallback = buildAiFallback(req._aiEndpoint || req.path, req.body || {});
@@ -593,16 +637,10 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
   const now = Date.now();
   const endpoint = options.endpoint || null;
 
-  // Deduct credits for this AI action — idempotent by key (retries/jobs won't
-  // double-charge). Only when the credit system is switched on.
-  if (CREDITS_ENABLED) {
-    try {
-      const cost = creditService.costForPath(endpoint || '');
-      await creditService.spend(uid, cost, idempotencyKey || requestId, creditService.labelForEndpoint(endpoint || ''));
-    } catch (e) {
-      console.warn('[credits] spend failed:', e.message);
-    }
-  }
+  // Credits are no longer deducted here. requireAiAccess charges up front, so
+  // by the time this runs the user has already paid — spending again would
+  // either double-charge or (via the idempotency key) be a silent no-op that
+  // hides failures. This function now only records usage for the admin panel.
 
   let usageLog = null;
   // Captured inside the transaction so we can log every AI use (all plans) to
@@ -842,6 +880,7 @@ module.exports = {
   requireAiAccess,
   wrapAiHandler,
   recordAiUsage,
+  refundAiCharge,
   logAiAccess,
   getIdempotencyKey,
   cleanupIdempotencyKeys,
