@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node app.js",
     "dev": "node app.js",
-    "test": "node tests/aiAccess.middleware.test.js && node tests/oauthState.test.js && node tests/scheduler.claim.test.js && node tests/corsConfig.test.js && node tests/response.contract.test.js && node tests/dailyDrop.credits.test.js && node tests/premiumProducts.test.js && node tests/tts.credits.test.js && node tests/creditRace.test.js && node tests/trendsGrounding.test.js",
+    "test": "node tests/aiAccess.middleware.test.js && node tests/oauthState.test.js && node tests/scheduler.claim.test.js && node tests/corsConfig.test.js && node tests/response.contract.test.js && node tests/dailyDrop.credits.test.js && node tests/premiumProducts.test.js && node tests/tts.credits.test.js && node tests/creditRace.test.js && node tests/trendsGrounding.test.js && node tests/accountDelete.test.js",
     "production": "NODE_ENV=production node app.js",
     "audit:ai-routes": "node scripts/audit-ai-routes.js",
     "audit:premium-fields": "node scripts/audit-user-premium-fields.js",

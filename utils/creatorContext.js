@@ -22,7 +22,7 @@ async function loadCreatorContext(uid) {
         ? instagram.token_expires_at.toDate()
         : null;
     if (expiresAt && expiresAt.getTime() <= Date.now()) return null;
-    return await instagramService.buildCreatorContext(token);
+    return await instagramService.buildCreatorContext(token, user.utcOffsetMinutes);
   } catch (e) {
     console.warn('[creatorContext] load failed:', e.message);
     return null;
@@ -38,8 +38,10 @@ function formatForPrompt(ctx) {
   const lines = ['REAL ACCOUNT DATA (personalize to this creator — do NOT invent stats):'];
   if (ctx.followers) lines.push(`- Followers: ${ctx.followers}`);
   if (ctx.bestFormat) lines.push(`- Best-performing format for them: ${ctx.bestFormat}`);
-  if (Array.isArray(ctx.bestHoursIST) && ctx.bestHoursIST.length) {
-    lines.push(`- Audience most active (IST): ${ctx.bestHoursIST.map((h) => `${h}:00`).join(', ')}`);
+  if (Array.isArray(ctx.bestHoursLocal) && ctx.bestHoursLocal.length) {
+    // Their local clock, not IST — the model must not tell a London creator to
+    // post at an Indian hour.
+    lines.push(`- Audience most active (their local time): ${ctx.bestHoursLocal.map((h) => `${h}:00`).join(', ')}`);
   }
   if (Array.isArray(ctx.topHashtags) && ctx.topHashtags.length) {
     lines.push(`- Hashtags that worked in their top posts: ${ctx.topHashtags.join(' ')}`);

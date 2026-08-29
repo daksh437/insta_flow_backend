@@ -14,8 +14,25 @@ const { runGemini } = require('../utils/geminiClient');
 const { getDb } = require('../utils/firestoreAdmin');
 const { buildCreatorContext } = require('./instagram_service');
 
-// India trends — the app's audience is India-heavy, so US trends were off.
-const TRENDS_RSS_URL = 'https://trends.google.com/trending/rss?geo=IN';
+// Google Trends is per-country. This used to be pinned to geo=IN, which meant a
+// creator in the US or UK was handed Indian search trends — useless to them, and
+// silently so. The country now comes from the user (see UserLocaleService);
+// DEFAULT_TRENDS_GEO only applies when we genuinely don't know.
+const DEFAULT_TRENDS_GEO = process.env.DEFAULT_TRENDS_GEO || 'IN';
+const trendsRssUrl = (geo) => `https://trends.google.com/trending/rss?geo=${geo}`;
+
+// Google Trends supports these; anything else falls back rather than 404ing.
+const SUPPORTED_TRENDS_GEOS = new Set([
+  'AR','AT','AU','BE','BR','CA','CH','CL','CO','CZ','DE','DK','EG','ES','FI','FR',
+  'GB','GR','HK','HU','ID','IE','IL','IN','IT','JP','KE','KR','MX','MY','NG','NL',
+  'NO','NZ','PH','PL','PT','RO','RU','SA','SE','SG','TH','TR','TW','UA','US','VN','ZA',
+]);
+
+/** Normalise a user's country to a geo Google Trends will actually serve. */
+function resolveTrendsGeo(countryCode) {
+  const cc = String(countryCode || '').trim().toUpperCase();
+  return SUPPORTED_TRENDS_GEOS.has(cc) ? cc : DEFAULT_TRENDS_GEO;
+}
 const FALLBACK_TRENDS = [
   'day in my life', 'get ready with me', 'morning routine', 'tips and tricks',
   'before and after', 'trending sound', 'challenge', 'relatable', 'storytime', 'tutorial',
@@ -116,9 +133,10 @@ function setStored(key, data) {
 }
 
 /** Fetch trend keywords from Google Trends RSS; fallback to static list. */
-async function fetchTrendKeywords() {
+async function fetchTrendKeywords(countryCode) {
+  const geo = resolveTrendsGeo(countryCode);
   try {
-    const res = await axios.get(TRENDS_RSS_URL, {
+    const res = await axios.get(trendsRssUrl(geo), {
       timeout: 10000,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; InstaFlow/1.0)' },
       validateStatus: () => true,
@@ -134,7 +152,7 @@ async function fetchTrendKeywords() {
     }
     if (titles.length > 0) return titles.slice(0, 15);
   } catch (err) {
-    console.warn('[DailyDrop] fetchTrendKeywords failed:', err.message);
+    console.warn(`[DailyDrop] fetchTrendKeywords(${geo}) failed:`, err.message);
   }
   return FALLBACK_TRENDS;
 }
@@ -168,15 +186,20 @@ Avoid repeating yesterday structure.`;
  * Personalized prompt: blend today's trend with THIS creator's proven themes,
  * hashtags, best format and audience-active hours (from buildCreatorContext).
  */
-function buildPersonalizedPrompt(trendList, ctx) {
+function buildPersonalizedPrompt(trendList, ctx, countryCode, utcOffsetMinutes) {
   const list = (trendList && trendList.length) ? trendList : FALLBACK_TRENDS;
   const trendListStr = list.slice(0, 10).join(', ');
   const themes = (ctx.topThemes || []).slice(0, 4).map((t) => `- ${t}`).join('\n')
     || '- (not enough posts yet — infer from niche)';
   const tags = (ctx.topHashtags || []).slice(0, 10).join(' ') || '(none yet)';
-  const hoursStr = (ctx.bestHoursIST || []).length
-    ? ctx.bestHoursIST.map((h) => `${h}:00`).join(', ') + ' IST'
-    : 'evening (7-9 PM IST)';
+  // The creator's own clock. Saying "IST" to a creator in Toronto was worse
+  // than saying nothing — they would have posted at the wrong hour.
+  const hoursStr = (ctx.bestHoursLocal || []).length
+    ? ctx.bestHoursLocal.map((h) => `${h}:00`).join(', ') + ' their local time'
+    : 'evening (7-9 PM their local time)';
+  const regionLine = countryCode
+    ? `Today's trending searches in their country (${countryCode})`
+    : "Today's trending searches where they are";
   return `You are a viral Instagram reel strategist creating a plan for ONE specific creator.
 
 Creator profile:
@@ -188,7 +211,7 @@ Creator profile:
 - Their best recent content themes:
 ${themes}
 
-Today's trending keywords (India): ${trendListStr}
+${regionLine}: ${trendListStr}
 
 Blend the creator's proven style with a fresh trend. Make it feel MADE FOR THEM, not generic.
 
@@ -389,10 +412,14 @@ async function generatePersonalizedDrop(uid) {
   } catch (_) {}
 
   let token = null;
+  let countryCode = null;
+  let utcOffsetMinutes = null;
   try {
     const userSnap = await db.collection('users').doc(uid).get();
     const data = userSnap.data() || {};
     token = String((data.instagram && data.instagram.access_token) || '').trim();
+    countryCode = data.countryCode || null;
+    utcOffsetMinutes = typeof data.utcOffsetMinutes === 'number' ? data.utcOffsetMinutes : null;
   } catch (_) {}
   if (!token) return null; // not connected → global drop
 
@@ -404,8 +431,8 @@ async function generatePersonalizedDrop(uid) {
     return null;
   }
 
-  const trends = await fetchTrendKeywords();
-  const prompt = buildPersonalizedPrompt(trends, ctx);
+  const trends = await fetchTrendKeywords(countryCode);
+  const prompt = buildPersonalizedPrompt(trends, ctx, countryCode, utcOffsetMinutes);
   const systemPrompt = 'Return only valid JSON. No markdown, no code fences, no extra text.';
 
   let json = null;
@@ -442,6 +469,7 @@ module.exports = {
   // Shared with the Trending Hashtags tool so it works off the same live
   // Google Trends feed instead of asking the model to invent trends.
   fetchTrendKeywords,
+  resolveTrendsGeo,
   generatePersonalizedDrop,
   getTodayDrop,
   dateKey,

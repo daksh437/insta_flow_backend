@@ -15,6 +15,7 @@ const retentionRoutes = require('./routes/retention');
 const instagramRoutes = require('./routes/instagram');
 const schedulerRoutes = require('./routes/scheduler');
 const rewardsRoutes = require('./routes/rewards');
+const accountRoutes = require('./routes/account');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const { processPendingScheduledPosts } = require('./services/scheduler_service');
 const { sendPushToAllUsers } = require('./services/pushService');
@@ -80,6 +81,7 @@ app.use('/admin', adminNotificationsRoutes);
 app.use('/retention', retentionRoutes);
 app.use('/scheduler', schedulerRoutes);
 app.use('/rewards', rewardsRoutes);
+app.use('/account', accountRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', success: true, message: 'OK' });
@@ -88,7 +90,7 @@ app.get('/health', (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-08-26-retired-product-credit-flag' });
+  res.json({ success: true, build: '2026-08-29-account-delete-cascade' });
 });
 
 // eslint-disable-next-line no-unused-vars

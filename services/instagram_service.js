@@ -199,7 +199,11 @@ async function getRecentMedia(accessToken, limit = 25) {
  * AI generation in what already works for THIS creator. Network-safe: if media
  * can't be read, returns profile-only context (counts may be 0).
  */
-async function buildCreatorContext(accessToken) {
+async function buildCreatorContext(accessToken, utcOffsetMinutes) {
+  // Minutes east of UTC for THIS creator. Defaults to IST only because that is
+  // where the app started; a creator in New York gets -300 and their "best
+  // hours" are finally their own clock rather than India's.
+  const tzOffset = Number.isFinite(utcOffsetMinutes) ? Number(utcOffsetMinutes) : 330;
   const token = sanitizeToken(accessToken);
   if (!token) throw toApiError('Missing Instagram access token', 401, 'missing_token');
   const profile = await getUserProfile(token);
@@ -228,17 +232,18 @@ async function buildCreatorContext(accessToken) {
   }
   const bestFormat = Object.keys(formatEng).sort((a, b) => formatEng[b] - formatEng[a])[0] || null;
 
-  // Audience-active hours (IST = UTC+5:30) inferred from top posts' publish times.
+  // Audience-active hours in the creator's own timezone, inferred from when
+  // their best posts went out.
   const hourCount = {};
   for (const m of top) {
     if (!m.timestamp) continue;
     const d = new Date(m.timestamp);
     if (Number.isNaN(d.getTime())) continue;
-    const istMinutes = (d.getUTCHours() * 60 + d.getUTCMinutes() + 330) % 1440;
-    const istHour = Math.floor(istMinutes / 60);
-    hourCount[istHour] = (hourCount[istHour] || 0) + 1;
+    const localMinutes = ((d.getUTCHours() * 60 + d.getUTCMinutes() + tzOffset) % 1440 + 1440) % 1440;
+    const localHour = Math.floor(localMinutes / 60);
+    hourCount[localHour] = (hourCount[localHour] || 0) + 1;
   }
-  const bestHoursIST = Object.keys(hourCount)
+  const bestHoursLocal = Object.keys(hourCount)
     .sort((a, b) => hourCount[b] - hourCount[a])
     .slice(0, 3)
     .map(Number);
@@ -268,7 +273,10 @@ async function buildCreatorContext(accessToken) {
     accountType: profile.account_type || '',
     sampleCount: media.length,
     bestFormat,
-    bestHoursIST,
+    // Hours in the creator's own timezone, plus the offset they were computed
+    // with so callers can label them correctly instead of writing "IST".
+    bestHoursLocal,
+    utcOffsetMinutes: tzOffset,
     topHashtags,
     topThemes,
   };
