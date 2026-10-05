@@ -19,6 +19,7 @@ const accountRoutes = require('./routes/account');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const { processPendingScheduledPosts } = require('./services/scheduler_service');
 const { sendPushToAllUsers } = require('./services/pushService');
+const { retryPendingVerifications } = require('./services/purchaseGrant');
 const { buildAiFallback } = require('./utils/aiFallback');
 const { apiError } = require('./utils/response');
 const { parseCorsOrigins, buildCorsOptions } = require('./utils/corsConfig');
@@ -164,6 +165,14 @@ function startServer() {
     });
   });
   console.log('⏰ Instagram scheduler cron scheduled (every minute)');
+
+  // Purchases whose Play verification hit an outage are retried here (no
+  // credits are granted until Google Play confirms them).
+  cron.schedule('*/10 * * * *', () => {
+    retryPendingVerifications().catch((err) => {
+      console.error('[credits] pending verification retry failed:', err?.message || err);
+    });
+  });
 
   // Daily Viral Drop push — 13:30 UTC = 7:00 PM IST (prime engagement hour for
   // our India-first audience). Pulls users back to the hero feature every day.

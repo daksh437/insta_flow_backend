@@ -297,19 +297,10 @@ async function activatePremiumFromReceiptIfNeeded(ref, user, now) {
     return false;
   }
 
-  // Play API unavailable (not configured yet / transient) — fall back to the
-  // receipt so a paid user still gets premium. Grant `days` from now.
-  if (hasActivePremium) return false;
-  const days = PRODUCT_DAYS[productId] || 30;
-  const expiry = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-  try {
-    await applyPremium(expiry);
-    console.log(`[aiAccess] receipt-based premium (Play unverified) uid=${ref.id} exp=${expiry.toISOString()}`);
-    return true;
-  } catch (e) {
-    console.warn('[aiAccess] activatePremiumFromReceipt error:', e.message);
-    return false;
-  }
+  // Play API unavailable: grant nothing. Premium is only ever set from a
+  // Play-verified purchase — there is no fallback to the client's receipt.
+  console.error(`[aiAccess] Play verification unavailable uid=${ref.id} product=${productId}: ${v.error || v.reason} — premium NOT granted`);
+  return false;
 }
 
 /**

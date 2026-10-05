@@ -71,4 +71,4 @@ async function verifySubscription(productId, purchaseToken) {
   }
 }
 
-module.exports = { verifySubscription, PACKAGE_NAME };
+module.exports = { verifySubscription, PACKAGE_NAME, getPublisherApi: getApi };
