@@ -90,7 +90,7 @@ app.get('/health', (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-08-29-account-delete-cascade' });
+  res.json({ success: true, build: '2026-10-05-ai-no-placeholder-content' });
 });
 
 // eslint-disable-next-line no-unused-vars
@@ -98,8 +98,8 @@ app.use((err, req, res, next) => {
   console.error(`[ERROR] ${new Date().toISOString()} ${req.method} ${req.path}`);
   console.error('[ERROR Details]', err);
   console.error('[ERROR Stack]', err.stack);
-  if (!res.headersSent && req.path.startsWith('/ai/')) {
-    const fallback = buildAiFallback(req.path, req.body || {});
+  const fallback = req.path.startsWith('/ai/') ? buildAiFallback(req.path, req.body || {}) : null;
+  if (!res.headersSent && fallback != null) {
     const errorCode = String(err?.code || 'AI_FALLBACK');
     console.warn('[AI Global Fallback]', req.path, { code: errorCode, message: err?.message || 'unknown' });
     return res.json({

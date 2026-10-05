@@ -604,6 +604,14 @@ function wrapAiHandler(handler) {
         console.error('[AI Controller Error]', req._aiEndpoint || req.path, error?.message || error);
         const fallback = buildAiFallback(req._aiEndpoint || req.path, req.body || {});
         const errorCode = String(error?.code || 'AI_HANDLER_FALLBACK');
+        if (fallback == null) {
+          return res.status(502).json({
+            success: false,
+            error: 'AI_GENERATION_FAILED',
+            code: 'AI_GENERATION_FAILED',
+            message: 'AI generation failed, please try again',
+          });
+        }
         console.log('[AI Fallback Response]', req._aiEndpoint || req.path, fallback);
         return res.json({
           success: true,

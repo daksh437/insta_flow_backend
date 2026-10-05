@@ -8,6 +8,7 @@ const { createJob, updateJob, generateJobId, getJob } = require('../utils/jobSto
 const { recordAiUsage, refundAiCharge } = require('../middleware/aiAccess');
 const { fetchTrendKeywords } = require('../services/dailyDropGenerator');
 const { loadCreatorContext, formatForPrompt } = require('../utils/creatorContext');
+const reelScript = require('../utils/reelScript');
 
 /**
  * Record usage on success, refund on failure. Credits are now taken up front by
@@ -28,6 +29,34 @@ function completeJobAndRecordUsage(jobId, status, data = {}) {
   }
   updateJob(jobId, status, data);
 }
+
+/**
+ * Fail an async job with no placeholder data. The refund is awaited BEFORE the
+ * job flips to "failed", so a client that sees the failure and re-reads its
+ * balance already has the credits back.
+ */
+async function failJobWithRefund(jobId, message) {
+  const job = getJob(jobId);
+  if (job && !job.usageRecorded) {
+    job.usageRecorded = true;
+    if (job.uid) await refundAiCharge(job.uid, job.idempotencyKey, job.type || undefined);
+  }
+  updateJob(jobId, 'failed', { data: null, error: message });
+}
+
+// A missing/denied key or unknown model will not fix itself on retry.
+function isPermanentGeminiError(error) {
+  return /GEMINI_(API_UNAVAILABLE|PERMISSION_DENIED|MODEL_NOT_FOUND)/.test(String(error && error.message));
+}
+
+/** Refund the up-front charge, then answer with an error (never placeholder content). */
+async function respondAiFailure(req, res, status, code, message) {
+  const refunded = await refundAiCharge(req.uid, req.idempotencyKey, req._aiEndpoint || req.path);
+  return res.status(status).json({ success: false, error: code, code, message, refunded: Boolean(refunded) });
+}
+
+const CAPTIONS_FAILED_MESSAGE = "Couldn't generate captions, please try again";
+const CONTENT_ENGINE_FAILED_MESSAGE = "Couldn't generate content, please try again";
 
 /**
  * Extract JSON from text that may contain markdown wrappers or extra text
@@ -904,7 +933,10 @@ function parseCaptionsResponse(output) {
     // fall through to legacy line parsing
   }
 
-  // 2) Legacy line format: "• caption text ... #tag1 #tag2"
+  // 2) Legacy line format: "• caption text ... #tag1 #tag2". Skipped for
+  // JSON-looking output — a truncated JSON reply would otherwise be split into
+  // "captions" like '{"captions": ['.
+  if (/^(```|\{|\[)/.test(raw)) return result;
   const cleaned = raw
     .replace(/^[•\-*]\s*/gm, '')
     .replace(/^\d+[\.)]\s*/gm, '')
@@ -942,50 +974,38 @@ async function processCaptions(jobId, userInput, regenerate, requestId) {
     const systemPrompt = getSystemPrompt();
     const userPrompt = getUserPrompt(userInput, generationId, creativeSeed, finalRequestId, regenerate);
     
-    let output = '';
-    try {
-      const uniqueSeed = timestamp + Number(microsecond) + Math.floor(Math.random() * 1000000);
-      
-      console.log(`[processCaptions] Unique Seed for Gemini: ${uniqueSeed}`);
-      console.log(`[processCaptions] User Prompt length: ${userPrompt.length}`);
-      console.log(`[processCaptions] System Prompt length: ${systemPrompt.length}`);
-      
-      output = await runGemini(userPrompt, { 
-        systemPrompt: systemPrompt,
-        userPrompt: userPrompt,
-        maxTokens: 2000,
-        thinkingLevel: 'low',
-        label: 'captions',
-        temperature: 1.0,
-        topP: 0.95,
-        topK: 50,
-        randomSeed: uniqueSeed
-      });
-      
-      console.log(`[processCaptions] ✅ Gemini API success, output length: ${output?.length || 0}`);
-      if (output) {
-        console.log(`[processCaptions] Output preview: ${output.substring(0, 200)}...`);
+    // Up to two attempts; keep the best real result. No template captions are
+    // ever mixed in — a short result is returned as-is, an empty one fails.
+    let best = { captions: [], bestTime: '' };
+    for (let attempt = 1; attempt <= 2 && best.captions.length < 3; attempt++) {
+      try {
+        const output = await runGemini(userPrompt, {
+          systemPrompt: systemPrompt,
+          userPrompt: userPrompt,
+          maxTokens: 2000,
+          thinkingLevel: 'low',
+          label: 'captions',
+          temperature: 1.0,
+          topP: 0.95,
+          topK: 50,
+          randomSeed: timestamp + attempt + Math.floor(Math.random() * 1000000),
+        });
+        const parsed = parseCaptionsResponse(output);
+        console.log(`[processCaptions] attempt ${attempt}: parsed ${parsed.captions.length} captions from ${output?.length || 0} chars`);
+        if (parsed.captions.length > best.captions.length) best = parsed;
+      } catch (geminiError) {
+        console.error(`[processCaptions] attempt ${attempt}: Gemini call failed:`, geminiError.message);
+        if (isPermanentGeminiError(geminiError)) break;
       }
-    } catch (geminiError) {
-      console.error('[processCaptions] ❌ Gemini API call failed:', geminiError.message);
-      console.error('[processCaptions] Error stack:', geminiError.stack);
-      output = '';
     }
-    
-    // Parse the model output — JSON preferred, legacy line format as fallback.
-    const parsed = parseCaptionsResponse(output);
-    let captions = parsed.captions;
-    const bestTime = parsed.bestTime;
-    console.log(`[processCaptions] Parsed ${captions.length} captions${bestTime ? `, best_time="${bestTime}"` : ''}`);
 
-    // Top up any shortfall with TOPIC-AWARE fallback (never generic filler).
-    if (captions.length < 3) {
-      console.log(`[processCaptions] ⚠️ Only ${captions.length} captions parsed, topping up with fallback`);
-      const fallback = getFallbackCaptions('English', userInput);
-      for (let i = captions.length; i < 3 && fallback.length > 0; i++) {
-        captions.push(fallback[i % fallback.length]);
-      }
+    if (best.captions.length === 0) {
+      await failJobWithRefund(jobId, CAPTIONS_FAILED_MESSAGE);
+      console.log(`[processCaptions] ❌ Job ${jobId} failed — refunded, no fallback`);
+      return;
     }
+    let captions = best.captions;
+    const bestTime = best.bestTime;
 
     // Ensure we have exactly 3 captions; attach best_time to the first.
     captions = captions.slice(0, 3);
@@ -1002,9 +1022,7 @@ async function processCaptions(jobId, userInput, regenerate, requestId) {
     console.log(`[processCaptions] ✅ Job ${jobId} completed successfully`);
   } catch (error) {
     console.error(`[processCaptions] Error processing job ${jobId}:`, error);
-    console.error(`[processCaptions] Error details:`, error.stack);
-    const fallback = getFallbackCaptions('English', userInput);
-    completeJobAndRecordUsage(jobId, 'done', { data: [fallback[0] || { style: 'general', text: 'Ready to create amazing content? Let\'s go! 🚀', hashtags: ['#motivation'] }], error: error.message });
+    await failJobWithRefund(jobId, CAPTIONS_FAILED_MESSAGE);
   }
 }
 
@@ -1022,8 +1040,8 @@ async function generateCaptions(req, res) {
   const { userInput, regenerate, requestId } = req.body || {};
   
   // Validate required parameters
-  if (!userInput || userInput.trim() === '') {
-    return res.status(400).json({ success: false, error: 'User input is required', data: [] });
+  if (!userInput || String(userInput).trim().length < 3) {
+    return respondAiFailure(req, res, 400, 'INVALID_INPUT', 'Please describe your post first');
   }
   
   // Generate unique job ID
@@ -1046,12 +1064,7 @@ async function generateCaptions(req, res) {
   processCaptions(jobId, userInput.trim(), regenerate, requestId)
     .catch((error) => {
       console.error(`[generateCaptions] Background processing failed for job ${jobId}:`, error);
-      console.error(`[generateCaptions] Error stack:`, error.stack);
-      const fallback = getFallbackCaptions('English', userInput.trim() || '');
-      completeJobAndRecordUsage(jobId, 'done', {
-        data: [fallback[0] || { style: 'general', text: 'Ready to create amazing content! Let\'s go! 🚀', hashtags: ['#motivation'] }],
-        error: error.message || 'AI generation failed'
-      });
+      return failJobWithRefund(jobId, CAPTIONS_FAILED_MESSAGE);
     });
 
   // Return immediately with jobId (NON-BLOCKING)
@@ -1995,90 +2008,6 @@ function detectRequestedHashtagCount(userInput) {
   return n >= 3 && n <= 30 ? n : 0;
 }
 
-function reelsScriptPromptChatGPT(userInput, extractedParams, generationId, creativeSeed, regenerate) {
-  const { topic, duration, tone, audience, language } = extractedParams;
-  const durationSeconds = parseInt(duration.replace('s', '')) || 15;
-  const hookEnd = Math.min(3, durationSeconds);
-  const ctaStart = Math.max(durationSeconds - 3, hookEnd + 2);
-  
-  const regenerateWarning = regenerate 
-    ? `\n\n🚨🚨🚨 REGENERATE MODE - USER PRESSED REGENERATE BUTTON 🚨🚨🚨\n\nCRITICAL: Generate a COMPLETELY FRESH script with:\n- NEW hook angle and approach (different from previous)\n- NEW storytelling structure\n- NEW wording (zero word reuse)\n- NEW CTA style\n- NEW emotional angle\n\nDO NOT reuse ANYTHING from previous generation. Think of this as ChatGPT generating a completely new response.\n\n`
-    : '';
-
-  const languageGuidelines = language === 'Hindi' 
-    ? 'Write EVERYTHING in pure Hindi (Devanagari script). No English words. Use natural Hindi expressions.'
-    : language === 'Hinglish'
-    ? 'Mix Hindi and English naturally (e.g., "Kya baat hai! This is amazing"). Use conversational Hinglish that feels authentic.'
-    : 'Write EVERYTHING in pure English. Use natural, conversational English.';
-
-  const toneGuidelines = {
-    'funny': 'Playful, witty, humorous, light-hearted, entertaining, use natural jokes and relatable humor',
-    'motivational': 'Inspiring, empowering, action-driven, encouraging, uplifting, goal-oriented',
-    'emotional': 'Heartfelt, feeling-based, intimate, tender, passionate, emotionally resonant',
-    'educational': 'Informative, clear, value-driven, teaching-focused, practical, helpful',
-    'storytelling': 'Narrative-driven, engaging story, relatable characters, plot-driven, immersive',
-    'dramatic': 'Intense, powerful, attention-grabbing, high-impact, compelling, strong emotions'
-  };
-
-  const audienceGuidelines = {
-    'creators': 'Creator-focused, engagement-driven, community-oriented, interactive CTAs (comment, save, share)',
-    'business': 'Professional, value-focused, results-oriented, business CTAs (learn more, visit link, get started)',
-    'students': 'Student-friendly, relatable, educational, practical CTAs (save for later, share with friends)',
-    'general': 'Universal appeal, relatable to everyone, broad CTAs (follow, like, share)'
-  };
-
-  // Generate unique variation token
-  const variationToken = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${creativeSeed.substring(0, 20)}`;
-
-  // Anti-repetition angles
-  const angles = ['story', 'question', 'myth', 'POV', 'mistake', 'truth', 'secret', 'transformation', 'confession', 'challenge'];
-  const hookStyles = ['curiosity', 'shock', 'emotion', 'question', 'statement', 'story', 'confession', 'transformation'];
-  const ctaVariations = ['comment', 'save', 'share', 'follow', 'DM', 'like', 'bookmark', 'tag', 'try', 'test'];
-
-  // Randomly select angle and style for this generation
-  const selectedAngle = angles[Math.floor(Math.random() * angles.length)];
-  const selectedHookStyle = hookStyles[Math.floor(Math.random() * hookStyles.length)];
-  const selectedCTA = ctaVariations[Math.floor(Math.random() * ctaVariations.length)];
-
-  // Force the output language from the request itself (more reliable than
-  // hoping the model spots "in hindi" buried in an English prompt).
-  const forcedLang = detectRequestedLanguage(userInput);
-  const langDirective = forcedLang
-    ? `\n\n⚠️⚠️ OUTPUT LANGUAGE = ${forcedLang.toUpperCase()}. Write the hook, EVERY scene's "say", the cta and the caption ENTIRELY in ${forcedLang}. Do NOT write them in English or any other language. (Hashtags may stay romanized.)`
-    : '';
-
-  return `You are an elite Instagram Reels scriptwriter behind viral reels for top creators. You understand retention curves, pattern interrupts, and what makes a viewer watch till the end.${langDirective}
-
-THE #1 RULE — STAY ON TOPIC:
-The reel MUST be about EXACTLY what the user asked for below. Do NOT change the topic, do NOT turn it into a generic motivational reel, and do NOT promote or mention any app, brand, product, or service unless the user explicitly names one. If a creator profile is provided above this prompt, use it ONLY to match the creator's tone, niche vocabulary, and hashtag style — NEVER to replace the requested topic. If the request is a list (e.g. "top 5 games"), the script MUST actually walk through those specific items with a real detail for each.
-
-USER REQUEST (this is the topic — obey it literally):
-"${userInput}"
-
-Write for a ${durationSeconds}-second reel. Tone: ${tone} (${toneGuidelines[tone.toLowerCase()] || 'engaging and confident'}). Audience: ${audience} (${audienceGuidelines[audience.toLowerCase()] || 'general'}).
-
-LANGUAGE (critical): Detect the language and script the user wrote the request in, and write the ENTIRE output (hook, every scene's "say", cta, caption) in that SAME language and script — e.g. a Hindi (Devanagari) request gets a Hindi script, an English request gets English. If the user explicitly names a language anywhere (e.g. "in Hindi", "in English", "in Tamil", "in Marathi"), use THAT language instead, overriding everything. Never default to English translation. (Hashtags may stay romanized/English.)
-Freshness seed (make every generation different, never reuse phrasing): ${creativeSeed}${regenerateWarning}
-
-Return ONLY valid JSON — no markdown, no code fences, no text before or after — in EXACTLY this shape:
-{
-  "hook": "one scroll-stopping opening line the creator SAYS, <= 14 words",
-  "scenes": [
-    { "time": "0-3s", "say": "the exact words the creator says out loud", "show": "the VISUAL to put on screen — a shot/b-roll direction, NOT the spoken words" }
-  ],
-  "cta": "one strong spoken call to action",
-  "caption": "a fresh Instagram caption for this reel (2-4 short lines, its own hook + a CTA) — do NOT just paste the script back",
-  "hashtags": ["8 to 10 hashtags about the TOPIC, each starting with # and no spaces"]
-}
-
-HARD RULES:
-- Provide 3 to 5 scenes that together fill the full ${durationSeconds} seconds. For a "top N" request, use roughly one scene per item.
-- "say" and "show" MUST be different: "say" = spoken words; "show" = camera/visual instruction (e.g. "fast cuts of gameplay", "creator pointing at the phone", "text overlay: TOP 5"). Never copy the dialogue into "show".
-- Sound like a real human creator; short punchy lines; no "Did you know", no "Are you making this mistake".
-- hashtags must be about the topic — NEVER turn the raw request sentence into a single hashtag.
-- Output JSON ONLY.`;
-}
-
 /**
  * Generate reels script prompt (Old format - for backward compatibility)
  * @param {string} topic - Topic for the reel
@@ -2225,440 +2154,108 @@ IMPORTANT:
 }
 
 
-/**
- * Parse the structured reels-script JSON the prompt asks for and map it to the
- * client shape { hook, cta, caption, hashtags, scene_by_scene:[{time,dialogue,
- * visual}], fullScript }. dialogue = spoken ("say"), visual = shot direction
- * ("show") — kept DISTINCT so the app no longer shows "Dikhao" repeating the
- * dialogue. fullScript is built ONCE (hook → dialogues → cta), killing the old
- * triple-duplication.
- */
-function parseReelsJson(output) {
-  if (!output || typeof output !== 'string') return null;
-  const text = output.replace(/```json/gi, '').replace(/```/g, '').trim();
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end <= start) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(text.slice(start, end + 1));
-  } catch (e) {
-    return null;
-  }
-  const str = (v) => (v != null ? String(v).trim() : '');
-  const hook = str(parsed.hook);
-  const cta = str(parsed.cta);
-  const caption = str(parsed.caption);
-  const scenesIn = Array.isArray(parsed.scenes) ? parsed.scenes : [];
-  const scene_by_scene = scenesIn
-    .map((s, i) => ({
-      time: str(s && s.time) || `${i * 3}-${i * 3 + 3}s`,
-      dialogue: str(s && (s.say || s.dialogue || s.voiceover)),
-      visual: str(s && (s.show || s.visual || s.on_screen_text)),
-    }))
-    .filter((s) => s.dialogue || s.visual);
-  const hashtags = (Array.isArray(parsed.hashtags) ? parsed.hashtags : [])
-    .map((t) => str(t))
-    .filter(Boolean)
-    .map((t) => (t.startsWith('#') ? t : '#' + t.replace(/\s+/g, '')))
-    .slice(0, 12);
-
-  const spoken = [hook, ...scene_by_scene.map((s) => s.dialogue).filter(Boolean), cta]
-    .filter(Boolean)
-    .join('\n\n')
-    .trim();
-
-  if (!hook && scene_by_scene.length === 0) return null;
-  return {
-    hook,
-    cta,
-    caption: caption || spoken,
-    hashtags,
-    scene_by_scene,
-    fullScript: spoken,
-  };
-}
+const REEL_SCRIPT_FAILED_MESSAGE = "Couldn't generate script, please try again";
 
 /**
- * Background processing function for reels script (handles errors with fallback)
- * Wraps the main processing logic to ensure fallback on any error
+ * One Gemini call + strict parse. Returns the parsed script or null.
+ * Thinking stays 'low': on Gemini 3 thinking tokens count against
+ * maxOutputTokens, and the old 'medium' + 2048 budget could cut the JSON off
+ * mid-object, which then failed to parse.
  */
-async function processReelsScript(jobId, userInput, extractedParams, regenerate, uid) {
-  try {
-    // Main processing logic (moved inline to avoid duplicate function)
-    console.log(`[processReelsScript] Starting background processing for job: ${jobId}`);
-    
-    const { topic, duration, tone, audience, language } = extractedParams;
-    
-    // Generate UNIQUE generationId for EVERY request (especially for regenerate)
-    const finalRequestId = `REELS-${Date.now()}-${Math.random()}-${topic.trim().substring(0, Math.min(topic.trim().length, 10))}-${regenerate ? 'REGEN' : 'NEW'}`;
-    const generationId = `${Date.now()}-${Math.random()}-${regenerate ? 'REGEN' : 'NEW'}-${Math.random().toString(36).substring(2, 15)}`;
-    
-    // Generate UNIQUE creative seed
-    const creativeSeed = `${uuidv4()}-${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 10)}-${finalRequestId.substring(0, Math.min(finalRequestId.length, 20))}`;
-    
-    console.log(`[processReelsScript] User Input: "${userInput}"`);
-    console.log(`[processReelsScript] Extracted - Topic: ${topic}, Duration: ${duration}, Tone: ${tone}, Audience: ${audience}, Language: ${language}`);
-    console.log(`[processReelsScript] Regenerate: ${regenerate ? 'YES' : 'NO'}`);
-    
-    console.log(`[processReelsScript] Job ${jobId} - Calling Gemini API...`);
-    // Use ChatGPT-style prompt with free text input
-    let prompt = reelsScriptPromptChatGPT(userInput, extractedParams, generationId, creativeSeed, regenerate);
-
-    // Ground the script in the creator's REAL Instagram account when connected.
-    // Network-safe: null context = generic prompt (no behavior change for unconnected users).
-    try {
-      const ctx = await loadCreatorContext(uid);
-      const ctxBlock = formatForPrompt(ctx);
-      if (ctxBlock) {
-        prompt = `${ctxBlock}\n\n${prompt}`;
-        console.log(`[processReelsScript] Job ${jobId} - injected real creator context (${ctx.sampleCount} posts analyzed)`);
-      }
-    } catch (e) {
-      console.warn(`[processReelsScript] creator context skipped: ${e.message}`);
-    }
-
-    console.log(`[processReelsScript] Job ${jobId} - Prompt length: ${prompt.length} characters`);
-    console.log(`[processReelsScript] Job ${jobId} - Using model: ${process.env.GEMINI_MODEL || 'gemini-3-flash-preview'}`);
-    
-    const timestamp = Date.now();
-    const uniqueSeed = timestamp + Number(process.hrtime.bigint() % 1000000n) + Math.floor(Math.random() * 1000000);
-    
-    console.log(`[processReelsScript] Unique Seed: ${uniqueSeed}`);
-    
-    // DEBUG: Log the exact prompt being sent to Gemini
-    console.log(`[processReelsScript] 📤 PROMPT SENT TO GEMINI (first 500 chars):`);
-    console.log(prompt.substring(0, 500));
-    console.log(`[processReelsScript] 📤 Full prompt length: ${prompt.length} characters`);
-    
-    const output = await runGemini(prompt, {
-      maxTokens: 2048,
-      thinkingLevel: 'medium',
-      label: 'reels-script',
-      temperature: 0.9,
-      topP: 1,
-      topK: 40,
-      randomSeed: uniqueSeed
-    });
-    
-    // DEBUG: Log the exact response received from Gemini
-    console.log(`[processReelsScript] 📥 RESPONSE RECEIVED FROM GEMINI (first 500 chars):`);
-    console.log(output ? output.substring(0, 500) : 'NULL');
-    console.log(`[processReelsScript] 📥 Full response length: ${output?.length || 0} characters`);
-    
-    console.log(`[processReelsScript] Job ${jobId} - ✅ Gemini API success, response length: ${output?.length || 0}`);
-    
-    // Parse the structured JSON the prompt asks for. This is what stopped the
-    // duplicated sections, "show" copying "say", and the raw-prompt hashtag.
-    const transformedData = parseReelsJson(output);
-    if (!transformedData || !Array.isArray(transformedData.scene_by_scene) || transformedData.scene_by_scene.length === 0) {
-      throw new Error('Failed to parse reels script JSON from Gemini response.');
-    }
-    console.log(`[processReelsScript] ✅ Parsed ${transformedData.scene_by_scene.length} scenes, ${transformedData.hashtags.length} hashtags`);
-
-    // Update job with completed status and data
-    completeJobAndRecordUsage(jobId, 'completed', { data: transformedData });
-    console.log(`[processReelsScript] ✅ Job ${jobId} status: processing → completed`);
-  } catch (error) {
-    console.error(`[processReelsScript] ❌ Job ${jobId} error:`, error.message);
-    console.error(`[processReelsScript] Error stack:`, error.stack);
-    completeJobAndRecordUsage(jobId, 'failed', { 
-      data: null,
-      error: error.message || 'AI generation failed - Gemini API error'
-    });
-    throw error;
-  }
-}
-
-/**
- * Generate full script text in readable format (like ChatGPT)
- */
-function generateFullScriptText(transformedData, rawOutput, language) {
-  try {
-    // NEW FORMAT: If raw output is plain text without headings, use it directly
-    if (rawOutput && typeof rawOutput === 'string') {
-      // Check if it has headings (old format)
-      const hasHeadings = /HOOK|BODY|CTA/i.test(rawOutput);
-      
-      if (!hasHeadings) {
-        // New format: plain text lines - return as is (natural flow)
-        return rawOutput.trim();
-      }
-      
-      // Old format: extract from headings (for backward compatibility)
-      const hookMatch = rawOutput.match(/HOOK\s*\([^)]+\)\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
-      const bodyMatch = rawOutput.match(/BODY\s*:?\s*\n([\s\S]*?)(?=\nCTA\s*:|\n*$)/i);
-      const ctaMatch = rawOutput.match(/CTA\s*:?\s*\n([^\n]+(?:\n[^\n]+)?)/i);
-      
-      if (hookMatch && bodyMatch && ctaMatch) {
-        const hook = hookMatch[1].trim();
-        const body = bodyMatch[1].trim();
-        const cta = ctaMatch[1].trim();
-        
-        // Format as natural flow (no headings)
-        return `${hook}\n\n${body}\n\n${cta}`;
-      }
-    }
-    
-    // Fallback: Build from structured data - NATURAL FLOW (NO HEADINGS)
-    let fullScript = '';
-    
-    // Add Hook (first line, no heading)
-    if (transformedData.hook) {
-      fullScript += transformedData.hook.trim();
-    }
-    
-    // Add Scene by Scene (natural flow, no headings or timestamps)
-    if (transformedData.scene_by_scene && Array.isArray(transformedData.scene_by_scene)) {
-      transformedData.scene_by_scene.forEach((scene, index) => {
-        if (scene.dialogue && scene.dialogue.trim()) {
-          if (fullScript) fullScript += '\n\n';
-          fullScript += scene.dialogue.trim();
-        }
-      });
-    }
-    
-    // Add CTA (last line, no heading)
-    if (transformedData.cta) {
-      if (fullScript) fullScript += '\n\n';
-      fullScript += transformedData.cta.trim();
-    }
-    
-    // If still empty, create a basic natural flow
-    if (!fullScript || fullScript.trim().length === 0) {
-      const hook = transformedData.hook || 'Let me share something important with you.';
-      const scenes = (transformedData.scene_by_scene || []).map(s => s.dialogue).filter(d => d && d.trim());
-      const cta = transformedData.cta || 'Save this if it helped you.';
-      
-      fullScript = hook;
-      if (scenes.length > 0) {
-        fullScript += '\n\n' + scenes.join('\n\n');
-      }
-      fullScript += '\n\n' + cta;
-    }
-    
-    return fullScript.trim();
-  } catch (error) {
-    console.error('[generateFullScriptText] Error:', error);
-    // Return basic natural flow if error (NO HEADINGS)
-    const hook = transformedData.hook || 'Let me share something important with you.';
-    const scenes = (transformedData.scene_by_scene || []).map(s => s.dialogue).filter(d => d && d.trim());
-    const cta = transformedData.cta || 'Save this if it helped you.';
-    
-    let errorScript = hook;
-    if (scenes.length > 0) {
-      errorScript += '\n\n' + scenes.join('\n\n');
-    }
-    errorScript += '\n\n' + cta;
-    
-    return errorScript.trim();
-  }
-}
-
-/**
- * Transform script data to required format
- * Converts hooks array to single hook, combines voiceovers, ensures 10 hashtags
- */
-function transformScriptData(scriptData, language, topic, duration) {
-  // Get first hook (or combine if needed)
-  const hook = Array.isArray(scriptData.hooks) && scriptData.hooks.length > 0
-    ? scriptData.hooks[0]
-    : (language === 'Hindi' ? 'क्या आप जानते हैं?' : 
-       language === 'Hinglish' ? 'Kya aap jaante hain?' : 
-       'Did you know this?');
-  
-  // Extract scenes and transform to scene_by_scene format
-  const scenes = Array.isArray(scriptData.script) ? scriptData.script : [];
-  const durationSeconds = parseInt(duration) || 15;
-  
-  // Transform scenes to scene_by_scene format: { time, visual, dialogue }
-  const sceneByScene = scenes.map((scene, index) => {
-    const totalScenes = scenes.length;
-    const startTime = Math.floor((index * durationSeconds) / totalScenes);
-    const endTime = Math.floor(((index + 1) * durationSeconds) / totalScenes);
-    
-    return {
-      time: `${startTime}-${endTime}s`,
-      visual: scene.on_screen_text || scene.visual || scene.shot || (language === 'Hindi' ? 'कैमरा शॉट' : 'Medium shot'),
-      dialogue: scene.voiceover || scene.dialogue || scene.text || ''
-    };
+async function requestReelScript(userPrompt, attempt) {
+  const output = await runGemini(userPrompt, {
+    systemPrompt: reelScript.SYSTEM_PROMPT,
+    userPrompt,
+    maxTokens: 4096,
+    thinkingLevel: 'low',
+    label: 'reels-script',
+    temperature: 0.9,
+    topP: 0.95,
+    timeout: 25000,
   });
-  
-  // If no scenes, create default scene_by_scene
-  const finalSceneByScene = sceneByScene.length > 0 ? sceneByScene : [{
-    time: '0-3s',
-    visual: language === 'Hindi' ? 'कैमरा शॉट' : 'Medium shot',
-    dialogue: hook
-  }];
-  
-  // Get CTA
-  const cta = scriptData.cta || (language === 'Hindi' ? 'इस पोस्ट को सेव करें' : 
-                                 language === 'Hinglish' ? 'Is post ko save karein' : 
-                                 'Save this post');
-  
-  // Get caption
-  const caption = scriptData.caption || (language === 'Hindi' ? 'यह बदलाव आपकी जिंदगी बदल देगा' : 
-                                         language === 'Hinglish' ? 'Yeh change aapki life badal dega' : 
-                                         'This change will transform your life');
-  
-  // Ensure exactly 10 hashtags
-  let hashtags = Array.isArray(scriptData.hashtags) ? [...scriptData.hashtags] : [];
-  const topicTag = `#${topic.toLowerCase().replace(/\s+/g, '')}`;
-  const defaultTags = language === 'Hindi' 
-    ? ['#reels', '#viral', '#instagram', '#hindi', '#growth', '#success', '#motivation', '#trending', '#fyp', '#explore']
-    : language === 'Hinglish'
-    ? ['#reels', '#viral', '#instagram', '#hinglish', '#growth', '#success', '#motivation', '#trending', '#fyp', '#explore']
-    : ['#reels', '#viral', '#instagram', '#growth', '#success', '#motivation', '#trending', '#fyp', '#explore', '#content'];
-  
-  // Combine and ensure exactly 10
-  hashtags = [...new Set([...hashtags, topicTag, ...defaultTags])].slice(0, 10);
-  
-  return {
-    hook,
-    scene_by_scene: finalSceneByScene,
-    cta,
-    caption,
-    hashtags
-  };
-}
-
-function buildReelsFallback(topic = 'Instagram growth') {
-  return {
-    hook: 'Stop scrolling! This will boost your Instagram 🚀',
-    scene_by_scene: [
-      { time: '0-3s', visual: 'Show your app interface', dialogue: 'Show your app interface' },
-      { time: '3-7s', visual: 'Explain problem users face', dialogue: 'Explain problem users face' },
-      { time: '7-11s', visual: 'Show how your app solves it', dialogue: 'Show how your app solves it' },
-      { time: '11-14s', visual: 'Add quick tip', dialogue: 'Add quick tip' },
-      { time: '14-15s', visual: 'Call to action', dialogue: 'Call to action' },
-    ],
-    cta: 'Follow for more growth hacks 🔥',
-    caption: `Grow faster with smart tools 💡 ${topic}`.trim(),
-    hashtags: ['#instagrowth', '#reels', '#viral'],
-    fullScript:
-      'Stop scrolling! This will boost your Instagram.\n\nShow your app interface.\nExplain problem users face.\nShow how your app solves it.\nAdd quick tip.\n\nFollow for more growth hacks.',
-  };
+  const script = reelScript.parseReelScript(output);
+  if (!script) {
+    console.warn(`[reels-script] attempt ${attempt}: unusable model output (${output ? output.length : 0} chars): ${String(output || '').slice(0, 200)}`);
+  }
+  return script;
 }
 
 /**
  * POST /ai/reels-script
- * Non-blocking async endpoint - returns jobId immediately, processes in background
- * NEVER blocks the request, always returns jobId within 2 seconds
- * 
- * Input: { topic, duration, tone, audience, language, regenerate }
- * Output: { success: true, jobId: string }
- * 
- * Job processing happens in background via processReelsScript()
- * Frontend polls GET /ai/job-status/:jobId for completion
+ * Input: { userInput } (or legacy { topic })
+ * Success: { success: true, jobId, data: { hook, scenes, cta, caption, hashtags,
+ *            audio_suggestion, fullScript, scene_by_scene } }
+ * Failure: 400 INVALID_INPUT or 502 AI_GENERATION_FAILED, with the up-front
+ *          credit charge refunded before responding. Never a placeholder script.
  */
 async function generateReelsScript(req, res) {
-  console.log('AI_CONTROLLER_HIT', JSON.stringify({ endpoint: req._aiEndpoint || req.path || req.originalUrl || '/ai/reels-script' }));
-  console.log('📥 Incoming reels script request:', req.body);
-  // Accept either old format (topic, duration, etc.) or new format (userInput)
-  const { userInput, topic, duration, tone, audience, language, regenerate = false } = req.body || {};
-  
-  // If userInput is provided, use new ChatGPT-style approach
-  // Otherwise, fall back to old format for backward compatibility
-  let finalUserInput = '';
-  let extractedParams = {
-    topic: '',
-    duration: '15s',
-    tone: 'motivational',
-    audience: 'general',
-    language: 'English'
+  const body = req.body || {};
+  const topic = String(body.userInput || body.topic || '').trim();
+  const regenerate = body.regenerate === true;
+
+  // Credits are charged by the access middleware before this handler runs, so
+  // every non-success exit below must refund before responding.
+  const failWith = async (status, code, message) => {
+    const refunded = await refundAiCharge(req.uid, req.idempotencyKey, req._aiEndpoint || '/ai/reels-script');
+    return res.status(status).json({ success: false, error: code, code, message, refunded: Boolean(refunded) });
   };
-  
-  if (userInput && userInput.trim() !== '') {
-    // New ChatGPT-style: Extract parameters from free text
-    finalUserInput = userInput.trim();
-    extractedParams = extractParamsFromUserInput(finalUserInput);
-    // Ensure topic is never empty after extraction
-    if (!extractedParams.topic || extractedParams.topic.trim() === '') {
-      extractedParams.topic = finalUserInput.substring(0, 100);
-    }
-  } else if (topic && topic.trim() !== '') {
-    // Old format: Use provided parameters
-    finalUserInput = topic.trim();
-    extractedParams = {
-      topic: topic.trim(),
-      duration: duration || '15s',
-      tone: tone || 'motivational',
-      audience: audience || 'general',
-      language: language || 'English'
-    };
-  } else {
-    return res.status(400).json({ success: false, error: 'Please provide either userInput or topic', data: {} });
-  }
-  
-  // Final safety check: Ensure topic is never empty
-  if (!extractedParams.topic || extractedParams.topic.trim() === '') {
-    extractedParams.topic = finalUserInput || 'Instagram Reel';
-  }
-  
-  // Validate duration (15s, 30s, 60s only)
-  const validDurations = ['15s', '30s', '60s'];
-  const finalDuration = validDurations.includes(extractedParams.duration) ? extractedParams.duration : '15s';
-  
-  // Generate unique job ID
+
+  const invalid = reelScript.validateTopic(topic);
+  if (invalid) return failWith(400, 'INVALID_INPUT', invalid);
+
   const jobId = generateJobId('REELS');
-  
-  console.log(`[generateReelsScript] ==========================================`);
-  console.log(`[generateReelsScript] NEW REQUEST - Job ${jobId}`);
-  console.log(`[generateReelsScript] User Input: "${finalUserInput}"`);
-  console.log(`[generateReelsScript] Extracted - Topic: "${extractedParams.topic}", Duration: ${finalDuration}, Tone: ${extractedParams.tone}, Audience: ${extractedParams.audience}, Language: ${extractedParams.language}`);
-  console.log(`[generateReelsScript] ==========================================`);
-  
-  // Create job with queued status in jobStore
   createJob(jobId, {
     idempotencyKey: req.idempotencyKey,
     type: 'reels-script',
     uid: req.uid,
-    status: 'queued',
-    userInput: finalUserInput,
-    topic: extractedParams.topic,
-    duration: finalDuration,
-    tone: extractedParams.tone,
-    audience: extractedParams.audience,
-    language: extractedParams.language,
-    regenerate: regenerate
+    status: 'processing',
+    userInput: topic,
+    topic,
+    regenerate,
   });
-  
-  console.log('🚀 Calling AI model...');
-  console.log(`[generateReelsScript] 🚀 Starting Gemini API call - waiting for REAL AI response...`);
-  
-  // Update job status to processing
-  updateJob(jobId, 'processing');
-  
-  // Process with Gemini API (blocking - wait for response)
-  processReelsScript(jobId, finalUserInput, extractedParams, regenerate, req.uid)
-    .then(() => {
-      // Get the completed job data
-      const job = getJob(jobId);
-      if (job && job.status === 'completed' && job.data) {
-        console.log('✅ AI response:', job.data);
-        console.log(`[generateReelsScript] ✅ Gemini API succeeded - returning REAL AI data`);
-        res.json({
-          success: true,
-          jobId: jobId,
-          data: job.data
-        });
-      } else {
-        throw new Error('Job completed but data is missing');
-      }
-    })
-    .catch(error => {
-      console.error(`[generateReelsScript] ❌ Gemini API failed:`, error.message);
-      console.error(`[generateReelsScript] Error stack:`, error.stack);
 
-      const fallback = buildReelsFallback(extractedParams.topic || finalUserInput || 'Instagram growth');
-      completeJobAndRecordUsage(jobId, 'done', { data: fallback });
+  try {
+    let creatorContext = '';
+    try {
+      creatorContext = formatForPrompt(await loadCreatorContext(req.uid)) || '';
+    } catch (e) {
+      console.warn(`[reels-script] creator context skipped: ${e.message}`);
+    }
 
-      return res.json({
-        success: true,
-        jobId,
-        data: fallback,
-      });
+    const userPrompt = reelScript.buildUserPrompt(topic, {
+      forcedLanguage: detectRequestedLanguage(topic),
+      creatorContext,
+      regenerate,
     });
+
+    let script = null;
+    for (let attempt = 1; attempt <= 2 && !script; attempt++) {
+      try {
+        script = await requestReelScript(userPrompt, attempt);
+      } catch (e) {
+        console.warn(`[reels-script] attempt ${attempt} failed: ${e.message}`);
+        // A missing/denied key or unknown model will not fix itself on retry.
+        if (/GEMINI_(API_UNAVAILABLE|PERMISSION_DENIED|MODEL_NOT_FOUND)/.test(e.message)) break;
+      }
+    }
+
+    if (!script) {
+      const job = getJob(jobId);
+      if (job) job.usageRecorded = true; // refund is handled synchronously below
+      updateJob(jobId, 'failed', { data: null, error: 'AI_GENERATION_FAILED' });
+      return failWith(502, 'AI_GENERATION_FAILED', REEL_SCRIPT_FAILED_MESSAGE);
+    }
+
+    completeJobAndRecordUsage(jobId, 'completed', { data: script });
+    return res.json({ success: true, jobId, data: script });
+  } catch (error) {
+    console.error('[reels-script] unexpected error:', error);
+    const job = getJob(jobId);
+    if (job) job.usageRecorded = true;
+    updateJob(jobId, 'failed', { data: null, error: 'AI_GENERATION_FAILED' });
+    if (res.headersSent) return undefined;
+    return failWith(502, 'AI_GENERATION_FAILED', REEL_SCRIPT_FAILED_MESSAGE);
+  }
 }
 
 /**
@@ -2715,7 +2312,7 @@ function getJobStatus(req, res) {
     if (!response.data) {
       switch (job.type) {
         case 'captions':
-          response.data = { captions: getFallbackCaptions(job.language || 'English') };
+          response.data = null; // failed → error, never placeholder captions
           break;
         case 'calendar':
           response.data = [];
@@ -4167,38 +3764,36 @@ Return STRICT JSON, no markdown:
     return _defaultViralScoreResponse();
   }
 }
-function _contentEngineFallback(niche = 'instagram growth') {
-  const fallback = {
-    idea: `3 practical ${niche} tactics creators can apply today`,
-    hook: 'Stop scrolling: this one content framework can lift your reach this week.',
-    script: [
-      'Open with a bold pain point your audience feels daily.',
-      'Share one clear method in 2 quick steps.',
-      'Show a mini before/after example for proof.',
-      'End with a specific CTA: save + comment for part 2.',
-    ],
-    caption: `If you are building in ${niche}, this framework helps you get better retention and engagement. Save this and test it today.`,
-    hashtags: ['#instagramgrowth', '#contentstrategy', '#reels', '#creatorbusiness', '#socialmediatips'],
-    best_time: '7:30 PM',
+/**
+ * Validate a content-engine reply. Returns null unless it has a real idea,
+ * hook, caption and at least one script line — missing parts are never filled
+ * with template text.
+ */
+function parseContentEngine(raw) {
+  const parsed = extractJsonFromText(raw);
+  if (!parsed || typeof parsed !== 'object') return null;
+  const str = (v) => (v == null ? '' : String(v).trim());
+  const result = {
+    idea: str(parsed.idea),
+    hook: str(parsed.hook),
+    script: (Array.isArray(parsed.script) ? parsed.script : []).map(str).filter(Boolean).slice(0, 8),
+    caption: str(parsed.caption),
+    hashtags: (Array.isArray(parsed.hashtags) ? parsed.hashtags : [])
+      .map(str)
+      .filter(Boolean)
+      .map((t) => (t.startsWith('#') ? t : `#${t.replace(/\s+/g, '')}`))
+      .slice(0, 15),
+    best_time: str(parsed.best_time),
   };
-  return {
-    ...fallback,
-    score: _buildViralScore({
-      hook: fallback.hook,
-      caption: fallback.caption,
-      hashtags: fallback.hashtags,
-    }),
-  };
+  if (!result.idea || !result.hook || !result.caption || result.script.length === 0) return null;
+  return result;
 }
 
 async function contentEngine(req, res) {
   const niche = String(req.body?.niche || '').trim();
   const goal = String(req.body?.goal || 'engagement').trim().toLowerCase();
-  if (!niche) {
-    return {
-      ..._contentEngineFallback('instagram growth'),
-      note: 'Niche was missing, using fallback niche.',
-    };
+  if (niche.length < 2) {
+    return respondAiFailure(req, res, 400, 'INVALID_INPUT', 'Please enter your niche');
   }
 
   console.log('[contentEngine] Request:', req.body);
@@ -4233,31 +3828,26 @@ Rules:
 ${langLine}`;
 
   try {
-    const raw = await runGemini(prompt, {
-      maxTokens: 1200,
-      thinkingLevel: 'low',
-      label: 'content-engine',
-      temperature: 0.75,
-      topP: 0.95,
-    });
-    const parsed = extractJsonFromText(raw) || {};
-    const normalized = {
-      idea: String(parsed.idea || `Actionable ${niche} content blueprint`),
-      hook: String(parsed.hook || 'Stop scrolling: this framework can improve your next post.'),
-      script: Array.isArray(parsed.script)
-        ? parsed.script.map((x) => String(x)).filter(Boolean).slice(0, 8)
-        : [],
-      caption: String(parsed.caption || `Use this ${niche} framework and save for execution.`),
-      hashtags: Array.isArray(parsed.hashtags)
-        ? parsed.hashtags.map((h) => String(h)).filter(Boolean).slice(0, 15)
-        : [],
-      best_time: String(parsed.best_time || '7:30 PM'),
-    };
-    if (normalized.script.length === 0) {
-      normalized.script = _contentEngineFallback(niche).script;
+    let normalized = null;
+    for (let attempt = 1; attempt <= 2 && !normalized; attempt++) {
+      try {
+        const raw = await runGemini(prompt, {
+          maxTokens: 2048,
+          thinkingLevel: 'low',
+          label: 'content-engine',
+          temperature: 0.75,
+          topP: 0.95,
+          timeout: 25000,
+        });
+        normalized = parseContentEngine(raw);
+        if (!normalized) console.warn(`[contentEngine] attempt ${attempt}: unusable output: ${String(raw || '').slice(0, 200)}`);
+      } catch (e) {
+        console.warn(`[contentEngine] attempt ${attempt} failed: ${e.message}`);
+        if (isPermanentGeminiError(e)) break;
+      }
     }
-    if (normalized.hashtags.length === 0) {
-      normalized.hashtags = _contentEngineFallback(niche).hashtags;
+    if (!normalized) {
+      return respondAiFailure(req, res, 502, 'AI_GENERATION_FAILED', CONTENT_ENGINE_FAILED_MESSAGE);
     }
     const result = {
       ...normalized,
@@ -4267,14 +3857,12 @@ ${langLine}`;
         hashtags: normalized.hashtags,
       }),
     };
-    console.log('[contentEngine] Response:', result);
     if (req.uid) recordAiUsage(req.uid, null, req.idempotencyKey, { endpoint: req._aiEndpoint || req.path || '/ai/content-engine' });
     return result;
   } catch (error) {
     console.error('[contentEngine] Error:', error.message);
-    const fallback = _contentEngineFallback(niche);
-    console.log('[contentEngine] Fallback:', fallback);
-    return fallback;
+    if (res.headersSent) return undefined;
+    return respondAiFailure(req, res, 502, 'AI_GENERATION_FAILED', CONTENT_ENGINE_FAILED_MESSAGE);
   }
 }
 

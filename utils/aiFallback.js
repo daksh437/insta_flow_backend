@@ -2,21 +2,9 @@ function buildAiFallback(endpoint = '', body = {}) {
   const tool = String(endpoint || '').toLowerCase();
   const topic = body.topic || body.niche || body.userInput || body.comment || 'your topic';
 
-  if (tool.includes('/reels-script')) {
-    return {
-      hook: 'Stop scrolling! This one tweak can boost your engagement 🚀',
-      scenes: [
-        { time: '0-3s', line: 'Show the problem clearly.' },
-        { time: '3-10s', line: 'Explain one practical fix.' },
-        { time: '10-15s', line: 'Give a strong CTA.' },
-      ],
-      cta: 'Save this and follow for more growth ideas.',
-      caption: `Quick reel framework for ${topic}`.trim(),
-      hashtags: ['#reels', '#instagrowth', '#viral'],
-      aiScore: 78,
-      suggestions: ['Add stronger hook', 'Use short cuts', 'Keep CTA specific'],
-    };
-  }
+  // No canned reel script: a template that ignores the user's topic is worse
+  // than an honest error. Callers turn null into an error response.
+  if (tool.includes('/reels-script')) return null;
 
   if (tool.includes('/hashtags') || tool.includes('/trends')) {
     return {
