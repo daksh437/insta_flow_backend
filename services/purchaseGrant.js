@@ -30,9 +30,29 @@ function classifyApiError(e) {
   return { status: 'unavailable', reason: `play_${status || 'network'}: ${message}` };
 }
 
-/** The uid the app attached at purchase time (PurchaseParam.applicationUserName). */
-function accountMatches(obfuscatedId, uid) {
-  return !obfuscatedId || obfuscatedId === uid;
+/**
+ * Ownership. The app attaches the uid at purchase time
+ * (PurchaseParam.applicationUserName → obfuscatedExternalAccountId).
+ *  - id present: it must equal the caller.
+ *  - id absent (older purchases / no signed-in user at purchase): the first
+ *    uid to claim the token owns it (purchase_tokens/{sha256(token)}, shared
+ *    with the legacy premium path); any other uid is refused.
+ * The token→uid claim is recorded in both cases.
+ */
+async function claimOwnership({ uid, purchaseToken, obfuscatedId }) {
+  if (obfuscatedId && obfuscatedId !== uid) return { owned: false, reason: 'purchase belongs to another account (obfuscated id)' };
+  const db = getDb();
+  const ref = db.collection('purchase_tokens').doc(sha(String(purchaseToken)));
+  const ownerUid = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      tx.set(ref, { uid, claimedAt: new Date(), via: obfuscatedId ? 'obfuscated_id' : 'first_claim' });
+      return uid;
+    }
+    return snap.data().uid;
+  });
+  if (ownerUid !== uid) return { owned: false, reason: 'purchase token already claimed by another account' };
+  return { owned: true };
 }
 
 /**
@@ -47,14 +67,16 @@ async function verifyPurchase({ uid, productId, purchaseToken }) {
       if (!line) return { status: 'invalid', reason: `token is not for ${productId}` };
       if (!GRANTABLE_SUB_STATES.has(data.subscriptionState)) return { status: 'invalid', reason: `subscriptionState=${data.subscriptionState}` };
       const accountId = data.externalAccountIdentifiers && data.externalAccountIdentifiers.obfuscatedExternalAccountId;
-      if (!accountMatches(accountId, uid)) return { status: 'invalid', reason: 'purchase belongs to another account' };
+      const own = await claimOwnership({ uid, purchaseToken, obfuscatedId: accountId });
+      if (!own.owned) return { status: 'invalid', reason: own.reason };
       return { status: 'valid', reason: data.subscriptionState, orderId: line.latestSuccessfulOrderId || data.latestOrderId };
     }
     if (PACK_CREDITS[productId]) {
       const { data } = await api.purchases.products.get({ packageName: PACKAGE_NAME, productId, token: purchaseToken });
       // purchaseState: 0 purchased, 1 canceled, 2 pending.
       if (data.purchaseState !== 0) return { status: 'invalid', reason: `purchaseState=${data.purchaseState}` };
-      if (!accountMatches(data.obfuscatedExternalAccountId, uid)) return { status: 'invalid', reason: 'purchase belongs to another account' };
+      const own = await claimOwnership({ uid, purchaseToken, obfuscatedId: data.obfuscatedExternalAccountId });
+      if (!own.owned) return { status: 'invalid', reason: own.reason };
       return { status: 'valid', reason: 'purchased', orderId: data.orderId };
     }
     return { status: 'invalid', reason: `unknown product ${productId}` };

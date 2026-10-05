@@ -114,6 +114,31 @@ const PACK = { uid: 'u1', productId: 'credits_79', purchaseToken: 'tok-pack' };
     assert.strictEqual(credits('u1'), 5);
   });
 
+  await t('no obfuscated id: first uid claims the token and gets the credits', async () => {
+    reset(); store.set('users/u2', { credits: 0 });
+    play.sub = activeSub({ externalAccountIdentifiers: undefined });
+    assert.strictEqual((await verifyAndGrant(SUB)).status, 'granted');
+    assert.strictEqual(credits('u1'), 1005);
+    assert.ok([...store.values()].some((v) => v && v.uid === 'u1' && v.via === 'first_claim'));
+  });
+
+  await t('no obfuscated id: a second uid presenting the same token gets nothing', async () => {
+    const r = await verifyAndGrant({ ...SUB, uid: 'u2' });
+    assert.strictEqual(r.status, 'invalid');
+    assert.strictEqual(credits('u2'), 0);
+    assert.strictEqual(credits('u1'), 1005);
+  });
+
+  await t('obfuscated id present but token already claimed by someone else → nothing', async () => {
+    reset();
+    play.sub = activeSub({ externalAccountIdentifiers: undefined });
+    store.set('users/u2', { credits: 0 });
+    await verifyAndGrant({ ...SUB, uid: 'u2' }); // u2 claims first (no id)
+    play.sub = activeSub(); // now Play reports obfuscated id u1
+    assert.strictEqual((await verifyAndGrant(SUB)).status, 'invalid');
+    assert.strictEqual(credits('u1'), 5);
+  });
+
   await t('token for a different product → nothing granted', async () => {
     reset(); play.sub = activeSub({ lineItems: [{ productId: 'instaflow_pro_599' }] });
     assert.strictEqual((await verifyAndGrant(SUB)).status, 'invalid');

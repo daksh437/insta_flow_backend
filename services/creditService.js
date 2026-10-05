@@ -222,6 +222,36 @@ async function grant(uid, amount, reason = 'grant') {
   console.log(`[credits] +${amount} to ${uid} (${reason})`);
 }
 
+/**
+ * Admin credit adjustment (support grants / corrections). Atomic with its
+ * ledger entry, idempotent per requestId, never takes a balance below 0.
+ * @returns {Promise<{status:'applied'|'duplicate'|'insufficient'|'no_user', balanceAfter?:number}>}
+ */
+async function adminAdjust(targetUid, amount, { adminUid, reason, requestId }) {
+  const db = getDb();
+  const ref = db.collection('users').doc(targetUid);
+  const opRef = db.collection('admin_credit_ops').doc(String(requestId));
+  return db.runTransaction(async (tx) => {
+    const op = await tx.get(opRef);
+    if (op.exists) return { status: 'duplicate', balanceAfter: op.data().balanceAfter };
+    const snap = await tx.get(ref);
+    if (!snap.exists) return { status: 'no_user' };
+    const current = typeof snap.data().credits === 'number' ? snap.data().credits : 0;
+    const balanceAfter = current + amount;
+    if (balanceAfter < 0) return { status: 'insufficient', balanceAfter: current };
+    tx.set(ref, { credits: balanceAfter, creditsUpdatedAt: new Date() }, { merge: true });
+    recordTransactionInTx(tx, targetUid, {
+      type: 'admin_adjustment',
+      amount,
+      balanceAfter,
+      description: `Admin: ${reason}`,
+      meta: { adminUid, requestId },
+    });
+    tx.set(opRef, { targetUid, amount, reason, adminUid, balanceAfter, at: new Date() });
+    return { status: 'applied', balanceAfter };
+  });
+}
+
 // Spend credits atomically, idempotent by key. Returns true if charged (or
 // already charged for this key), false if insufficient balance.
 // `description` is the human-readable line shown in Credit History (e.g. the
@@ -324,6 +354,7 @@ module.exports = {
   claimInstagramFollow,
   claimYoutubeSubscribe,
   grant,
+  adminAdjust,
   spend,
   getHistory,
   recordTransactionInTx,
