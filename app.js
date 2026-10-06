@@ -14,6 +14,7 @@ const retentionRoutes = require('./routes/retention');
 const rewardsRoutes = require('./routes/rewards');
 const accountRoutes = require('./routes/account');
 const playRoutes = require('./routes/play');
+const removedFeaturesRoutes = require('./routes/removedFeatures');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const { sendPushToAllUsers } = require('./services/pushService');
 const { retryPendingVerifications } = require('./services/purchaseGrant');
@@ -72,6 +73,8 @@ app.get('/', (req, res) => {
 
 // Google Play RTDN (Pub/Sub push, OIDC-verified inside the route).
 app.use('/play', playRoutes);
+// Instagram scheduling + Google Calendar removed: old endpoints answer 410.
+app.use(removedFeaturesRoutes);
 app.use('/auth', authRoutes);
 
 app.use('/', aiAccessRoutes);
