@@ -19,6 +19,9 @@ const accountRoutes = require('./routes/account');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const { processPendingScheduledPosts } = require('./services/scheduler_service');
 const { sendPushToAllUsers } = require('./services/pushService');
+const { retryPendingVerifications } = require('./services/purchaseGrant');
+const { checkPlayAccess } = require('./utils/playVerify');
+const { requireAdmin } = require('./middleware/adminAuth');
 const { buildAiFallback } = require('./utils/aiFallback');
 const { apiError } = require('./utils/response');
 const { parseCorsOrigins, buildCorsOptions } = require('./utils/corsConfig');
@@ -87,10 +90,20 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', success: true, message: 'OK' });
 });
 
+// Admin-only: can this server verify Google Play purchases? (No secrets returned.)
+app.get('/health/play', requireAdmin, async (_req, res) => {
+  try {
+    const result = await checkPlayAccess();
+    res.status(result.ok ? 200 : 503).json({ success: result.ok, ...result });
+  } catch (e) {
+    res.status(503).json({ success: false, ok: false, error: e.message });
+  }
+});
+
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-10-05-ai-no-placeholder-content' });
+  res.json({ success: true, build: '2026-10-06-play-verified-grants' });
 });
 
 // eslint-disable-next-line no-unused-vars
@@ -145,6 +158,19 @@ function startServer() {
   console.log(`📅 Daily drop: GET http://0.0.0.0:${PORT}/daily-drop/today`);
   console.log('[Retention] Mounted at /retention — GET /retention/health (no auth), mission, recommendations, weekly-report');
 
+  // Play Developer API self-check: without it NO purchase can be verified,
+  // so no credits would ever be granted. Non-blocking; logs loudly on failure.
+  checkPlayAccess()
+    .then((r) => {
+      if (r.ok) {
+        console.log(`✅ Play API OK (${r.credentialSource}, ${r.serviceAccount})`);
+      } else {
+        console.error('❌❌❌ PLAY API CHECK FAILED — purchases cannot be verified, no credits will be granted ❌❌❌');
+        console.error('[PlayCheck]', JSON.stringify(r));
+      }
+    })
+    .catch((e) => console.error('❌❌❌ PLAY API CHECK CRASHED:', e.message));
+
   if (IS_PROD) {
     console.log(`☁️  Production mode: Server accessible from all network interfaces`);
   } else {
@@ -164,6 +190,14 @@ function startServer() {
     });
   });
   console.log('⏰ Instagram scheduler cron scheduled (every minute)');
+
+  // Purchases whose Play verification hit an outage are retried here (no
+  // credits are granted until Google Play confirms them).
+  cron.schedule('*/10 * * * *', () => {
+    retryPendingVerifications().catch((err) => {
+      console.error('[credits] pending verification retry failed:', err?.message || err);
+    });
+  });
 
   // Daily Viral Drop push — 13:30 UTC = 7:00 PM IST (prime engagement hour for
   // our India-first audience). Pulls users back to the hero feature every day.

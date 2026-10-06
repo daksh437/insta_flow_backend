@@ -1,4 +1,5 @@
 const { getDb } = require('../utils/firestoreAdmin');
+const { verifyUidFromToken } = require('./aiAccess');
 
 function parseAdminEmails() {
   return String(process.env.ADMIN_EMAILS || '')
@@ -9,9 +10,12 @@ function parseAdminEmails() {
 
 async function requireAdmin(req, res, next) {
   try {
-    const uid = String(req.headers['x-user-uid'] || req.headers['X-User-UID'] || '').trim();
+    // Admin identity comes ONLY from a verified Firebase ID token. The
+    // x-user-uid header is not trusted here (it let anyone act as an admin by
+    // sending the admin's uid), and AI_REQUIRE_TOKEN=false does not relax it.
+    const uid = await verifyUidFromToken(req);
     if (!uid) {
-      return res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'Missing x-user-uid' });
+      return res.status(401).json({ success: false, error: 'UNAUTHORIZED', message: 'Missing or invalid auth token' });
     }
 
     const db = getDb();

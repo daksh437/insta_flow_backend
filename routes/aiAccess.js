@@ -9,8 +9,8 @@ const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, 
 const { requireAuth } = require('../middleware/verifyAuth');
 const { strictLimiter } = require('../middleware/rateLimiters');
 const { PLAN_CREDITS, PACK_CREDITS, FREE_GRANTS, REFERRAL_PURCHASE_BONUS_PCT } = require('../config/credits');
+const purchaseGrant = require('../services/purchaseGrant');
 const creditService = require('../services/creditService');
-const crypto = require('crypto');
 
 const router = express.Router();
 const ADMIN_KEY = process.env.ADMIN_SECRET || process.env.ADMIN_KEY || '';
@@ -302,7 +302,29 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
     return res.status(503).json({ success: false, ok: false, error: 'FIRESTORE_UNAVAILABLE' });
   }
   try {
-    // Persist the receipt (server writes it — the client no longer touches premium fields).
+    // Credits are granted ONLY for a purchase Google Play verifies
+    // (services/purchaseGrant.js). No receipt fallback.
+    const result = await purchaseGrant.verifyAndGrant({ uid, productId, purchaseToken });
+
+    if (result.status === 'invalid') {
+      return res.status(402).json({
+        success: false,
+        ok: false,
+        error: 'VERIFICATION_FAILED',
+        message: 'Google Play could not verify this purchase.',
+      });
+    }
+    if (result.status === 'pending') {
+      // Play API unreachable: the receipt is queued and retried by a cron.
+      return res.status(503).json({
+        success: false,
+        ok: false,
+        error: 'VERIFICATION_PENDING',
+        message: 'Purchase received. Credits will appear once Google Play confirms it.',
+      });
+    }
+
+    // Verified: keep the receipt on the user doc (server-written).
     await firestore.collection('users').doc(uid).set({
       subscription: {
         productId,
@@ -310,102 +332,20 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
         purchaseTime: Date.now(),
         updatedAt: new Date(),
         platform: 'android',
+        verified: true,
       },
     }, { merge: true });
 
-    // Reuse the single activation path: verify with Play + token ownership + set premiumExpiry.
     const access = await getAiAccess(uid);
-
-    // Grant credits for the purchased plan/pack — idempotent by purchaseToken so
-    // re-verification never double-grants. (Renewals handled on next activation.)
-    try {
-      const amount = PLAN_CREDITS[productId] || PACK_CREDITS[productId] || 0;
-      if (amount > 0) {
-        const grantId = crypto.createHash('sha256').update(`${purchaseToken}:${productId}`).digest('hex');
-        const grantRef = firestore.collection('credit_grants').doc(grantId);
-        let referredByUid = null;
-        let alreadyGranted = false;
-        await firestore.runTransaction(async (tx) => {
-          const g = await tx.get(grantRef);
-          if (g.exists) { alreadyGranted = true; return; }
-          const uref = firestore.collection('users').doc(uid);
-          const usnap = await tx.get(uref);
-          const cur = usnap.exists && typeof usnap.data().credits === 'number' ? usnap.data().credits : 0;
-          referredByUid = usnap.exists ? (usnap.data().referredByUid || null) : null;
-          const balanceAfter = cur + amount;
-          tx.set(uref, { credits: balanceAfter, creditsUpdatedAt: new Date() }, { merge: true });
-          tx.set(grantRef, { uid, productId, amount, at: new Date() });
-          creditService.recordTransactionInTx(tx, uid, {
-            type: 'purchase',
-            amount,
-            balanceAfter,
-            description: `Purchased ${productId}`,
-            meta: { productId, purchaseToken },
-          });
-        });
-
-        if (!alreadyGranted) {
-          console.log(`[credits] purchase grant +${amount} to ${uid} (${productId})`);
-
-          // Referral purchase bonus: whoever referred this buyer gets a cut
-          // of the credits this purchase granted, every time the friend
-          // buys — an ongoing incentive, not just a one-off. Idempotent by
-          // its own grant doc so a retry never double-pays the referrer.
-          if (referredByUid && referredByUid !== uid) {
-            const bonus = Math.round(amount * REFERRAL_PURCHASE_BONUS_PCT);
-            if (bonus > 0) {
-              const refGrantId = crypto.createHash('sha256').update(`referral:${purchaseToken}:${productId}`).digest('hex');
-              const refGrantRef = firestore.collection('credit_grants').doc(refGrantId);
-              try {
-                await firestore.runTransaction(async (tx) => {
-                  const g = await tx.get(refGrantRef);
-                  if (g.exists) return;
-                  const rref = firestore.collection('users').doc(referredByUid);
-                  const rsnap = await tx.get(rref);
-                  const rcur = rsnap.exists && typeof rsnap.data().credits === 'number' ? rsnap.data().credits : 0;
-                  const rbalanceAfter = rcur + bonus;
-                  tx.set(rref, { credits: rbalanceAfter, creditsUpdatedAt: new Date() }, { merge: true });
-                  tx.set(refGrantRef, {
-                    uid: referredByUid,
-                    productId,
-                    amount: bonus,
-                    at: new Date(),
-                    reason: 'referral_purchase_bonus',
-                    referredUid: uid,
-                  });
-                  creditService.recordTransactionInTx(tx, referredByUid, {
-                    type: 'referral_purchase_bonus',
-                    amount: bonus,
-                    balanceAfter: rbalanceAfter,
-                    description: `Referral bonus — friend bought ${productId}`,
-                    meta: { productId, referredUid: uid },
-                  });
-                  // Per-friend running total for the Refer & Earn breakdown list.
-                  const admin = require('firebase-admin');
-                  const referralRowRef = firestore.collection('users').doc(referredByUid).collection('referrals').doc(uid);
-                  tx.set(referralRowRef, {
-                    totalCreditsEarned: admin.firestore.FieldValue.increment(bonus),
-                  }, { merge: true });
-                });
-                console.log(`[credits] referral purchase bonus +${bonus} to ${referredByUid} (from ${uid}'s ${productId})`);
-              } catch (e) {
-                console.warn('[credits] referral purchase bonus failed:', e.message);
-              }
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[credits] purchase grant failed:', e.message);
-    }
-
     return res.json({
       success: true,
       ok: true,
+      granted: result.status === 'granted',
+      credits: result.amount,
       planType: access.planType || 'free',
       allowed: access.allowed === true,
       premiumExpiry: access.premiumExpiry ?? null,
-      message: access.planType === 'premium' ? 'Premium activated' : 'Not activated (payment not verified as active)',
+      message: result.status === 'granted' ? 'Credits added' : 'Purchase already applied',
     });
   } catch (e) {
     console.error('[activate-premium]', e);
