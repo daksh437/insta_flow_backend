@@ -242,6 +242,20 @@ function sub({ uid = 'u1', state = 'SUBSCRIPTION_STATE_ACTIVE', orderId = 'GPA.1
     delete process.env.HARD_PAYWALL_MIN_VERSION_CODE;
   });
 
+  await t('account deleted, subscription keeps renewing → nothing written, user doc NOT recreated', async () => {
+    store.set('users/gone', { credits: 5 });
+    play.tokM = sub({ uid: 'gone', orderId: 'GPA.20', trial: false, expiresIn: 30 * DAY });
+    await verifyAndGrant({ uid: 'gone', productId: 'instaflow_starter_299', purchaseToken: 'tokM' });
+    // account deletion: user doc removed, tombstone written
+    store.delete('users/gone');
+    store.set('deleted_users/gone', { deletedAt: new Date() });
+    play.tokM = sub({ uid: 'gone', orderId: 'GPA.20..0', trial: false, expiresIn: 30 * DAY });
+    const r = await sync.syncSubscription({ purchaseToken: 'tokM', productId: 'instaflow_starter_299' });
+    assert.strictEqual(r.status, 'deleted_user');
+    assert.strictEqual(store.get('users/gone'), undefined);
+    assert.strictEqual(store.get('trial_reminders/gone'), undefined);
+  });
+
   await t('renewal refunded while the trial stands → that order clawed back, everPaid stays true', async () => {
     const before = credits('u1');
     const r = await sync.handleVoided({ purchaseToken: 'tokA', orderId: 'GPA.1..1' });

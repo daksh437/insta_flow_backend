@@ -19,7 +19,6 @@ const express = require('express');
 const {
   getTodayDrop,
   generateDailyDrop,
-  generatePersonalizedDrop,
 } = require('../services/dailyDropGenerator');
 const { requireAuth } = require('../middleware/verifyAuth');
 const { getDb } = require('../utils/firestoreAdmin');
@@ -138,13 +137,6 @@ router.get('/today', requireAuth, async (req, res) => {
   }
 
   try {
-    // Personalised for connected creators; null → fall back to the global drop,
-    // which the cron generates once for everyone.
-    const personalized = await generatePersonalizedDrop(uid);
-    if (personalized) {
-      return res.json({ success: true, ok: true, enabled: true, drop: personalized, personalized: true });
-    }
-
     let drop = getTodayDrop();
     if (!drop) {
       drop = await generateDailyDrop();

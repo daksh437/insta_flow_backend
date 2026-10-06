@@ -7,18 +7,14 @@ const { globalLimiter } = require('./middleware/rateLimiters');
 const authRoutes = require('./routes/auth');
 const geminiRoutes = require('./routes/gemini');
 const aiAccessRoutes = require('./routes/aiAccess');
-const calendarRoutes = require('./routes/calendar');
 const dailyDropRoutes = require('./routes/dailyDrop');
 const ttsRoutes = require('./routes/tts');
 const adminNotificationsRoutes = require('./routes/adminNotifications');
 const retentionRoutes = require('./routes/retention');
-const instagramRoutes = require('./routes/instagram');
-const schedulerRoutes = require('./routes/scheduler');
 const rewardsRoutes = require('./routes/rewards');
 const accountRoutes = require('./routes/account');
 const playRoutes = require('./routes/play');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
-const { processPendingScheduledPosts } = require('./services/scheduler_service');
 const { sendPushToAllUsers } = require('./services/pushService');
 const { retryPendingVerifications } = require('./services/purchaseGrant');
 const { sendDueTrialReminders } = require('./services/trialReminder');
@@ -80,13 +76,10 @@ app.use('/auth', authRoutes);
 
 app.use('/', aiAccessRoutes);
 app.use('/ai', geminiRoutes);
-app.use('/', instagramRoutes);
-app.use('/calendar', calendarRoutes);
 app.use('/daily-drop', dailyDropRoutes);
 app.use('/api', ttsRoutes);
 app.use('/admin', adminNotificationsRoutes);
 app.use('/retention', retentionRoutes);
-app.use('/scheduler', schedulerRoutes);
 app.use('/rewards', rewardsRoutes);
 app.use('/account', accountRoutes);
 
@@ -107,7 +100,7 @@ app.get('/health/play', requireAdmin, async (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-10-06-entitlement-rtdn' });
+  res.json({ success: true, build: '2026-10-06-no-instagram-calendar' });
 });
 
 // eslint-disable-next-line no-unused-vars
@@ -188,12 +181,6 @@ function startServer() {
   });
   console.log('⏰ Daily Viral Drop cron scheduled (00:00 daily)');
 
-  cron.schedule('* * * * *', () => {
-    processPendingScheduledPosts().catch((err) => {
-      console.error('[Scheduler] Cron publish failed:', err?.message || err);
-    });
-  });
-  console.log('⏰ Instagram scheduler cron scheduled (every minute)');
 
   // Purchases whose Play verification hit an outage are retried here (no
   // credits are granted until Google Play confirms them).

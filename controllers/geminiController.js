@@ -7,7 +7,6 @@ const { v4: uuidv4 } = require('uuid');
 const { createJob, updateJob, generateJobId, getJob } = require('../utils/jobStore');
 const { recordAiUsage, refundAiCharge } = require('../middleware/aiAccess');
 const { fetchTrendKeywords } = require('../services/dailyDropGenerator');
-const { loadCreatorContext, formatForPrompt } = require('../utils/creatorContext');
 const reelScript = require('../utils/reelScript');
 
 /**
@@ -2215,12 +2214,8 @@ async function generateReelsScript(req, res) {
   });
 
   try {
-    let creatorContext = '';
-    try {
-      creatorContext = formatForPrompt(await loadCreatorContext(req.uid)) || '';
-    } catch (e) {
-      console.warn(`[reels-script] creator context skipped: ${e.message}`);
-    }
+    // Instagram account data is no longer read (Instagram login removed).
+    const creatorContext = '';
 
     const userPrompt = reelScript.buildUserPrompt(topic, {
       forcedLanguage: detectRequestedLanguage(topic),
@@ -3931,12 +3926,8 @@ async function getGrowthCoach(req, res) {
   const posts = Number(req.body?.posts ?? req.query?.posts ?? 0) || 0;
   const activity = String(req.body?.activity ?? req.query?.activity ?? 'medium').toLowerCase();
 
-  // loadCreatorContext already handles "not connected" and expired tokens and
-  // never throws — null just means there is no real data to coach against.
-  const ctx = await loadCreatorContext(req.uid);
-  const accountBlock = ctx
-    ? formatForPrompt(ctx)
-    : `NO INSTAGRAM CONNECTION. All you know is what the app passed in:
+  // Only what the app passes in (Instagram login was removed).
+  const accountBlock = `All you know is what the app passed in:
 - Followers: ${followers}
 - Total posts: ${posts}
 - Self-reported posting activity: ${activity}`;
