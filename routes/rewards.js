@@ -31,7 +31,7 @@ const router = express.Router();
  */
 async function eligibility(req, userDoc) {
   const uid = req.uid;
-  if (!(await cohort.isHardPaywallUser(uid, { versionCode: cohort.versionFromReq(req), userDoc }))) {
+  if (!(await cohort.isHardPaywallUser(uid, { versionCode: cohort.versionFromReq(req), userDoc, fromClient: true }))) {
     return { newUser: false, signup: true, daily: true, instagram: true, youtube: true };
   }
   const entitled = entitlement.isActive(userDoc);

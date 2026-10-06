@@ -3,8 +3,10 @@
  * credits, no legacy trial). A user is in the "hard" cohort only when BOTH:
  *   1. their Firebase Auth account was created at/after RELEASE_AT
  *      (or their uid is in TEST_NEW_USER_UIDS, for pre-release E2E tests), and
- *   2. they use the new app: X-App-Version-Code ≥ HARD_PAYWALL_MIN_VERSION_CODE
- *      — or they already did once (entitlement.cohort = 'hard', server-only).
+ *   2. their FIRST app session was on the new app (X-App-Version-Code ≥
+ *      HARD_PAYWALL_MIN_VERSION_CODE). Stored as entitlement.cohort
+ *      ('hard' | 'legacy', server-only); an account first seen on build 48
+ *      stays 'legacy' for good, even after updating.
  * Old clients (build 48 sends no version header) keep the legacy behaviour,
  * so a post-release signup on the old build is never stuck with 0 credits.
  * RELEASE_AT or HARD_PAYWALL_MIN_VERSION_CODE unset → nobody is "hard".
@@ -14,6 +16,7 @@ const { getDb, getAdmin } = require('../utils/firestoreAdmin');
 const createdAtCache = new Map(); // uid → creation millis (never changes)
 const MAX_CACHE = 20000;
 const HARD = 'hard';
+const LEGACY = 'legacy';
 
 function releaseAtMillis(raw = process.env.RELEASE_AT) {
   const ms = Date.parse(String(raw || '').trim());
@@ -63,24 +66,38 @@ async function isCreatedAfterRelease(uid) {
   }
 }
 
+async function stampCohort(uid, value) {
+  await getDb().collection('users').doc(uid).set({ entitlement: { cohort: value, cohortAt: new Date() } }, { merge: true });
+}
+
 /**
- * Is [uid] in the hard-paywall cohort? [versionCode] = the calling client's
- * build (omit for background work: then only the stored flag counts).
+ * Is [uid] in the hard-paywall cohort? Decided by the account's FIRST app
+ * session and then stored for good (entitlement.cohort, server-only):
+ *   - first seen on the new app (version ≥ HARD_PAYWALL_MIN_VERSION_CODE) → 'hard'
+ *   - first seen on an old app (build 48: no/low version), or already given the
+ *     legacy 3-day trial label → 'legacy', permanently, even after updating
+ * [fromClient] = this is an app request carrying [versionCode] (absent header =
+ * old app). Background checks (fromClient false) only read the stored value.
  * [userDoc] avoids a re-read when the caller already has it.
- * The first time a new account is seen on the new app, the server stores
- * entitlement.cohort = 'hard' so later checks (and old clients) agree.
  */
-async function isHardPaywallUser(uid, { versionCode = null, userDoc } = {}) {
+async function isHardPaywallUser(uid, { versionCode = null, userDoc, fromClient = false } = {}) {
   if (!uid || !(await isCreatedAfterRelease(uid))) return false;
   let doc = userDoc;
   if (doc === undefined) {
     const snap = await getDb().collection('users').doc(uid).get();
     doc = snap.exists ? snap.data() : null;
   }
-  if (doc && doc.entitlement && doc.entitlement.cohort === HARD) return true;
+  const stored = doc && doc.entitlement && doc.entitlement.cohort;
+  if (stored === HARD) return true;
+  if (stored === LEGACY) return false;
   const min = minVersionCode();
-  if (min == null || versionCode == null || versionCode < min) return false;
-  await getDb().collection('users').doc(uid).set({ entitlement: { cohort: HARD, cohortAt: new Date() } }, { merge: true });
+  if (min == null || !fromClient) return false; // no rollout yet / no client to judge by
+  const legacyTrialSeen = !!(doc && (doc.trialStartDate || doc.trialEndDate || doc.trialStart || doc.trialEnd));
+  if (legacyTrialSeen || versionCode == null || versionCode < min) {
+    await stampCohort(uid, LEGACY);
+    return false;
+  }
+  await stampCohort(uid, HARD);
   return true;
 }
 

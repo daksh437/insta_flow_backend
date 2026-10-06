@@ -29,7 +29,7 @@ function decide({ newUser, profile, entitled, everPaid }) {
 async function getStatus(uid, { versionCode = null } = {}) {
   const snap = await getDb().collection('users').doc(uid).get();
   const doc = snap.exists ? snap.data() || {} : {};
-  const newUser = await cohort.isHardPaywallUser(uid, { versionCode, userDoc: snap.exists ? doc : null });
+  const newUser = await cohort.isHardPaywallUser(uid, { versionCode, userDoc: snap.exists ? doc : null, fromClient: true });
   // Others never reach the entitlement check (and never cost a Play call).
   const ent = newUser ? await entitlement.resolveActive(uid, doc) : { active: false, expiresAtMillis: null };
   const everPaid = entitlement.everPaid(doc);

@@ -310,7 +310,7 @@ async function activatePremiumFromReceiptIfNeeded(ref, user, now) {
  * Reset dailyAiUsed only when planType === 'free' (and date rollover).
  * Returns exact response shape: no fallback planType, no dailyLimit ?? 2.
  */
-async function getAiAccess(uid, { versionCode = null } = {}) {
+async function getAiAccess(uid, { versionCode = null, fromClient = false } = {}) {
   const resetAtUtc = getNextMidnightUtc();
   const { user, firestoreOk } = await loadUser(uid);
 
@@ -326,7 +326,7 @@ async function getAiAccess(uid, { versionCode = null } = {}) {
   const firestore = getDb();
   const today = todayDateStr();
   const ref = firestore.collection(USERS).doc(uid);
-  const hardCohort = await cohort.isHardPaywallUser(uid, { versionCode, userDoc: user });
+  const hardCohort = await cohort.isHardPaywallUser(uid, { versionCode, userDoc: user, fromClient });
   const healed = await ensureUserAiFields(ref, user, { legacyTrial: !hardCohort });
   Object.assign(user, healed);
 
