@@ -47,14 +47,31 @@ const OWNED_COLLECTIONS = [
   { name: 'ai_history', field: 'userId' },
   { name: 'ai_usage_logs', field: 'uid' },
   { name: 'scheduled_posts', field: 'uid' },
+  { name: 'scheduled_posts', field: 'userId' },
+  { name: 'posting_slots', field: 'userId' },
   { name: 'credit_grants', field: 'uid' },
+  { name: 'pending_purchase_verifications', field: 'uid' },
+  { name: 'purchase_verification_failures', field: 'uid' },
+  { name: 'admin_entitlement_ops', field: 'targetUid' },
 ];
+
+/** Top-level documents keyed by the user's uid. */
+const UID_KEYED_DOCS = ['trial_reminders', 'google_tokens'];
+
+/**
+ * Kept on purpose: purchase_tokens/{sha256(token)} → { uid } links a Google
+ * Play purchase to the account that made it (fraud prevention / one account
+ * per purchase). deleted_users/{uid} is a tombstone so Play notifications for
+ * a subscription that keeps renewing never recreate the deleted account.
+ */
+const DELETED_USERS = 'deleted_users';
 
 /** Cloud Storage prefixes that belong to one user. */
 const STORAGE_PREFIXES = (uid) => [
   `studio_images/${uid}/`,
   `users/${uid}/`,
   `instagram_publish/${uid}/`,
+  `scheduled_media/${uid}/`,
 ];
 
 /** Delete every doc in a collection reference, in batches. */
@@ -139,6 +156,19 @@ router.post('/delete', requireAuth, strictLimiter, async (req, res) => {
       }
     }
 
+    // 3b. Documents keyed by uid.
+    for (const name of UID_KEYED_DOCS) {
+      try {
+        const ref = db.collection(name).doc(uid);
+        if ((await ref.get()).exists) {
+          await ref.delete();
+          counts[name] = 1;
+        }
+      } catch (e) {
+        console.warn(`[account] ${name} cleanup failed:`, e.message);
+      }
+    }
+
     // 4. Cloud Storage objects.
     try {
       const bucket = admin.storage().bucket();
@@ -153,7 +183,9 @@ router.post('/delete', requireAuth, strictLimiter, async (req, res) => {
       console.warn('[account] storage cleanup failed:', e.message);
     }
 
-    // 5. The user document itself.
+    // 5. Tombstone first (so a Play notification arriving mid-deletion can't
+    //    recreate the user), then the user document itself.
+    await db.collection(DELETED_USERS).doc(uid).set({ deletedAt: new Date() });
     await userRef.delete();
 
     // 6. The Auth account — last, and the step that actually makes the

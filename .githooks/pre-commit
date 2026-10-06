@@ -1,0 +1,7 @@
+#!/bin/sh
+# Blocks commits that add secrets. Uses gitleaks when installed, otherwise
+# the bundled scanner. Enable once per clone: git config core.hooksPath .githooks
+if command -v gitleaks >/dev/null 2>&1; then
+  exec gitleaks protect --staged --redact --no-banner
+fi
+exec python scripts/secret_scan.py --staged .

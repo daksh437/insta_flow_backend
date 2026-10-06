@@ -167,9 +167,16 @@ router.get('/referral/code', requireAuth, async (req, res) => {
       code = genReferralCode();
       await ref.set({ referralCode: code }, { merge: true });
     }
+    // Hard-paywall users never earn referral credits: the app hides Refer & Earn.
+    const rewardsEligible = !(await cohort.isHardPaywallUser(uid, {
+      versionCode: cohort.versionFromReq(req),
+      userDoc: snap.exists ? snap.data() : null,
+      fromClient: true,
+    }));
     return res.json({
       success: true,
       code,
+      rewardsEligible,
       referralCount: snap.data()?.referralCount || 0,
       alreadyRedeemed: !!snap.data()?.referredBy,
       aiUseReward: FREE_GRANTS.REFERRAL_INVITER,
@@ -223,9 +230,16 @@ router.post('/referral/redeem', requireAuth, strictLimiter, async (req, res) => 
       joinedAt: now,
       totalCreditsEarned: 0,
     }, { merge: true });
+    // No credit promise when either side is in the hard-paywall cohort (no
+    // referral rewards there); legacy referrals keep the original message.
+    const noRewards =
+      (await cohort.isHardPaywallUser(uid, { versionCode: cohort.versionFromReq(req), userDoc: me.data(), fromClient: true })) ||
+      (await cohort.isHardPaywallUser(referrer.id, { userDoc: referrer.data() }));
     return res.json({
       success: true,
-      message: `Linked! Your friend earns ${FREE_GRANTS.REFERRAL_INVITER} credits once you try an AI feature.`,
+      message: noRewards
+        ? 'Linked! Thanks for joining InstaFlow through a friend.'
+        : `Linked! Your friend earns ${FREE_GRANTS.REFERRAL_INVITER} credits once you try an AI feature.`,
     });
   } catch (e) {
     console.error('[referral/redeem]', e);

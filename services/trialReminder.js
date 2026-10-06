@@ -52,7 +52,11 @@ async function sendDueTrialReminders(now = Date.now()) {
     const r = d.data();
     try {
       const snap = await db.collection('users').doc(r.uid).get();
-      const user = snap.exists ? snap.data() : {};
+      if (!snap.exists) {
+        await d.ref.delete(); // account deleted: drop the reminder, write nothing
+        continue;
+      }
+      const user = snap.data();
       const e = user.entitlement || {};
       const expiresAt = entitlement.toMillis(e.expiresAt);
       const stillDue = entitlement.isActive(user, now) && e.isTrial === true && e.autoRenewing === true &&

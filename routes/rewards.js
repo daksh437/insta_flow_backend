@@ -32,10 +32,10 @@ const router = express.Router();
 async function eligibility(req, userDoc) {
   const uid = req.uid;
   if (!(await cohort.isHardPaywallUser(uid, { versionCode: cohort.versionFromReq(req), userDoc, fromClient: true }))) {
-    return { newUser: false, signup: true, daily: true, instagram: true, youtube: true };
+    return { newUser: false, signup: true, daily: true, instagram: true, youtube: true, referral: true };
   }
   const entitled = entitlement.isActive(userDoc);
-  return { newUser: true, signup: false, daily: false, instagram: entitled, youtube: entitled };
+  return { newUser: true, signup: false, daily: false, instagram: entitled, youtube: entitled, referral: false };
 }
 
 async function loadUserDoc(uid) {
@@ -75,7 +75,13 @@ router.get('/status', requireAuth, async (req, res) => {
     return res.json({
       success: true,
       // The app hides rewards whose eligible flag is false.
-      eligible: { signupBonus: e.signup, dailyLogin: e.daily, instagramFollow: e.instagram, youtubeSubscribe: e.youtube },
+      eligible: {
+        signupBonus: e.signup,
+        dailyLogin: e.daily,
+        instagramFollow: e.instagram,
+        youtubeSubscribe: e.youtube,
+        referral: e.referral, // Refer & Earn (hidden in the app when false)
+      },
       credits: typeof d.credits === 'number' ? d.credits : 0,
       signupBonus: { claimed: d.creditsSignupBonusGranted === true, amount: FREE_GRANTS.NEW_USER_BONUS },
       dailyLogin: { claimed: d.creditsDailyDate === todayUtc(), amount: FREE_GRANTS.DAILY_LOGIN },

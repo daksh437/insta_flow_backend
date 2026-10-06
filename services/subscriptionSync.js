@@ -25,6 +25,16 @@ const ACTIVE_STATES = new Set(['SUBSCRIPTION_STATE_ACTIVE', 'SUBSCRIPTION_STATE_
 const REMINDER_LEAD_MS = 24 * 60 * 60 * 1000;
 const TRIAL_REMINDERS = 'trial_reminders';
 
+/** False for a deleted account (tombstone) or a missing user document. */
+async function accountExists(uid) {
+  const db = getDb();
+  const [tomb, user] = await Promise.all([
+    db.collection('deleted_users').doc(uid).get(),
+    db.collection('users').doc(uid).get(),
+  ]);
+  return !tomb.exists && user.exists;
+}
+
 function grantModule() {
   return require('./purchaseGrant'); // lazy: purchaseGrant requires this module too
 }
@@ -113,6 +123,10 @@ async function syncSubscription({ purchaseToken, productId, uid: uidHint }) {
   const owner = await resolveOwner({ data, purchaseToken, uidHint });
   if (!owner.uid) return { status: uidHint ? 'invalid' : 'unowned', reason: owner.reason };
   const uid = owner.uid;
+  if (!(await accountExists(uid))) {
+    console.warn(`[subscriptionSync] owner ${uid} was deleted — skipping, nothing written`);
+    return { status: 'deleted_user', uid };
+  }
 
   const orderId = line.latestSuccessfulOrderId || data.latestOrderId || null;
   const { state, expiryMillis, paid, active } = periodState(data, line);
@@ -189,6 +203,7 @@ async function handleVoided({ purchaseToken, orderId }) {
   if (!grantDoc) return { status: 'no_grant' };
   const grant = grantDoc.data();
   const uid = grant.uid;
+  if (!(await accountExists(uid))) return { status: 'deleted_user', uid };
   let clawed = 0;
   let duplicate = false;
   await db.runTransaction(async (tx) => {
@@ -227,4 +242,4 @@ async function handleVoided({ purchaseToken, orderId }) {
   return { status: 'clawed_back', uid, amount: clawed };
 }
 
-module.exports = { syncSubscription, handleVoided, isTrialPeriod, periodState, TRIAL_REMINDERS };
+module.exports = { syncSubscription, handleVoided, isTrialPeriod, periodState, accountExists, TRIAL_REMINDERS };

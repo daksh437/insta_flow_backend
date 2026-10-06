@@ -74,6 +74,15 @@ const now = expiry - 23 * H;
     assert.strictEqual(store.get('trial_reminders/u2'), undefined);
   });
 
+  await t('account deleted → reminder dropped, user doc not recreated', async () => {
+    store.set('trial_reminders/ghost', { uid: 'ghost', orderId: 'GPA.1', dueAt: new Date(expiry - 24 * H) });
+    const before = pushes.length;
+    await reminder.sendDueTrialReminders(now);
+    assert.strictEqual(pushes.length, before);
+    assert.strictEqual(store.get('users/ghost'), undefined);
+    assert.strictEqual(store.get('trial_reminders/ghost'), undefined);
+  });
+
   await t('not due yet → stays scheduled', async () => {
     trialUser('u3');
     assert.strictEqual((await reminder.sendDueTrialReminders(expiry - 30 * H)).sent, 0);

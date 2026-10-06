@@ -30,7 +30,10 @@ function reset() {
     'studio_images/u1/a.png', 'studio_images/u1/b.png',
     'users/u1/profile_avatar.jpg', 'instagram_publish/u1/v.mp4',
     'studio_images/OTHER/keep.png', // another user's file — must survive
+    'scheduled_media/u1/old.jpg',
   ];
+  state.keyed = { 'trial_reminders/u1': true, 'google_tokens/u1': true };
+  state.tombstone = null;
   state.userDocDeleted = false;
   state.authDeleted = null;
   state.batches = 0;
@@ -60,12 +63,17 @@ const stubs = {
   '../utils/firestoreAdmin': {
     getDb: () => ({
       collection: (name) => ({
-        doc: () => ({
+        doc: (id) => ({
+          get: async () => ({ exists: !!state.keyed[`${name}/${id}`] }),
+          set: async (data) => { if (name === 'deleted_users') state.tombstone = { id, ...data }; },
           collection: (sub) => makeQuery(counter(state.sub, sub), sub),
           listCollections: async () => Object.keys(state.sub).map((id) => ({
             id, ...makeQuery(counter(state.sub, id), id),
           })),
-          delete: async () => { state.userDocDeleted = true; },
+          delete: async () => {
+            if (name === 'users') state.userDocDeleted = true;
+            else delete state.keyed[`${name}/${id}`];
+          },
         }),
         where: () => makeQuery(counter(state.top, name), name),
       }),
@@ -148,6 +156,15 @@ function call() {
   await t('the Firebase Auth user is deleted — the step the old flow skipped', () => {
     assert.strictEqual(state.authDeleted, 'u1',
       'without this the same Google account signs straight back in');
+  });
+
+  await t('scheduled_media files, trial reminder and Google tokens are deleted too', () => {
+    assert.ok(!state.storage.some((p) => p.startsWith('scheduled_media/u1/')));
+    assert.deepStrictEqual(state.keyed, {});
+  });
+
+  await t('a deleted_users tombstone is written (Play notifications never recreate the user)', () => {
+    assert.strictEqual(state.tombstone && state.tombstone.id, 'u1');
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);
