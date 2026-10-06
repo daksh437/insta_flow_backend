@@ -21,6 +21,7 @@ const state = { balance: 0, spends: {} };
 const stubs = {
   '../services/creditService': {
     costForPath: () => 1,
+    endpointToCostKey: () => null, // not a text tool: always charged
     labelForEndpoint: () => 'Rewrite Tool',
     getBalance: async () => { await tick(); return state.balance; },
     // Mirrors the real transaction: async round trip, then atomic check+write.

@@ -16,10 +16,12 @@ const instagramRoutes = require('./routes/instagram');
 const schedulerRoutes = require('./routes/scheduler');
 const rewardsRoutes = require('./routes/rewards');
 const accountRoutes = require('./routes/account');
+const playRoutes = require('./routes/play');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const { processPendingScheduledPosts } = require('./services/scheduler_service');
 const { sendPushToAllUsers } = require('./services/pushService');
 const { retryPendingVerifications } = require('./services/purchaseGrant');
+const { sendDueTrialReminders } = require('./services/trialReminder');
 const { checkPlayAccess } = require('./utils/playVerify');
 const { requireAdmin } = require('./middleware/adminAuth');
 const { buildAiFallback } = require('./utils/aiFallback');
@@ -72,6 +74,8 @@ app.get('/', (req, res) => {
   res.json({ success: true, message: 'InstaFlow Backend API' });
 });
 
+// Google Play RTDN (Pub/Sub push, OIDC-verified inside the route).
+app.use('/play', playRoutes);
 app.use('/auth', authRoutes);
 
 app.use('/', aiAccessRoutes);
@@ -103,7 +107,7 @@ app.get('/health/play', requireAdmin, async (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-10-06-play-verified-grants' });
+  res.json({ success: true, build: '2026-10-06-entitlement-rtdn' });
 });
 
 // eslint-disable-next-line no-unused-vars
@@ -196,6 +200,13 @@ function startServer() {
   cron.schedule('*/10 * * * *', () => {
     retryPendingVerifications().catch((err) => {
       console.error('[credits] pending verification retry failed:', err?.message || err);
+    });
+  });
+
+  // Trial-ending reminders (~24h before the ₹5 trial converts), hourly.
+  cron.schedule('15 * * * *', () => {
+    sendDueTrialReminders().catch((err) => {
+      console.error('[trialReminder] cron failed:', err?.message || err);
     });
   });
 

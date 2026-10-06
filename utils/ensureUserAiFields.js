@@ -3,8 +3,9 @@
  * Call after reading user doc so every request self-heals broken/missing fields.
  * Never overwrites existing trialStartDate/trialEndDate if present.
  *
- * New user / missing fields get:
- *   planType, trialStartDate, trialEndDate, dailyAiUsed, dailyAiDate, totalAiUsed
+ * Missing fields get: planType, trialStartDate, trialEndDate, dailyAiUsed,
+ * dailyAiDate, totalAiUsed. Users in the hard-paywall cohort
+ * ({ legacyTrial: false }) get no trial dates and planType 'free'.
  * with merge: true; returns merged object.
  */
 
@@ -36,28 +37,34 @@ function toDate(v) {
  * @param {object} data - Current doc data (snap.data())
  * @returns {Promise<object>} Updated data (merged with any writes).
  */
-async function ensureUserAiFields(userDocRef, data) {
+async function ensureUserAiFields(userDocRef, data, { legacyTrial = true } = {}) {
   if (!userDocRef || !data) return data;
   const firestore = getDb();
   if (!firestore) return data;
 
   const now = new Date();
   const todayUtc = todayDateStrUtc();
-  // 3-day free trial for new users (then Premium — no permanent free tier).
-  const trialEndDefault = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
   const updates = {};
 
-  // New user / missing: planType = trial, trialStartDate = now, trialEndDate = now+3 (only planType is source of truth)
-  if (data.planType == null && data.plan_type == null) {
-    updates.planType = 'trial';
-  }
-  if (data.trialStartDate == null && data.trialStart == null) {
-    updates.trialStartDate = now;
-  }
-  if (data.trialEndDate == null && data.trialEnd == null) {
-    updates.trialEndDate = trialEndDefault;
-    const ptCheck = String((data.planType ?? data.plan_type) || '').toLowerCase();
-    if (ptCheck !== 'premium') updates.planType = 'trial';
+  if (!legacyTrial) {
+    // Hard-paywall cohort (services/cohort.js): no legacy 3-day trial — access
+    // comes from credits and the Play subscription entitlement.
+    if (data.planType == null && data.plan_type == null) updates.planType = 'free';
+  } else {
+    // Legacy (existing users, and old app versions): 3-day "trial" label as
+    // before. With credits on it is display-only; AI still costs credits.
+    const trialEndDefault = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+    if (data.planType == null && data.plan_type == null) {
+      updates.planType = 'trial';
+    }
+    if (data.trialStartDate == null && data.trialStart == null) {
+      updates.trialStartDate = now;
+    }
+    if (data.trialEndDate == null && data.trialEnd == null) {
+      updates.trialEndDate = trialEndDefault;
+      const ptCheck = String((data.planType ?? data.plan_type) || '').toLowerCase();
+      if (ptCheck !== 'premium') updates.planType = 'trial';
+    }
   }
   if (typeof (data.dailyAiUsed ?? data.daily_ai_used) !== 'number') {
     updates.dailyAiUsed = 0;

@@ -18,8 +18,47 @@ const { getDb } = require('../utils/firestoreAdmin');
 const { requireAuth } = require('../middleware/verifyAuth');
 const creditService = require('../services/creditService');
 const { FREE_GRANTS } = require('../config/credits');
+const cohort = require('../services/cohort');
+const entitlement = require('../services/entitlement');
 
 const router = express.Router();
+
+/**
+ * Which free rewards this user may claim. Everyone outside the hard-paywall
+ * cohort (existing users, and new signups still on an old app version): all
+ * of them, as before. Hard-paywall users get no free credits: no welcome
+ * gift, no daily credits; Instagram/YouTube only with an active entitlement.
+ */
+async function eligibility(req, userDoc) {
+  const uid = req.uid;
+  if (!(await cohort.isHardPaywallUser(uid, { versionCode: cohort.versionFromReq(req), userDoc, fromClient: true }))) {
+    return { newUser: false, signup: true, daily: true, instagram: true, youtube: true };
+  }
+  const entitled = entitlement.isActive(userDoc);
+  return { newUser: true, signup: false, daily: false, instagram: entitled, youtube: entitled };
+}
+
+async function loadUserDoc(uid) {
+  const db = getDb();
+  const snap = db ? await db.collection('users').doc(uid).get() : null;
+  return snap && snap.exists ? snap.data() : null;
+}
+
+/** Wraps a claim handler: 403 NOT_ELIGIBLE when the user may not claim [reward]. */
+function eligibleFor(reward) {
+  return async (req, res, next) => {
+    try {
+      const e = await eligibility(req, await loadUserDoc(req.uid));
+      if (!e[reward]) {
+        return res.status(403).json({ success: false, granted: false, error: 'NOT_ELIGIBLE', message: 'This reward is not available on your account.' });
+      }
+      return next();
+    } catch (err) {
+      console.error('[rewards] eligibility check failed:', err.message);
+      return res.status(500).json({ success: false, error: 'SERVER_ERROR' });
+    }
+  };
+}
 
 function todayUtc() {
   return new Date().toISOString().slice(0, 10);
@@ -32,8 +71,11 @@ router.get('/status', requireAuth, async (req, res) => {
   try {
     const snap = await db.collection('users').doc(uid).get();
     const d = snap.exists ? snap.data() : {};
+    const e = await eligibility(req, snap.exists ? d : null);
     return res.json({
       success: true,
+      // The app hides rewards whose eligible flag is false.
+      eligible: { signupBonus: e.signup, dailyLogin: e.daily, instagramFollow: e.instagram, youtubeSubscribe: e.youtube },
       credits: typeof d.credits === 'number' ? d.credits : 0,
       signupBonus: { claimed: d.creditsSignupBonusGranted === true, amount: FREE_GRANTS.NEW_USER_BONUS },
       dailyLogin: { claimed: d.creditsDailyDate === todayUtc(), amount: FREE_GRANTS.DAILY_LOGIN },
@@ -46,22 +88,22 @@ router.get('/status', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/claim-signup', requireAuth, async (req, res) => {
+router.post('/claim-signup', requireAuth, eligibleFor('signup'), async (req, res) => {
   const granted = await creditService.ensureSignupBonus(req.uid);
   return res.json({ success: true, granted, amount: FREE_GRANTS.NEW_USER_BONUS });
 });
 
-router.post('/claim-daily', requireAuth, async (req, res) => {
+router.post('/claim-daily', requireAuth, eligibleFor('daily'), async (req, res) => {
   const granted = await creditService.grantDailyLoginIfDue(req.uid);
   return res.json({ success: true, granted, amount: FREE_GRANTS.DAILY_LOGIN });
 });
 
-router.post('/claim-instagram-follow', requireAuth, async (req, res) => {
+router.post('/claim-instagram-follow', requireAuth, eligibleFor('instagram'), async (req, res) => {
   const granted = await creditService.claimInstagramFollow(req.uid);
   return res.json({ success: true, granted, amount: FREE_GRANTS.INSTAGRAM_FOLLOW });
 });
 
-router.post('/claim-youtube-subscribe', requireAuth, async (req, res) => {
+router.post('/claim-youtube-subscribe', requireAuth, eligibleFor('youtube'), async (req, res) => {
   const granted = await creditService.claimYoutubeSubscribe(req.uid);
   return res.json({ success: true, granted, amount: FREE_GRANTS.YOUTUBE_SUBSCRIBE });
 });

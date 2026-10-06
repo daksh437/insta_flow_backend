@@ -291,6 +291,33 @@ async function spend(uid, cost, idemKey, description) {
 // exactly where they were: balance restored and the idempotency key cleared,
 // so a retry is charged fresh rather than silently running free.
 // Returns true if a refund happened, false if there was nothing to reverse.
+/**
+ * Entitled users' text generations: no credits, one shared fair-use count per
+ * UTC day (users/{uid}/text_usage/{YYYY-MM-DD}). Idempotent on the request key
+ * like spend(), and reversed by refund() when the generation fails.
+ * @returns {Promise<boolean>} false = today's fair-use limit reached.
+ */
+async function useTextQuota(uid, idemKey, cap) {
+  const db = getDb();
+  if (!db || !uid) return false;
+  const day = todayUtc();
+  const userRef = db.collection('users').doc(uid);
+  const usageRef = userRef.collection('text_usage').doc(day);
+  const keyRef = idemKey ? userRef.collection('credit_spends').doc(String(idemKey)) : null;
+  return db.runTransaction(async (tx) => {
+    if (keyRef) {
+      const keySnap = await tx.get(keyRef);
+      if (keySnap.exists) return true; // same request retried
+    }
+    const usage = await tx.get(usageRef);
+    const count = usage.exists && typeof usage.data().count === 'number' ? usage.data().count : 0;
+    if (count >= cap) return false;
+    tx.set(usageRef, { count: count + 1, updatedAt: new Date() }, { merge: true });
+    if (keyRef) tx.set(keyRef, { cost: 0, textQuotaDay: day, at: new Date() });
+    return true;
+  });
+}
+
 async function refund(uid, idemKey, description) {
   const db = getDb();
   if (!db || !uid || !idemKey) return false;
@@ -300,6 +327,16 @@ async function refund(uid, idemKey, description) {
     return await db.runTransaction(async (tx) => {
       const keySnap = await tx.get(keyRef);
       if (!keySnap.exists) return false; // never charged, or already refunded
+      const quotaDay = keySnap.data().textQuotaDay;
+      if (quotaDay) {
+        // Unlimited-text generation that failed: give the fair-use slot back.
+        const usageRef = db.collection('users').doc(uid).collection('text_usage').doc(quotaDay);
+        const usage = await tx.get(usageRef);
+        const count = usage.exists && typeof usage.data().count === 'number' ? usage.data().count : 0;
+        tx.set(usageRef, { count: Math.max(0, count - 1), updatedAt: new Date() }, { merge: true });
+        tx.delete(keyRef);
+        return true;
+      }
       const cost = keySnap.data().cost;
       if (!(cost > 0)) { tx.delete(keyRef); return false; }
       const snap = await tx.get(ref);
@@ -356,6 +393,7 @@ module.exports = {
   grant,
   adminAdjust,
   spend,
+  useTextQuota,
   getHistory,
   recordTransactionInTx,
   endpointToCostKey,

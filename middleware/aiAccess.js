@@ -15,7 +15,9 @@ const { resolvePlan } = require('../services/planResolver');
 const { buildAiFallback } = require('../utils/aiFallback');
 const creditService = require('../services/creditService');
 const { verifySubscription } = require('../utils/playVerify');
-const { FREE_GRANTS } = require('../config/credits');
+const { FREE_GRANTS, TEXT_COST_KEYS, TEXT_DAILY_FAIR_USE } = require('../config/credits');
+const entitlement = require('../services/entitlement');
+const cohort = require('../services/cohort');
 
 const USERS = 'users';
 const AI_REQUEST_KEYS = 'ai_request_keys';
@@ -308,7 +310,7 @@ async function activatePremiumFromReceiptIfNeeded(ref, user, now) {
  * Reset dailyAiUsed only when planType === 'free' (and date rollover).
  * Returns exact response shape: no fallback planType, no dailyLimit ?? 2.
  */
-async function getAiAccess(uid) {
+async function getAiAccess(uid, { versionCode = null, fromClient = false } = {}) {
   const resetAtUtc = getNextMidnightUtc();
   const { user, firestoreOk } = await loadUser(uid);
 
@@ -324,7 +326,8 @@ async function getAiAccess(uid) {
   const firestore = getDb();
   const today = todayDateStr();
   const ref = firestore.collection(USERS).doc(uid);
-  const healed = await ensureUserAiFields(ref, user);
+  const hardCohort = await cohort.isHardPaywallUser(uid, { versionCode, userDoc: user, fromClient });
+  const healed = await ensureUserAiFields(ref, user, { legacyTrial: !hardCohort });
   Object.assign(user, healed);
 
   const now = new Date();
@@ -481,6 +484,29 @@ async function requireAiAccess(req, res, next) {
   const endpointFinal = req._aiEndpoint || req.baseUrl + req.path;
   const cost = creditService.costForPath(endpointFinal);
   req._creditCost = cost;
+
+  // Active subscription (trial or paid): text tools are free, under one
+  // shared hidden fair-use cap per UTC day. Images always use credits.
+  if (TEXT_COST_KEYS.has(creditService.endpointToCostKey(endpointFinal))) {
+    const { user } = await loadUser(uidTrim);
+    if (user && entitlement.isActive(user)) {
+      const ok = await creditService.useTextQuota(uidTrim, req.idempotencyKey, TEXT_DAILY_FAIR_USE);
+      if (!ok) {
+        logAiAccess('warn', { event: 'AI_FAIR_USE_LIMIT', userId: uidTrim, endpoint: endpointFinal });
+        return res.status(429).json({
+          success: false,
+          error: 'FAIR_USE_LIMIT',
+          code: 'FAIR_USE_LIMIT',
+          message: "You've reached today's fair-use limit for text tools. It resets at midnight UTC.",
+        });
+      }
+      req._creditCost = 0;
+      req.aiAccess = { allowed: true, cost: 0, unlimitedText: true };
+      req.aiAccessAllowed = true;
+      req._creditCharged = true; // refundAiCharge gives the fair-use slot back on failure
+      return next();
+    }
+  }
 
   // No auto-grants here (signup bonus / daily login) — those are claimed
   // explicitly from the in-app Gift screen (routes/rewards.js). A brand-new
@@ -675,7 +701,12 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
       // this has to run before that early return) rewards whoever referred
       // them. Capped per-referrer via FREE_GRANTS.REFERRAL_MAX so a fake
       // signup farm can't be used to mint credits.
-      if (CREDITS_ENABLED && data.referredByUid && data.referralAiRewardGranted !== true) {
+      // Hard-paywall users (services/cohort.js) are never part of a
+      // free-credit reward, on either side of the referral.
+      if (
+        CREDITS_ENABLED && data.referredByUid && data.referralAiRewardGranted !== true &&
+        !(await cohort.isHardPaywallUser(uid)) && !(await cohort.isHardPaywallUser(data.referredByUid))
+      ) {
         const referrerRef = firestore.collection(USERS).doc(data.referredByUid);
         const referrerSnap = await tx.get(referrerRef);
         if (referrerSnap.exists) {

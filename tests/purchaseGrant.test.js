@@ -68,7 +68,7 @@ const pending = () => [...store.keys()].filter((k) => k.startsWith('pending_purc
 const reset = () => { store.clear(); store.set('users/u1', { credits: 5 }); };
 const activeSub = (over = {}) => ({
   subscriptionState: 'SUBSCRIPTION_STATE_ACTIVE',
-  lineItems: [{ productId: 'instaflow_starter_299', latestSuccessfulOrderId: 'GPA.1111-0' }],
+  lineItems: [{ productId: 'instaflow_starter_299', latestSuccessfulOrderId: 'GPA.1111-0', expiryTime: new Date(Date.now() + 30 * 86400000).toISOString() }],
   externalAccountIdentifiers: { obfuscatedExternalAccountId: 'u1' },
   ...over,
 });
@@ -84,6 +84,18 @@ const PACK = { uid: 'u1', productId: 'credits_79', purchaseToken: 'tok-pack' };
     assert.strictEqual(r.status, 'granted');
     assert.strictEqual(credits('u1'), 1005);
     assert.ok([...store.keys()].some((k) => k.startsWith('users/u1/credit_transactions/')));
+  });
+
+  await t('verified subscription → server entitlement with Play expiry', async () => {
+    reset();
+    const expiry = new Date(Date.now() + 3 * 86400000);
+    play.sub = activeSub({ lineItems: [{ productId: 'instaflow_starter_299', latestSuccessfulOrderId: 'GPA.2222-0', expiryTime: expiry.toISOString() }] });
+    await verifyAndGrant({ ...SUB, purchaseToken: 'tok-ent' });
+    const e = store.get('users/u1').entitlement;
+    assert.strictEqual(e.active, true);
+    assert.strictEqual(e.productId, 'instaflow_starter_299');
+    assert.strictEqual(e.expiresAt.getTime(), expiry.getTime());
+    reset(); play.sub = activeSub(); await verifyAndGrant(SUB); // restore state for the next test
   });
 
   await t('same purchase again → no second grant', async () => {

@@ -4,6 +4,7 @@
  */
 
 const express = require('express');
+const cohort = require('../services/cohort');
 const { getDb } = require('../utils/firestoreAdmin');
 const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, todayDateStr, logAiAccess } = require('../middleware/aiAccess');
 const { requireAuth } = require('../middleware/verifyAuth');
@@ -72,7 +73,7 @@ router.get('/check-ai-access', requireAuth, async (req, res) => {
     // No auto-grants here — signup bonus / daily login are claimed
     // explicitly from the Gift screen (routes/rewards.js), not silently on
     // app open or first AI call.
-    const access = await getAiAccess(uid);
+    const access = await getAiAccess(uid, { versionCode: cohort.versionFromReq(req), fromClient: true });
     const planType = access.planType;
     const trialEndDate = access.trialEndDate ?? null;
     const trialDaysLeft = access.trialDaysLeft != null ? access.trialDaysLeft : (planType === 'trial' ? 0 : null);
@@ -336,12 +337,15 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
       },
     }, { merge: true });
 
-    const access = await getAiAccess(uid);
+    const access = await getAiAccess(uid, { versionCode: cohort.versionFromReq(req), fromClient: true });
     return res.json({
       success: true,
       ok: true,
       granted: result.status === 'granted',
       credits: result.amount,
+      // The app logs trial_start once per trial order (deduped on orderId).
+      isTrial: result.isTrial === true,
+      orderId: result.orderId || null,
       planType: access.planType || 'free',
       allowed: access.allowed === true,
       premiumExpiry: access.premiumExpiry ?? null,
