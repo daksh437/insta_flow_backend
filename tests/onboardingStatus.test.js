@@ -60,26 +60,30 @@ function reset() {
 
   await t('user created before RELEASE_AT → nothing shown, no Play call', async () => {
     reset();
-    assert.deepStrictEqual(await svc.getStatus('oldie'), { newUser: false, showOnboarding: false, showPaywall: false });
+    assert.deepStrictEqual(await svc.getStatus('oldie'), { newUser: false, showOnboarding: false, showPaywall: false, entitlementExpiresAt: null });
     assert.strictEqual(playCalls, 0);
   });
   await t('new user without a profile → onboarding + paywall', async () => {
     reset();
-    assert.deepStrictEqual(await svc.getStatus('fresh'), { newUser: true, showOnboarding: true, showPaywall: true });
+    assert.deepStrictEqual(await svc.getStatus('fresh'), { newUser: true, showOnboarding: true, showPaywall: true, entitlementExpiresAt: null });
   });
   await t('client sets onboardingCompletedAt → onboarding skipped, paywall STILL shown', async () => {
     reset();
-    assert.deepStrictEqual(await svc.getStatus('skipper'), { newUser: true, showOnboarding: false, showPaywall: true });
+    assert.deepStrictEqual(await svc.getStatus('skipper'), { newUser: true, showOnboarding: false, showPaywall: true, entitlementExpiresAt: null });
   });
   await t('new user with an active entitlement → no paywall', async () => {
     reset();
-    assert.strictEqual((await svc.getStatus('payer')).showPaywall, false);
+    const s = await svc.getStatus('payer');
+    assert.strictEqual(s.showPaywall, false);
+    assert.strictEqual(s.entitlementExpiresAt, users.payer.doc.entitlement.expiresAt.getTime());
     assert.strictEqual(playCalls, 0);
   });
   await t('expired entitlement, Play says renewed → refreshed, no paywall', async () => {
     reset();
     playAnswer = { status: 'valid', reason: 'SUBSCRIPTION_STATE_ACTIVE', expiryMillis: Date.now() + 30 * 86400000 };
-    assert.strictEqual((await svc.getStatus('lapsed')).showPaywall, false);
+    const s = await svc.getStatus('lapsed');
+    assert.strictEqual(s.showPaywall, false);
+    assert.strictEqual(s.entitlementExpiresAt, playAnswer.expiryMillis);
     assert.strictEqual(users.lapsed.doc.entitlement.active, true);
   });
   await t('expired entitlement, Play says expired → paywall, entitlement marked inactive', async () => {
@@ -91,7 +95,9 @@ function reset() {
   await t('Play outage → a previously verified payer is not locked out', async () => {
     reset();
     playAnswer = { status: 'unavailable', reason: 'play_503' };
-    assert.strictEqual((await svc.getStatus('lapsed')).showPaywall, false);
+    const s = await svc.getStatus('lapsed');
+    assert.strictEqual(s.showPaywall, false);
+    assert.strictEqual(s.entitlementExpiresAt, null); // unknown expiry → app must not cache it
     assert.strictEqual(writes.length, 0);
   });
   await t('RELEASE_AT unset or invalid → nobody is new', async () => {

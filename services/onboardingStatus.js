@@ -37,8 +37,12 @@ async function getStatus(uid) {
   const releaseAt = releaseAtMillis();
   const base = decide({ createdAtMillis, releaseAt, profile: doc.profile, entitled: false });
   // Existing users never reach the paywall check (and never cost a Play call).
-  const entitled = base.newUser ? await entitlement.resolveActive(uid, doc) : false;
-  return decide({ createdAtMillis, releaseAt, profile: doc.profile, entitled });
+  const ent = base.newUser ? await entitlement.resolveActive(uid, doc) : { active: false, expiresAtMillis: null };
+  return {
+    ...decide({ createdAtMillis, releaseAt, profile: doc.profile, entitled: ent.active }),
+    // Lets the app trust an active entitlement offline until it expires.
+    entitlementExpiresAt: ent.active ? ent.expiresAtMillis : null,
+  };
 }
 
 module.exports = { decide, getStatus, releaseAtMillis };

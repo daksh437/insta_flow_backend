@@ -38,22 +38,26 @@ async function record(uid, { productId, expiryMillis, state, active = true }) {
  * Active entitlement for this user, re-checking Google Play when the stored one
  * is missing/expired but a verified plan receipt exists. A Play outage never
  * locks out a user whose receipt was verified before.
+ * @returns {Promise<{active:boolean, expiresAtMillis:number|null}>}
+ *   expiresAtMillis is null when unknown (e.g. Play outage).
  */
 async function resolveActive(uid, userDoc) {
-  if (isActive(userDoc)) return true;
+  if (isActive(userDoc)) return { active: true, expiresAtMillis: toMillis(userDoc.entitlement.expiresAt) };
+  const inactive = { active: false, expiresAtMillis: null };
   const sub = userDoc && userDoc.subscription;
-  if (!sub || !sub.purchaseToken || !PLAN_CREDITS[sub.productId]) return false;
+  if (!sub || !sub.purchaseToken || !PLAN_CREDITS[sub.productId]) return inactive;
   const { verifyPurchase } = require('./purchaseGrant');
   const v = await verifyPurchase({ uid, productId: sub.productId, purchaseToken: sub.purchaseToken });
   if (v.status === 'valid') {
     await record(uid, { productId: sub.productId, expiryMillis: v.expiryMillis, state: v.reason });
-    return Number.isFinite(v.expiryMillis) && v.expiryMillis > Date.now();
+    const active = Number.isFinite(v.expiryMillis) && v.expiryMillis > Date.now();
+    return active ? { active, expiresAtMillis: v.expiryMillis } : inactive;
   }
   if (v.status === 'invalid') {
     await record(uid, { productId: sub.productId, expiryMillis: v.expiryMillis, state: v.reason, active: false });
-    return false;
+    return inactive;
   }
-  return sub.verified === true;
+  return { active: sub.verified === true, expiresAtMillis: null };
 }
 
 module.exports = { isActive, record, resolveActive, toMillis };
