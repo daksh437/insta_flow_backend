@@ -66,7 +66,7 @@ const credits = (uid) => store.get(`users/${uid}`).credits || 0;
     }
     assert.strictEqual(credits('oldie'), 50 + 5 + 20 + 20);
     const s = await status('oldie');
-    assert.deepStrictEqual(s.eligible, { signupBonus: true, dailyLogin: true, instagramFollow: true, youtubeSubscribe: true });
+    assert.deepStrictEqual(s.eligible, { signupBonus: true, dailyLogin: true, instagramFollow: true, youtubeSubscribe: true, referral: true });
   });
 
   await t('new user without entitlement: every claim → 403 NOT_ELIGIBLE, 0 credits', async () => {
@@ -77,7 +77,7 @@ const credits = (uid) => store.get(`users/${uid}`).credits || 0;
     }
     assert.strictEqual(credits('fresh'), 0);
     const s = await status('fresh');
-    assert.deepStrictEqual(s.eligible, { signupBonus: false, dailyLogin: false, instagramFollow: false, youtubeSubscribe: false });
+    assert.deepStrictEqual(s.eligible, { signupBonus: false, dailyLogin: false, instagramFollow: false, youtubeSubscribe: false, referral: false });
   });
 
   await t('new user with an active entitlement: Instagram/YouTube yes, welcome/daily still no', async () => {
@@ -87,7 +87,7 @@ const credits = (uid) => store.get(`users/${uid}`).credits || 0;
     assert.strictEqual((await post('payer', 'claim-youtube-subscribe')).body.granted, true);
     assert.strictEqual(credits('payer'), 140);
     const s = await status('payer');
-    assert.deepStrictEqual(s.eligible, { signupBonus: false, dailyLogin: false, instagramFollow: true, youtubeSubscribe: true });
+    assert.deepStrictEqual(s.eligible, { signupBonus: false, dailyLogin: false, instagramFollow: true, youtubeSubscribe: true, referral: false });
   });
 
   await t('new account still on the OLD app → legacy rewards (welcome gift works, never stuck at 0)', async () => {

@@ -225,6 +225,23 @@ function sub({ uid = 'u1', state = 'SUBSCRIPTION_STATE_ACTIVE', orderId = 'GPA.1
     assert.strictEqual(credits('u7'), 25);
   });
 
+  await t('referrer in the hard-paywall cohort → no purchase bonus; legacy referrer still gets it', async () => {
+    process.env.TEST_NEW_USER_UIDS = 'refHard';
+    process.env.HARD_PAYWALL_MIN_VERSION_CODE = '51';
+    store.set('users/refHard', { credits: 0, entitlement: { cohort: 'hard' } });
+    store.set('users/refOld', { credits: 0 });
+    store.set('users/u10', { credits: 0, referredByUid: 'refHard' });
+    store.set('users/u11', { credits: 0, referredByUid: 'refOld' });
+    play.tokK = sub({ uid: 'u10', orderId: 'GPA.10', trial: false, expiresIn: 30 * DAY });
+    play.tokL = sub({ uid: 'u11', orderId: 'GPA.11', trial: false, expiresIn: 30 * DAY });
+    await verifyAndGrant({ uid: 'u10', productId: 'instaflow_starter_299', purchaseToken: 'tokK' });
+    await verifyAndGrant({ uid: 'u11', productId: 'instaflow_starter_299', purchaseToken: 'tokL' });
+    assert.strictEqual(credits('refHard'), 0);
+    assert.strictEqual(credits('refOld'), 100); // 10% of 1000
+    delete process.env.TEST_NEW_USER_UIDS;
+    delete process.env.HARD_PAYWALL_MIN_VERSION_CODE;
+  });
+
   await t('renewal refunded while the trial stands → that order clawed back, everPaid stays true', async () => {
     const before = credits('u1');
     const r = await sync.handleVoided({ purchaseToken: 'tokA', orderId: 'GPA.1..1' });
