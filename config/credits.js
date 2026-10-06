@@ -76,6 +76,23 @@ const PACK_CREDITS = {
   'credits_149': 600,
 };
 
+// ₹5 / 3-day intro offer on Starter (Play: instaflow_starter_299 / base plan
+// "starter" / offer "trial-3days"). The trial order grants TRIAL_CREDITS once;
+// every later paid order (conversion, renewals) grants PLAN_CREDITS.
+const TRIAL_OFFER_ID = 'trial-3days';
+const TRIAL_CREDITS = 100;
+
+// Text tools are unlimited while a subscription entitlement is active, under
+// one shared hidden fair-use cap per UTC day. Never shown to users.
+// Every other cost key (images, unmapped endpoints) always uses credits.
+const TEXT_COST_KEYS = new Set([
+  'caption', 'hashtag', 'bio', 'comment_reply', 'rewrite', 'hooks',
+  'reels_script', 'post_ideas', 'content_engine', 'content_planner', 'strategy',
+  'niche_analysis', 'trending', 'carousel', 'caption_from_media',
+  'post_analyze', 'full_assist', 'growth_coach', 'viral_score',
+]);
+const TEXT_DAILY_FAIR_USE = 50;
+
 function costForEndpoint(key) {
   return CREDIT_COSTS[key] ?? DEFAULT_COST;
 }
@@ -87,5 +104,9 @@ module.exports = {
   PLAN_CREDITS,
   PACK_CREDITS,
   REFERRAL_PURCHASE_BONUS_PCT,
+  TRIAL_OFFER_ID,
+  TRIAL_CREDITS,
+  TEXT_COST_KEYS,
+  TEXT_DAILY_FAIR_USE,
   costForEndpoint,
 };

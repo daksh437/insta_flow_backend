@@ -14,6 +14,7 @@ const { getDb } = require('../utils/firestoreAdmin');
 const { getPublisherApi, PACKAGE_NAME } = require('../utils/playVerify');
 const creditService = require('./creditService');
 const entitlement = require('./entitlement');
+const cohort = require('./cohort');
 const { PLAN_CREDITS, PACK_CREDITS, REFERRAL_PURCHASE_BONUS_PCT } = require('../config/credits');
 
 const PENDING = 'pending_purchase_verifications';
@@ -87,43 +88,71 @@ async function verifyPurchase({ uid, productId, purchaseToken }) {
   }
 }
 
-/** Idempotent credit grant (+ referral purchase bonus). Returns { granted, amount }. */
-async function grantCredits({ uid, productId, purchaseToken, orderId }) {
+// Play order ids: the first order of a subscription is "GPA.x", renewals are
+// "GPA.x..0", "GPA.x..1", ... Packs have one order per token.
+const isRenewalOrderId = (orderId) => /\.\.\d+$/.test(String(orderId || ''));
+
+/**
+ * Idempotent credit grant for ONE Play order (+ referral purchase bonus on the
+ * first order of a token). Keyed by orderId, so every renewal grants exactly
+ * once. The first order of a token is also recorded under the older
+ * token+product key, so grants made before order keying are never repeated.
+ * [amount] defaults to the plan/pack amount; [kind] is 'trial'|'plan'|'pack'.
+ * Returns { granted, amount }.
+ */
+async function grantCredits({ uid, productId, purchaseToken, orderId, amount, kind }) {
   const db = getDb();
-  const amount = PLAN_CREDITS[productId] || PACK_CREDITS[productId] || 0;
-  if (!amount) return { granted: false, amount: 0 };
-  const grantRef = db.collection('credit_grants').doc(sha(`${purchaseToken}:${productId}`));
+  const credits = amount ?? (PLAN_CREDITS[productId] || PACK_CREDITS[productId] || 0);
+  if (!credits) return { granted: false, amount: 0 };
+  const grants = db.collection('credit_grants');
+  const legacyRef = grants.doc(sha(`${purchaseToken}:${productId}`));
+  const firstOrder = !isRenewalOrderId(orderId);
+  const orderRef = orderId ? grants.doc(sha(`order:${orderId}`)) : legacyRef;
+  const grantKind = kind || (PACK_CREDITS[productId] ? 'pack' : 'plan');
   let referredByUid = null;
   let alreadyGranted = false;
   await db.runTransaction(async (tx) => {
-    const g = await tx.get(grantRef);
+    const g = await tx.get(orderRef);
     if (g.exists) { alreadyGranted = true; return; }
+    if (firstOrder && orderRef !== legacyRef) {
+      const legacy = await tx.get(legacyRef);
+      if (legacy.exists) { alreadyGranted = true; return; }
+    }
     const uref = db.collection('users').doc(uid);
     const usnap = await tx.get(uref);
     const cur = usnap.exists && typeof usnap.data().credits === 'number' ? usnap.data().credits : 0;
     referredByUid = usnap.exists ? (usnap.data().referredByUid || null) : null;
-    const balanceAfter = cur + amount;
+    const balanceAfter = cur + credits;
+    const doc = { uid, productId, amount: credits, orderId: orderId || null, kind: grantKind, verified: true, at: new Date() };
     tx.set(uref, { credits: balanceAfter, creditsUpdatedAt: new Date() }, { merge: true });
-    tx.set(grantRef, { uid, productId, amount, orderId: orderId || null, verified: true, at: new Date() });
+    tx.set(orderRef, doc);
+    if (firstOrder && orderRef !== legacyRef) tx.set(legacyRef, { ...doc, aliasOf: orderRef.id });
     creditService.recordTransactionInTx(tx, uid, {
-      type: 'purchase',
-      amount,
+      type: grantKind === 'trial' ? 'trial' : 'purchase',
+      amount: credits,
       balanceAfter,
-      description: `Purchased ${productId}`,
-      meta: { productId, orderId: orderId || null },
+      description: grantKind === 'trial'
+        ? 'Trial started'
+        : (isRenewalOrderId(orderId) ? `Renewal ${productId}` : `Purchased ${productId}`),
+      meta: { productId, orderId: orderId || null, kind: grantKind },
     });
   });
-  if (alreadyGranted) return { granted: false, amount };
-  console.log(`[credits] verified purchase grant +${amount} to ${uid} (${productId} ${orderId || ''})`);
-  if (referredByUid && referredByUid !== uid) {
-    await grantReferralBonus({ referrerUid: referredByUid, buyerUid: uid, productId, purchaseToken, amount });
+  if (alreadyGranted) return { granted: false, amount: credits };
+  console.log(`[credits] verified ${grantKind} grant +${credits} to ${uid} (${productId} ${orderId || ''})`);
+  if (firstOrder && referredByUid && referredByUid !== uid) {
+    await grantReferralBonus({ referrerUid: referredByUid, buyerUid: uid, productId, purchaseToken, amount: credits });
   }
-  return { granted: true, amount };
+  return { granted: true, amount: credits };
 }
 
 async function grantReferralBonus({ referrerUid, buyerUid, productId, purchaseToken, amount }) {
   const bonus = Math.round(amount * REFERRAL_PURCHASE_BONUS_PCT);
   if (bonus <= 0) return;
+  // New users (after RELEASE_AT) never receive free credits, referral bonuses included.
+  if (await cohort.isNewUser(referrerUid)) {
+    console.log(`[credits] referral purchase bonus skipped: referrer ${referrerUid} is a new user`);
+    return;
+  }
   const db = getDb();
   const refGrantRef = db.collection('credit_grants').doc(sha(`referral:${purchaseToken}:${productId}`));
   try {
@@ -162,15 +191,31 @@ async function grantReferralBonus({ referrerUid, buyerUid, productId, purchaseTo
  * @returns {Promise<{status:'granted'|'already_granted'|'invalid'|'pending', amount?:number, reason?:string}>}
  */
 async function verifyAndGrant({ uid, productId, purchaseToken }) {
-  const v = await verifyPurchase({ uid, productId, purchaseToken });
   const pendingRef = getDb().collection(PENDING).doc(sha(`${purchaseToken}:${productId}`));
-  if (v.status === 'valid') {
-    const g = await grantCredits({ uid, productId, purchaseToken, orderId: v.orderId });
-    if (PLAN_CREDITS[productId]) {
-      await entitlement.record(uid, { productId, expiryMillis: v.expiryMillis, state: v.reason });
+  let v;
+  if (PLAN_CREDITS[productId]) {
+    // Subscriptions: grant for the current order + entitlement, the same code
+    // path as RTDN (services/subscriptionSync.js).
+    const { syncSubscription } = require('./subscriptionSync');
+    const r = await syncSubscription({ uid, productId, purchaseToken });
+    if (r.status === 'synced' && r.paid) {
+      await pendingRef.delete().catch(() => {});
+      return {
+        status: r.granted ? 'granted' : 'already_granted',
+        amount: r.amount,
+        isTrial: r.isTrial,
+        orderId: r.orderId,
+      };
     }
-    await pendingRef.delete().catch(() => {});
-    return { status: g.granted ? 'granted' : 'already_granted', amount: g.amount };
+    v = r.status === 'synced' ? { status: 'invalid', reason: `subscriptionState=${r.state}` } : r;
+  } else {
+    v = await verifyPurchase({ uid, productId, purchaseToken });
+    if (v.status === 'valid') {
+      const g = await grantCredits({ uid, productId, purchaseToken, orderId: v.orderId, kind: 'pack' });
+      await entitlement.write(uid, { everPaid: true });
+      await pendingRef.delete().catch(() => {});
+      return { status: g.granted ? 'granted' : 'already_granted', amount: g.amount };
+    }
   }
   if (v.status === 'invalid') {
     console.error(`[credits] PURCHASE VERIFICATION FAILED uid=${uid} product=${productId}: ${v.reason} — no credits granted`);
@@ -210,4 +255,15 @@ async function retryPendingVerifications() {
   }
 }
 
-module.exports = { verifyPurchase, verifyAndGrant, retryPendingVerifications };
+module.exports = {
+  verifyPurchase,
+  verifyAndGrant,
+  retryPendingVerifications,
+  grantCredits,
+  claimOwnership,
+  classifyApiError,
+  isRenewalOrderId,
+  GRANTABLE_SUB_STATES,
+  PENDING,
+  sha,
+};

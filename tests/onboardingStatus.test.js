@@ -1,7 +1,8 @@
 /**
- * Onboarding + first paywall only for users created at/after RELEASE_AT,
- * decided server-side; existing users never see them. The paywall depends on
- * the server entitlement, never on the client-writable onboarding flag.
+ * Onboarding + hard paywall only for users created at/after RELEASE_AT,
+ * decided server-side; existing users never see them. The hard gate depends
+ * on the server entitlement (never-paid + not active), never on the
+ * client-writable onboarding flag.
  */
 const assert = require('assert');
 const Module = require('module');
@@ -18,9 +19,8 @@ const past = () => new Date(Date.now() - 86400000);
 const receipt = { productId: 'instaflow_starter_299', purchaseToken: 'tok-1', verified: true };
 
 const users = {};
-const writes = [];
-let playAnswer = null; // what the stubbed Play verification returns
-let playCalls = 0;
+let syncAnswer = null; // what the stubbed Play sync returns
+let syncCalls = 0;
 const stubs = {
   '../utils/firestoreAdmin': {
     getAdmin: () => ({ auth: () => ({ getUser: async (uid) => ({ metadata: { creationTime: new Date(users[uid].created).toUTCString() } }) }) }),
@@ -28,30 +28,31 @@ const stubs = {
       collection: () => ({
         doc: (uid) => ({
           get: async () => ({ exists: !!users[uid].doc, data: () => users[uid].doc }),
-          set: async (d) => { writes.push({ uid, d }); users[uid].doc = { ...(users[uid].doc || {}), ...d }; },
         }),
       }),
     }),
   },
-  './purchaseGrant': { verifyPurchase: async () => { playCalls++; return playAnswer; } },
+  './subscriptionSync': { syncSubscription: async () => { syncCalls++; return syncAnswer; } },
 };
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (req, ...rest) { return stubs[req] ? req : origResolve.call(this, req, ...rest); };
 for (const k of Object.keys(stubs)) require.cache[k] = { id: k, exports: stubs[k], loaded: true };
 
 const svc = require('../services/onboardingStatus');
+const cohort = require('../services/cohort');
 
 function reset() {
   Object.assign(users, {
     oldie: { created: '2026-09-01T10:00:00Z', doc: { credits: 5, subscription: receipt } },
     fresh: { created: NEW, doc: null },
     skipper: { created: NEW, doc: { profile: { niche: 'food', onboardingCompletedAt: 123 } } },
-    payer: { created: NEW, doc: { profile: { onboardingCompletedAt: 1 }, entitlement: { active: true, expiresAt: future() } } },
-    lapsed: { created: NEW, doc: { entitlement: { active: true, expiresAt: past() }, subscription: receipt } },
+    payer: { created: NEW, doc: { profile: { onboardingCompletedAt: 1 }, entitlement: { active: true, everPaid: true, expiresAt: future() } } },
+    lapsed: { created: NEW, doc: { entitlement: { active: true, everPaid: true, expiresAt: past() }, subscription: receipt } },
+    comp: { created: NEW, doc: { entitlement: { active: true, source: 'admin_comp', expiresAt: future() } } },
   });
-  writes.length = 0;
-  playCalls = 0;
-  playAnswer = null;
+  cohort._cache.clear();
+  syncCalls = 0;
+  syncAnswer = null;
   process.env.RELEASE_AT = '2026-10-07T00:00:00Z';
 }
 
@@ -60,45 +61,59 @@ function reset() {
 
   await t('user created before RELEASE_AT → nothing shown, no Play call', async () => {
     reset();
-    assert.deepStrictEqual(await svc.getStatus('oldie'), { newUser: false, showOnboarding: false, showPaywall: false, entitlementExpiresAt: null });
-    assert.strictEqual(playCalls, 0);
+    const s = await svc.getStatus('oldie');
+    assert.strictEqual(s.newUser, false);
+    assert.strictEqual(s.showOnboarding, false);
+    assert.strictEqual(s.showPaywall, false);
+    assert.strictEqual(syncCalls, 0);
   });
-  await t('new user without a profile → onboarding + paywall', async () => {
+  await t('new user without a profile → onboarding + hard paywall', async () => {
     reset();
-    assert.deepStrictEqual(await svc.getStatus('fresh'), { newUser: true, showOnboarding: true, showPaywall: true, entitlementExpiresAt: null });
+    const s = await svc.getStatus('fresh');
+    assert.deepStrictEqual([s.newUser, s.showOnboarding, s.showPaywall, s.entitled, s.everPaid], [true, true, true, false, false]);
   });
-  await t('client sets onboardingCompletedAt → onboarding skipped, paywall STILL shown', async () => {
+  await t('client sets onboardingCompletedAt → onboarding skipped, hard paywall STILL shown', async () => {
     reset();
-    assert.deepStrictEqual(await svc.getStatus('skipper'), { newUser: true, showOnboarding: false, showPaywall: true, entitlementExpiresAt: null });
+    const s = await svc.getStatus('skipper');
+    assert.strictEqual(s.showOnboarding, false);
+    assert.strictEqual(s.showPaywall, true);
   });
-  await t('new user with an active entitlement → no paywall', async () => {
+  await t('new user with an active entitlement → no paywall, expiry returned', async () => {
     reset();
     const s = await svc.getStatus('payer');
     assert.strictEqual(s.showPaywall, false);
+    assert.strictEqual(s.entitled, true);
     assert.strictEqual(s.entitlementExpiresAt, users.payer.doc.entitlement.expiresAt.getTime());
-    assert.strictEqual(playCalls, 0);
+    assert.strictEqual(syncCalls, 0);
   });
-  await t('expired entitlement, Play says renewed → refreshed, no paywall', async () => {
+  await t('expired entitlement, Play says renewed → active again', async () => {
     reset();
-    playAnswer = { status: 'valid', reason: 'SUBSCRIPTION_STATE_ACTIVE', expiryMillis: Date.now() + 30 * 86400000 };
+    const exp = Date.now() + 30 * 86400000;
+    syncAnswer = { status: 'synced', entitlement: { active: true, expiresAtMillis: exp } };
     const s = await svc.getStatus('lapsed');
-    assert.strictEqual(s.showPaywall, false);
-    assert.strictEqual(s.entitlementExpiresAt, playAnswer.expiryMillis);
-    assert.strictEqual(users.lapsed.doc.entitlement.active, true);
+    assert.strictEqual(s.entitled, true);
+    assert.strictEqual(s.entitlementExpiresAt, exp);
   });
-  await t('expired entitlement, Play says expired → paywall, entitlement marked inactive', async () => {
+  await t('trial/subscription ended (paid before) → NOT hard-gated, not entitled', async () => {
     reset();
-    playAnswer = { status: 'invalid', reason: 'subscriptionState=SUBSCRIPTION_STATE_EXPIRED', expiryMillis: Date.now() - 1000 };
-    assert.strictEqual((await svc.getStatus('lapsed')).showPaywall, true);
-    assert.strictEqual(users.lapsed.doc.entitlement.active, false);
-  });
-  await t('Play outage → a previously verified payer is not locked out', async () => {
-    reset();
-    playAnswer = { status: 'unavailable', reason: 'play_503' };
+    syncAnswer = { status: 'synced', entitlement: { active: false, expiresAtMillis: Date.now() - 1000 } };
     const s = await svc.getStatus('lapsed');
+    assert.strictEqual(s.entitled, false);
+    assert.strictEqual(s.everPaid, true);
     assert.strictEqual(s.showPaywall, false);
+  });
+  await t('Play outage → a previously verified payer keeps access', async () => {
+    reset();
+    syncAnswer = { status: 'unavailable', reason: 'play_503' };
+    const s = await svc.getStatus('lapsed');
+    assert.strictEqual(s.entitled, true);
     assert.strictEqual(s.entitlementExpiresAt, null); // unknown expiry → app must not cache it
-    assert.strictEqual(writes.length, 0);
+  });
+  await t('admin comp entitlement (review account) → no paywall', async () => {
+    reset();
+    const s = await svc.getStatus('comp');
+    assert.strictEqual(s.showPaywall, false);
+    assert.strictEqual(s.entitled, true);
   });
   await t('RELEASE_AT unset or invalid → nobody is new', async () => {
     for (const v of [undefined, '', 'not-a-date']) {

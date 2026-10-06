@@ -3,8 +3,8 @@
  * Call after reading user doc so every request self-heals broken/missing fields.
  * Never overwrites existing trialStartDate/trialEndDate if present.
  *
- * New user / missing fields get:
- *   planType, trialStartDate, trialEndDate, dailyAiUsed, dailyAiDate, totalAiUsed
+ * Missing fields get: planType ('free'), dailyAiUsed, dailyAiDate, totalAiUsed.
+ * No trial dates are created any more.
  * with merge: true; returns merged object.
  */
 
@@ -41,23 +41,15 @@ async function ensureUserAiFields(userDocRef, data) {
   const firestore = getDb();
   if (!firestore) return data;
 
-  const now = new Date();
   const todayUtc = todayDateStrUtc();
-  // 3-day free trial for new users (then Premium — no permanent free tier).
-  const trialEndDefault = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
   const updates = {};
 
-  // New user / missing: planType = trial, trialStartDate = now, trialEndDate = now+3 (only planType is source of truth)
+  // No more automatic 3-day trial: it used to be stamped here on every user
+  // doc missing trial dates. Access now comes from credits and the Play
+  // subscription entitlement (services/entitlement.js). Existing trial dates
+  // are left untouched (read-only, legacy).
   if (data.planType == null && data.plan_type == null) {
-    updates.planType = 'trial';
-  }
-  if (data.trialStartDate == null && data.trialStart == null) {
-    updates.trialStartDate = now;
-  }
-  if (data.trialEndDate == null && data.trialEnd == null) {
-    updates.trialEndDate = trialEndDefault;
-    const ptCheck = String((data.planType ?? data.plan_type) || '').toLowerCase();
-    if (ptCheck !== 'premium') updates.planType = 'trial';
+    updates.planType = 'free';
   }
   if (typeof (data.dailyAiUsed ?? data.daily_ai_used) !== 'number') {
     updates.dailyAiUsed = 0;

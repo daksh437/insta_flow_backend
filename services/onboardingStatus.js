@@ -1,48 +1,49 @@
 /**
- * Post-signup flow for NEW users only, decided here (never by a device-local
- * flag): a user is new when their Firebase Auth account was created at or after
- * RELEASE_AT (ISO date, env on Render = the day the app version goes live on
- * Play). RELEASE_AT unset/invalid → nobody is new, so existing users are never
- * pushed into onboarding or the hard paywall by a misconfiguration.
+ * Post-signup flow for NEW users only (services/cohort.js: Auth account
+ * created at/after RELEASE_AT). Existing users never see onboarding or the
+ * hard paywall. RELEASE_AT unset/invalid → nobody is new.
  *
- * The two answers are independent:
- *  - showOnboarding: new user without profile.onboardingCompletedAt. That
- *    field is client-writable, so it only controls the intro pages.
- *  - showPaywall: new user without an active server entitlement
- *    (users/{uid}.entitlement, server-only). Skipping onboarding does not
- *    skip the paywall.
+ * Independent answers:
+ *  - showOnboarding: new user without profile.onboardingCompletedAt (client-
+ *    writable, so it only controls the intro pages).
+ *  - showPaywall (the hard gate, no X): new user who has NEVER paid
+ *    (entitlement.everPaid, server-only) and has no active entitlement.
+ *    Users whose trial/subscription ended are not gated: they keep using
+ *    their credits and see the normal paywall (with X) when they run out.
  */
-const { getDb, getAdmin } = require('../utils/firestoreAdmin');
+const { getDb } = require('../utils/firestoreAdmin');
 const entitlement = require('./entitlement');
-
-function releaseAtMillis(raw = process.env.RELEASE_AT) {
-  const ms = Date.parse(String(raw || '').trim());
-  return Number.isFinite(ms) ? ms : null;
-}
+const cohort = require('./cohort');
 
 /** Pure decision, exported for tests. */
-function decide({ createdAtMillis, releaseAt, profile, entitled }) {
-  const newUser = releaseAt != null && Number.isFinite(createdAtMillis) && createdAtMillis >= releaseAt;
+function decide({ createdAtMillis, releaseAt, profile, entitled, everPaid }) {
+  const newUser = cohort.isNewByCreation(createdAtMillis, releaseAt);
   const completed = !!(profile && profile.onboardingCompletedAt);
-  return { newUser, showOnboarding: newUser && !completed, showPaywall: newUser && !entitled };
+  return {
+    newUser,
+    showOnboarding: newUser && !completed,
+    showPaywall: newUser && !entitled && !everPaid,
+  };
 }
 
 async function getStatus(uid) {
-  const [authUser, snap] = await Promise.all([
-    getAdmin().auth().getUser(uid),
+  const [createdAtMillis, snap] = await Promise.all([
+    cohort.createdAtMillis(uid),
     getDb().collection('users').doc(uid).get(),
   ]);
   const doc = snap.exists ? snap.data() || {} : {};
-  const createdAtMillis = Date.parse(authUser.metadata.creationTime);
-  const releaseAt = releaseAtMillis();
-  const base = decide({ createdAtMillis, releaseAt, profile: doc.profile, entitled: false });
-  // Existing users never reach the paywall check (and never cost a Play call).
+  const releaseAt = cohort.releaseAtMillis();
+  const base = decide({ createdAtMillis, releaseAt, profile: doc.profile, entitled: false, everPaid: false });
+  // Existing users never reach the entitlement check (and never cost a Play call).
   const ent = base.newUser ? await entitlement.resolveActive(uid, doc) : { active: false, expiresAtMillis: null };
+  const everPaid = entitlement.everPaid(doc);
   return {
-    ...decide({ createdAtMillis, releaseAt, profile: doc.profile, entitled: ent.active }),
+    ...decide({ createdAtMillis, releaseAt, profile: doc.profile, entitled: ent.active, everPaid }),
+    entitled: ent.active,
+    everPaid,
     // Lets the app trust an active entitlement offline until it expires.
     entitlementExpiresAt: ent.active ? ent.expiresAtMillis : null,
   };
 }
 
-module.exports = { decide, getStatus, releaseAtMillis };
+module.exports = { decide, getStatus, releaseAtMillis: cohort.releaseAtMillis };

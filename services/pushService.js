@@ -101,4 +101,39 @@ async function sendPushToAllUsers({ title, body, data = {}, filter = null } = {}
   return { targetTokens: tokens.length, successCount, failureCount };
 }
 
-module.exports = { sendPushToAllUsers };
+/**
+ * Push to one user's devices. Dead tokens are removed from their doc.
+ * @returns {Promise<{targetTokens:number, successCount:number}>}
+ */
+async function sendPushToUser(uid, { title, body, data = {} } = {}) {
+  const admin = getAdmin();
+  const db = getDb();
+  if (!admin || !db || !uid || !title || !body) return { targetTokens: 0, successCount: 0 };
+  const ref = db.collection('users').doc(uid);
+  const snap = await ref.get();
+  const tokens = snap.exists ? tokensFromUser(snap.data() || {}) : [];
+  if (tokens.length === 0) return { targetTokens: 0, successCount: 0 };
+  const sender = admin.messaging().sendEachForMulticast
+    ? admin.messaging().sendEachForMulticast.bind(admin.messaging())
+    : admin.messaging().sendMulticast.bind(admin.messaging());
+  const resp = await sender({
+    tokens,
+    notification: { title, body },
+    data: Object.fromEntries(Object.entries(data || {}).map(([k, v]) => [k, String(v)])),
+    android: { priority: 'high', notification: { channelId: 'general' } },
+  });
+  const dead = [];
+  (resp.responses || []).forEach((r, i) => {
+    const code = (r.error && r.error.code) || '';
+    if (!r.success && (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token'))) {
+      dead.push(tokens[i]);
+    }
+  });
+  if (dead.length) {
+    const existing = Array.isArray(snap.data().fcmTokens) ? snap.data().fcmTokens : [];
+    await ref.update({ fcmTokens: existing.filter((t) => !dead.includes(String(t))) }).catch(() => null);
+  }
+  return { targetTokens: tokens.length, successCount: Number(resp.successCount || 0) };
+}
+
+module.exports = { sendPushToAllUsers, sendPushToUser };

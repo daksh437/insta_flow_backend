@@ -68,7 +68,7 @@ const pending = () => [...store.keys()].filter((k) => k.startsWith('pending_purc
 const reset = () => { store.clear(); store.set('users/u1', { credits: 5 }); };
 const activeSub = (over = {}) => ({
   subscriptionState: 'SUBSCRIPTION_STATE_ACTIVE',
-  lineItems: [{ productId: 'instaflow_starter_299', latestSuccessfulOrderId: 'GPA.1111-0' }],
+  lineItems: [{ productId: 'instaflow_starter_299', latestSuccessfulOrderId: 'GPA.1111-0', expiryTime: new Date(Date.now() + 30 * 86400000).toISOString() }],
   externalAccountIdentifiers: { obfuscatedExternalAccountId: 'u1' },
   ...over,
 });

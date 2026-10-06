@@ -342,6 +342,9 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
       ok: true,
       granted: result.status === 'granted',
       credits: result.amount,
+      // The app logs trial_start once per trial order (deduped on orderId).
+      isTrial: result.isTrial === true,
+      orderId: result.orderId || null,
       planType: access.planType || 'free',
       allowed: access.allowed === true,
       premiumExpiry: access.premiumExpiry ?? null,
