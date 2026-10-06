@@ -19,6 +19,7 @@ const express = require('express');
 const { requireAuth } = require('../middleware/verifyAuth');
 const { strictLimiter } = require('../middleware/rateLimiters');
 const { getDb, getAdmin } = require('../utils/firestoreAdmin');
+const onboardingStatus = require('../services/onboardingStatus');
 
 const router = express.Router();
 
@@ -81,6 +82,21 @@ async function deleteCollection(ref, label, counts) {
  * usable and the user can retry — the Auth user goes last, because once it is
  * gone the caller can no longer authenticate to finish the job.
  */
+/**
+ * GET /account/onboarding-status → { newUser, showOnboarding, showPaywall }.
+ * Server-side decision (Auth creation time vs RELEASE_AT); see
+ * services/onboardingStatus.js.
+ */
+router.get('/onboarding-status', requireAuth, async (req, res) => {
+  try {
+    const status = await onboardingStatus.getStatus(req.uid);
+    return res.json({ success: true, ...status });
+  } catch (e) {
+    console.error('[account] onboarding-status failed:', e.message);
+    return res.status(500).json({ success: false, error: 'INTERNAL_ERROR' });
+  }
+});
+
 router.post('/delete', requireAuth, strictLimiter, async (req, res) => {
   const uid = req.uid;
   const db = getDb();

@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const { getDb } = require('../utils/firestoreAdmin');
 const { getPublisherApi, PACKAGE_NAME } = require('../utils/playVerify');
 const creditService = require('./creditService');
+const entitlement = require('./entitlement');
 const { PLAN_CREDITS, PACK_CREDITS, REFERRAL_PURCHASE_BONUS_PCT } = require('../config/credits');
 
 const PENDING = 'pending_purchase_verifications';
@@ -65,11 +66,12 @@ async function verifyPurchase({ uid, productId, purchaseToken }) {
       const { data } = await api.purchases.subscriptionsv2.get({ packageName: PACKAGE_NAME, token: purchaseToken });
       const line = (data.lineItems || []).find((l) => l.productId === productId);
       if (!line) return { status: 'invalid', reason: `token is not for ${productId}` };
-      if (!GRANTABLE_SUB_STATES.has(data.subscriptionState)) return { status: 'invalid', reason: `subscriptionState=${data.subscriptionState}` };
+      const expiryMillis = Date.parse(line.expiryTime) || null;
+      if (!GRANTABLE_SUB_STATES.has(data.subscriptionState)) return { status: 'invalid', reason: `subscriptionState=${data.subscriptionState}`, expiryMillis };
       const accountId = data.externalAccountIdentifiers && data.externalAccountIdentifiers.obfuscatedExternalAccountId;
       const own = await claimOwnership({ uid, purchaseToken, obfuscatedId: accountId });
       if (!own.owned) return { status: 'invalid', reason: own.reason };
-      return { status: 'valid', reason: data.subscriptionState, orderId: line.latestSuccessfulOrderId || data.latestOrderId };
+      return { status: 'valid', reason: data.subscriptionState, orderId: line.latestSuccessfulOrderId || data.latestOrderId, expiryMillis };
     }
     if (PACK_CREDITS[productId]) {
       const { data } = await api.purchases.products.get({ packageName: PACKAGE_NAME, productId, token: purchaseToken });
@@ -164,6 +166,9 @@ async function verifyAndGrant({ uid, productId, purchaseToken }) {
   const pendingRef = getDb().collection(PENDING).doc(sha(`${purchaseToken}:${productId}`));
   if (v.status === 'valid') {
     const g = await grantCredits({ uid, productId, purchaseToken, orderId: v.orderId });
+    if (PLAN_CREDITS[productId]) {
+      await entitlement.record(uid, { productId, expiryMillis: v.expiryMillis, state: v.reason });
+    }
     await pendingRef.delete().catch(() => {});
     return { status: g.granted ? 'granted' : 'already_granted', amount: g.amount };
   }

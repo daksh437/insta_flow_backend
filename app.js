@@ -103,7 +103,7 @@ app.get('/health/play', requireAdmin, async (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-10-06-play-verified-grants' });
+  res.json({ success: true, build: '2026-10-06-post-signup-onboarding' });
 });
 
 // eslint-disable-next-line no-unused-vars
