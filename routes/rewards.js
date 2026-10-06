@@ -24,12 +24,14 @@ const entitlement = require('../services/entitlement');
 const router = express.Router();
 
 /**
- * Which free rewards this user may claim. Existing users: all of them, as
- * before. New users (after RELEASE_AT) get no free credits: no welcome gift,
- * no daily credits; Instagram/YouTube rewards only with an active entitlement.
+ * Which free rewards this user may claim. Everyone outside the hard-paywall
+ * cohort (existing users, and new signups still on an old app version): all
+ * of them, as before. Hard-paywall users get no free credits: no welcome
+ * gift, no daily credits; Instagram/YouTube only with an active entitlement.
  */
-async function eligibility(uid, userDoc) {
-  if (!(await cohort.isNewUser(uid))) {
+async function eligibility(req, userDoc) {
+  const uid = req.uid;
+  if (!(await cohort.isHardPaywallUser(uid, { versionCode: cohort.versionFromReq(req), userDoc }))) {
     return { newUser: false, signup: true, daily: true, instagram: true, youtube: true };
   }
   const entitled = entitlement.isActive(userDoc);
@@ -39,14 +41,14 @@ async function eligibility(uid, userDoc) {
 async function loadUserDoc(uid) {
   const db = getDb();
   const snap = db ? await db.collection('users').doc(uid).get() : null;
-  return snap && snap.exists ? snap.data() : {};
+  return snap && snap.exists ? snap.data() : null;
 }
 
 /** Wraps a claim handler: 403 NOT_ELIGIBLE when the user may not claim [reward]. */
 function eligibleFor(reward) {
   return async (req, res, next) => {
     try {
-      const e = await eligibility(req.uid, await loadUserDoc(req.uid));
+      const e = await eligibility(req, await loadUserDoc(req.uid));
       if (!e[reward]) {
         return res.status(403).json({ success: false, granted: false, error: 'NOT_ELIGIBLE', message: 'This reward is not available on your account.' });
       }
@@ -69,7 +71,7 @@ router.get('/status', requireAuth, async (req, res) => {
   try {
     const snap = await db.collection('users').doc(uid).get();
     const d = snap.exists ? snap.data() : {};
-    const e = await eligibility(uid, d);
+    const e = await eligibility(req, snap.exists ? d : null);
     return res.json({
       success: true,
       // The app hides rewards whose eligible flag is false.

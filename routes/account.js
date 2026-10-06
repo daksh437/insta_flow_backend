@@ -20,6 +20,7 @@ const { requireAuth } = require('../middleware/verifyAuth');
 const { strictLimiter } = require('../middleware/rateLimiters');
 const { getDb, getAdmin } = require('../utils/firestoreAdmin');
 const onboardingStatus = require('../services/onboardingStatus');
+const cohort = require('../services/cohort');
 
 const router = express.Router();
 
@@ -89,7 +90,7 @@ async function deleteCollection(ref, label, counts) {
  */
 router.get('/onboarding-status', requireAuth, async (req, res) => {
   try {
-    const status = await onboardingStatus.getStatus(req.uid);
+    const status = await onboardingStatus.getStatus(req.uid, { versionCode: cohort.versionFromReq(req) });
     return res.json({ success: true, ...status });
   } catch (e) {
     console.error('[account] onboarding-status failed:', e.message);

@@ -1,7 +1,8 @@
 /**
- * New users (created after RELEASE_AT) never get free credits: no welcome
- * gift, no daily credits; Instagram/YouTube rewards only with an active
- * entitlement. Existing users keep every reward exactly as before.
+ * Hard-paywall users (created after RELEASE_AT AND on the new app) never get
+ * free credits: no welcome gift, no daily credits; Instagram/YouTube only
+ * with an active entitlement. Existing users — and new signups still on the
+ * old app (build 48 has no ₹5 paywall) — keep every reward as before.
  */
 const assert = require('assert');
 const Module = require('module');
@@ -16,7 +17,7 @@ async function t(name, fn) {
 }
 
 const { db, store, FieldValue } = createFakeFirestore();
-const created = { oldie: '2026-09-01T00:00:00Z', fresh: '2026-10-08T00:00:00Z', payer: '2026-10-08T00:00:00Z' };
+const created = { oldie: '2026-09-01T00:00:00Z', fresh: '2026-10-08T00:00:00Z', payer: '2026-10-08T00:00:00Z', oldApp: '2026-10-08T00:00:00Z' };
 const stubs = {
   '../utils/firestoreAdmin': {
     getDb: () => db,
@@ -31,6 +32,7 @@ Module._resolveFilename = function (req, ...rest) { return stubs[req] ? req : or
 for (const k of Object.keys(stubs)) require.cache[k] = { id: k, exports: stubs[k], loaded: true };
 
 process.env.RELEASE_AT = '2026-10-07T00:00:00Z';
+process.env.HARD_PAYWALL_MIN_VERSION_CODE = '51';
 process.env.AI_REQUIRE_TOKEN = 'false';
 const quiet = console.log; console.log = () => {}; console.warn = () => {};
 const router = require('../routes/rewards');
@@ -39,11 +41,13 @@ const app = express();
 app.use(express.json());
 app.use('/rewards', router);
 let base;
-const post = async (uid, path) => {
-  const r = await fetch(`${base}/rewards/${path}`, { method: 'POST', headers: { 'x-user-uid': uid } });
+// New app sends its build number; build 48 sends no version header.
+const NEW_APP = { 'x-app-version-code': '51' };
+const post = async (uid, path, headers = NEW_APP) => {
+  const r = await fetch(`${base}/rewards/${path}`, { method: 'POST', headers: { 'x-user-uid': uid, ...headers } });
   return { status: r.status, body: await r.json() };
 };
-const status = async (uid) => (await fetch(`${base}/rewards/status`, { headers: { 'x-user-uid': uid } })).json();
+const status = async (uid, headers = NEW_APP) => (await fetch(`${base}/rewards/status`, { headers: { 'x-user-uid': uid, ...headers } })).json();
 const credits = (uid) => store.get(`users/${uid}`).credits || 0;
 
 (async () => {
@@ -84,6 +88,20 @@ const credits = (uid) => store.get(`users/${uid}`).credits || 0;
     assert.strictEqual(credits('payer'), 140);
     const s = await status('payer');
     assert.deepStrictEqual(s.eligible, { signupBonus: false, dailyLogin: false, instagramFollow: true, youtubeSubscribe: true });
+  });
+
+  await t('new account still on the OLD app → legacy rewards (welcome gift works, never stuck at 0)', async () => {
+    store.set('users/oldApp', { credits: 0 });
+    const r = await post('oldApp', 'claim-signup', {});
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.granted, true);
+    assert.strictEqual(credits('oldApp'), 50);
+  });
+
+  await t('once seen on the new app, the old app cannot be used to claim free credits', async () => {
+    // 'fresh' used the new app above, so the server stored its cohort.
+    assert.strictEqual(store.get('users/fresh').entitlement.cohort, 'hard');
+    assert.strictEqual((await post('fresh', 'claim-daily', {})).status, 403);
   });
 
   await t('RELEASE_AT unset → nobody is new (all rewards open, as today)', async () => {

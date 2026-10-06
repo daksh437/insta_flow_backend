@@ -310,7 +310,7 @@ async function activatePremiumFromReceiptIfNeeded(ref, user, now) {
  * Reset dailyAiUsed only when planType === 'free' (and date rollover).
  * Returns exact response shape: no fallback planType, no dailyLimit ?? 2.
  */
-async function getAiAccess(uid) {
+async function getAiAccess(uid, { versionCode = null } = {}) {
   const resetAtUtc = getNextMidnightUtc();
   const { user, firestoreOk } = await loadUser(uid);
 
@@ -326,7 +326,8 @@ async function getAiAccess(uid) {
   const firestore = getDb();
   const today = todayDateStr();
   const ref = firestore.collection(USERS).doc(uid);
-  const healed = await ensureUserAiFields(ref, user);
+  const hardCohort = await cohort.isHardPaywallUser(uid, { versionCode, userDoc: user });
+  const healed = await ensureUserAiFields(ref, user, { legacyTrial: !hardCohort });
   Object.assign(user, healed);
 
   const now = new Date();
@@ -700,11 +701,11 @@ async function recordAiUsage(uid, requestId, idempotencyKey, options = {}) {
       // this has to run before that early return) rewards whoever referred
       // them. Capped per-referrer via FREE_GRANTS.REFERRAL_MAX so a fake
       // signup farm can't be used to mint credits.
-      // New users (after RELEASE_AT) are never part of a free-credit reward,
-      // on either side of the referral.
+      // Hard-paywall users (services/cohort.js) are never part of a
+      // free-credit reward, on either side of the referral.
       if (
         CREDITS_ENABLED && data.referredByUid && data.referralAiRewardGranted !== true &&
-        !(await cohort.isNewUser(uid)) && !(await cohort.isNewUser(data.referredByUid))
+        !(await cohort.isHardPaywallUser(uid)) && !(await cohort.isHardPaywallUser(data.referredByUid))
       ) {
         const referrerRef = firestore.collection(USERS).doc(data.referredByUid);
         const referrerSnap = await tx.get(referrerRef);

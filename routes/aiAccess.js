@@ -4,6 +4,7 @@
  */
 
 const express = require('express');
+const cohort = require('../services/cohort');
 const { getDb } = require('../utils/firestoreAdmin');
 const { getAiAccess, DAILY_CREDITS_FREE, setPremium, resetCredits, setPlanType, todayDateStr, logAiAccess } = require('../middleware/aiAccess');
 const { requireAuth } = require('../middleware/verifyAuth');
@@ -30,7 +31,7 @@ router.get('/debug/ai-usage/:uid', requireAdmin, async (req, res) => {
     return res.status(400).json({ success: false, ok: false, error: 'Missing uid', message: 'Provide uid in path, e.g. /debug/ai-usage/USER_UID' });
   }
   try {
-    const access = await getAiAccess(uid);
+    const access = await getAiAccess(uid, { versionCode: cohort.versionFromReq(req) });
     const response = {
       success: true,
       ok: true,
@@ -72,7 +73,7 @@ router.get('/check-ai-access', requireAuth, async (req, res) => {
     // No auto-grants here — signup bonus / daily login are claimed
     // explicitly from the Gift screen (routes/rewards.js), not silently on
     // app open or first AI call.
-    const access = await getAiAccess(uid);
+    const access = await getAiAccess(uid, { versionCode: cohort.versionFromReq(req) });
     const planType = access.planType;
     const trialEndDate = access.trialEndDate ?? null;
     const trialDaysLeft = access.trialDaysLeft != null ? access.trialDaysLeft : (planType === 'trial' ? 0 : null);
@@ -336,7 +337,7 @@ router.post('/activate-premium', requireAuth, strictLimiter, async (req, res) =>
       },
     }, { merge: true });
 
-    const access = await getAiAccess(uid);
+    const access = await getAiAccess(uid, { versionCode: cohort.versionFromReq(req) });
     return res.json({
       success: true,
       ok: true,

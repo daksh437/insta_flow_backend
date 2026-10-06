@@ -148,9 +148,9 @@ async function grantCredits({ uid, productId, purchaseToken, orderId, amount, ki
 async function grantReferralBonus({ referrerUid, buyerUid, productId, purchaseToken, amount }) {
   const bonus = Math.round(amount * REFERRAL_PURCHASE_BONUS_PCT);
   if (bonus <= 0) return;
-  // New users (after RELEASE_AT) never receive free credits, referral bonuses included.
-  if (await cohort.isNewUser(referrerUid)) {
-    console.log(`[credits] referral purchase bonus skipped: referrer ${referrerUid} is a new user`);
+  // Hard-paywall users never receive free credits, referral bonuses included.
+  if (await cohort.isHardPaywallUser(referrerUid)) {
+    console.log(`[credits] referral purchase bonus skipped: referrer ${referrerUid} is in the hard-paywall cohort`);
     return;
   }
   const db = getDb();
