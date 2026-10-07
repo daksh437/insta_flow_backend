@@ -135,7 +135,7 @@ router.get('/notification-prefs', requireAuth, async (req, res) => {
   }
 });
 
-router.put('/notification-prefs', requireAuth, async (req, res) => {
+router.post('/notification-prefs', requireAuth, async (req, res) => {
   const body = req.body || {};
   const patch = {};
   for (const key of ['dailyIdeas', 'reminders']) {
@@ -156,7 +156,7 @@ router.put('/notification-prefs', requireAuth, async (req, res) => {
     const snap = await ref.get();
     return res.json({ success: true, prefs: notificationPolicy.prefsOf(snap.data()) });
   } catch (e) {
-    console.error('[account] notification-prefs put failed:', e.message);
+    console.error('[account] notification-prefs save failed:', e.message);
     return res.status(500).json({ success: false, error: 'INTERNAL_ERROR' });
   }
 });

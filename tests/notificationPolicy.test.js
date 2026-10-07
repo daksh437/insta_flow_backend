@@ -210,14 +210,14 @@ function campaign(body) {
     assert.deepStrictEqual(doc('a').marketingPushLog, [noon.getTime()]);
   });
 
-  await t('GET/PUT /account/notification-prefs: defaults on, booleans only, stored', async () => {
+  await t('GET/POST /account/notification-prefs: defaults on, booleans only, stored', async () => {
     reset();
     user('p');
     let r = await route('GET', '/notification-prefs', 'p');
     assert.deepStrictEqual(r.body.prefs, { dailyIdeas: true, reminders: true });
-    r = await route('PUT', '/notification-prefs', 'p', { dailyIdeas: 'no' });
+    r = await route('POST', '/notification-prefs', 'p', { dailyIdeas: 'no' });
     assert.strictEqual(r.status, 400);
-    r = await route('PUT', '/notification-prefs', 'p', { dailyIdeas: false });
+    r = await route('POST', '/notification-prefs', 'p', { dailyIdeas: false });
     assert.deepStrictEqual(r.body.prefs, { dailyIdeas: false, reminders: true });
     assert.strictEqual(doc('p').notificationPrefs.dailyIdeas, false);
     assert.strictEqual((await marketingPush.runScheduled('daily_drop', MON_7PM)).deliveredUsers, 0);
