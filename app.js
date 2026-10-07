@@ -16,7 +16,7 @@ const accountRoutes = require('./routes/account');
 const playRoutes = require('./routes/play');
 const removedFeaturesRoutes = require('./routes/removedFeatures');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
-const { sendPushToAllUsers } = require('./services/pushService');
+const marketingPush = require('./services/marketingPush');
 const { retryPendingVerifications } = require('./services/purchaseGrant');
 const { sendDueTrialReminders } = require('./services/trialReminder');
 const { checkPlayAccess } = require('./utils/playVerify');
@@ -103,7 +103,7 @@ app.get('/health/play', requireAdmin, async (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-10-06-no-instagram-calendar' });
+  res.json({ success: true, build: '2026-10-07-notification-policy' });
 });
 
 // eslint-disable-next-line no-unused-vars
@@ -200,18 +200,24 @@ function startServer() {
     });
   });
 
-  // Daily Viral Drop push — 13:30 UTC = 7:00 PM IST (prime engagement hour for
-  // our India-first audience). Pulls users back to the hero feature every day.
-  cron.schedule('30 13 * * *', () => {
-    sendPushToAllUsers({
-      title: "🔥 Today's Viral Drop is ready",
-      body: 'Your trending idea + hook + hashtags are waiting. Tap to create your next post.',
-      data: { deepLink: '/daily-viral-drop', type: 'daily_drop' },
-    }).catch((err) => {
+  // Marketing pushes, filtered per user by services/notificationPolicy.js
+  // (opt-outs, max 4 per 7 days, no pushes 10 PM–9 AM IST).
+  // Daily Drop: 7 PM IST on Sun/Mon/Wed/Fri, skipped if the app was opened today.
+  cron.schedule('0 19 * * 0,1,3,5', () => {
+    marketingPush.runScheduled('daily_drop').catch((err) => {
       console.error('[Push] Daily drop push failed:', err?.message || err);
     });
-  });
-  console.log('⏰ Daily Viral Drop push cron scheduled (13:30 UTC / 7 PM IST)');
+  }, { timezone: 'Asia/Kolkata' });
+  // 11 AM IST daily: day-1 tip for yesterday's signups, then "We miss you"
+  // (7+ days inactive, at most once per 7 days).
+  cron.schedule('0 11 * * *', async () => {
+    for (const kind of ['onboarding_tip', 'winback']) {
+      await marketingPush.runScheduled(kind).catch((err) => {
+        console.error(`[Push] ${kind} push failed:`, err?.message || err);
+      });
+    }
+  }, { timezone: 'Asia/Kolkata' });
+  console.log('⏰ Marketing push crons scheduled (Daily Drop 7 PM IST Sun/Mon/Wed/Fri; tips + win-back 11 AM IST)');
   });
   return server;
 }

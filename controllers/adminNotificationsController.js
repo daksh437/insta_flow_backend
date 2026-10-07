@@ -1,4 +1,13 @@
 const { getAdmin, getDb } = require('../utils/firestoreAdmin');
+const policy = require('../services/notificationPolicy');
+const marketingPush = require('../services/marketingPush');
+
+// Any instant outside 10 PM–9 AM IST (noon IST), so a preview made at night
+// still shows who would be eligible once quiet hours end.
+const QUIET_FREE_PROBE = Date.UTC(2026, 0, 1, 6, 30);
+
+/** Replaceable in tests. */
+const clock = { now: () => new Date() };
 
 const _rateStore = new Map();
 const RATE_WINDOW_MS = 10 * 60 * 1000;
@@ -82,24 +91,31 @@ function isInSegment(d, payload, now) {
   return !!(lastActive && lastActive < inactiveCutoff);
 }
 
-async function buildAudience(payload) {
+/**
+ * Campaign audience: users in the segment whom the marketing policy allows
+ * right now (not opted out of "reminders", under the 4-per-7-days cap, with a
+ * token). policySkipped counts the rest by reason.
+ */
+async function buildAudience(payload, now = clock.now()) {
   const db = getDb();
-  const now = new Date();
   const snap = await db.collection('users').limit(2000).get();
   const users = [];
   const allTokens = new Set();
+  const policySkipped = {};
   let skipped = 0;
 
   for (const doc of snap.docs) {
     const d = doc.data() || {};
     if (!isInSegment(d, payload, now)) continue;
-    const tokens = getTokens(d);
-    if (tokens.length === 0) {
+    // Quiet hours are checked once for the whole send, not per user.
+    const decision = policy.canSendMarketing(d, policy.isQuietHour(now) ? new Date(QUIET_FREE_PROBE) : now, 'reminders');
+    if (!decision.ok) {
       skipped += 1;
-    } else {
-      tokens.forEach((t) => allTokens.add(t));
+      policySkipped[decision.reason] = (policySkipped[decision.reason] || 0) + 1;
+      continue;
     }
-    users.push({ uid: doc.id, tokens });
+    getTokens(d).forEach((t) => allTokens.add(t));
+    users.push({ uid: doc.id, user: d });
   }
 
   return {
@@ -107,7 +123,8 @@ async function buildAudience(payload) {
     targetUsers: users.length,
     targetTokens: allTokens.size,
     skippedCount: skipped,
-    tokens: Array.from(allTokens),
+    policySkipped,
+    quietHours: policy.isQuietHour(now),
   };
 }
 
@@ -127,17 +144,12 @@ async function previewCampaign(req, res) {
     const err = validatePayload(payload, true);
     if (err) return res.status(400).json({ success: false, error: err });
     const audience = await buildAudience(payload);
-    return res.json({ success: true, ...audience });
+    const { users, ...summary } = audience;
+    return res.json({ success: true, ...summary });
   } catch (e) {
     console.error('[AdminNotify] preview failed', e.message);
     return res.status(500).json({ success: false, error: 'Something went wrong, try again' });
   }
-}
-
-function chunk(list, size) {
-  const out = [];
-  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
-  return out;
 }
 
 async function sendCampaign(req, res) {
@@ -157,9 +169,16 @@ async function sendCampaign(req, res) {
       return res.status(500).json({ success: false, error: 'Something went wrong, try again' });
     }
 
+    const startedAt = clock.now();
+    if (policy.isQuietHour(startedAt)) {
+      return res.status(400).json({
+        success: false,
+        error: 'QUIET_HOURS',
+        message: 'No marketing pushes between 10 PM and 9 AM IST. Try again after 9 AM IST.',
+      });
+    }
     const campaignRef = db.collection('admin_notification_campaigns').doc();
-    const startedAt = new Date();
-    const audience = await buildAudience(payload);
+    const audience = await buildAudience(payload, startedAt);
 
     await campaignRef.set({
       createdByUid: adminUid,
@@ -172,6 +191,7 @@ async function sendCampaign(req, res) {
       targetUsers: audience.targetUsers,
       targetTokens: audience.targetTokens,
       skippedCount: audience.skippedCount,
+      policySkipped: audience.policySkipped,
       successCount: 0,
       failureCount: 0,
       status: 'processing',
@@ -180,58 +200,20 @@ async function sendCampaign(req, res) {
       createdAt: startedAt,
     });
 
-    let successCount = 0;
-    let failureCount = 0;
-    const invalidTokens = new Set();
+    const sent = await marketingPush.deliver({
+      recipients: audience.users,
+      title: payload.title,
+      body: payload.message,
+      data: {
+        ...(payload.deepLink ? { deepLink: payload.deepLink } : {}),
+        ...(payload.ctaLabel ? { ctaLabel: payload.ctaLabel } : {}),
+        segment: payload.segment,
+      },
+      kind: 'campaign',
+      now: startedAt,
+    });
+    const { successCount, failureCount } = sent;
     const sampleErrors = [];
-    const batches = chunk(audience.tokens, 500);
-
-    for (const tokenBatch of batches) {
-      if (tokenBatch.length === 0) continue;
-      const message = {
-        tokens: tokenBatch,
-        notification: { title: payload.title, body: payload.message },
-        data: {
-          ...(payload.deepLink ? { deepLink: payload.deepLink } : {}),
-          ...(payload.ctaLabel ? { ctaLabel: payload.ctaLabel } : {}),
-          segment: payload.segment,
-        },
-      };
-
-      const sender = admin.messaging().sendEachForMulticast
-        ? admin.messaging().sendEachForMulticast.bind(admin.messaging())
-        : admin.messaging().sendMulticast.bind(admin.messaging());
-
-      const resp = await sender(message);
-      successCount += Number(resp.successCount || 0);
-      failureCount += Number(resp.failureCount || 0);
-
-      (resp.responses || []).forEach((r, idx) => {
-        if (r.success) return;
-        const code = r.error?.code || 'unknown';
-        const msg = r.error?.message || 'send failed';
-        if (sampleErrors.length < 20) sampleErrors.push({ code, message: msg });
-        if (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token')) {
-          invalidTokens.add(tokenBatch[idx]);
-        }
-      });
-    }
-
-    // Best-effort token cleanup.
-    if (invalidTokens.size > 0) {
-      const invalid = Array.from(invalidTokens);
-      const usersSnap = await db.collection('users').where('fcmTokens', 'array-contains-any', invalid.slice(0, 10)).get().catch(() => null);
-      if (usersSnap && !usersSnap.empty) {
-        const batch = db.batch();
-        usersSnap.docs.forEach((doc) => {
-          const data = doc.data() || {};
-          const existing = Array.isArray(data.fcmTokens) ? data.fcmTokens : [];
-          const cleaned = existing.filter((t) => !invalid.includes(String(t)));
-          batch.update(doc.ref, { fcmTokens: cleaned });
-        });
-        await batch.commit().catch(() => null);
-      }
-    }
 
     const completedAt = new Date();
     await campaignRef.set(
@@ -264,4 +246,5 @@ async function sendCampaign(req, res) {
 module.exports = {
   previewCampaign,
   sendCampaign,
+  clock,
 };
