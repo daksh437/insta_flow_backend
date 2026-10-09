@@ -21,6 +21,7 @@ const { strictLimiter } = require('../middleware/rateLimiters');
 const { getDb, getAdmin } = require('../utils/firestoreAdmin');
 const onboardingStatus = require('../services/onboardingStatus');
 const cohort = require('../services/cohort');
+const notificationPolicy = require('../services/notificationPolicy');
 
 const router = express.Router();
 
@@ -111,6 +112,51 @@ router.get('/onboarding-status', requireAuth, async (req, res) => {
     return res.json({ success: true, ...status });
   } catch (e) {
     console.error('[account] onboarding-status failed:', e.message);
+    return res.status(500).json({ success: false, error: 'INTERNAL_ERROR' });
+  }
+});
+
+/**
+ * Notification preferences, stored on users/{uid}.notificationPrefs and read
+ * by the push crons (services/notificationPolicy.js). Both default to on.
+ *   dailyIdeas → Daily Drop
+ *   reminders  → "We miss you", the day-1 tip, announcements
+ * Trial and billing reminders are account messages and always sent.
+ */
+router.get('/notification-prefs', requireAuth, async (req, res) => {
+  try {
+    const db = getDb();
+    if (!db) return res.status(503).json({ success: false, error: 'UNAVAILABLE' });
+    const snap = await db.collection('users').doc(req.uid).get();
+    return res.json({ success: true, prefs: notificationPolicy.prefsOf(snap.exists ? snap.data() : {}) });
+  } catch (e) {
+    console.error('[account] notification-prefs get failed:', e.message);
+    return res.status(500).json({ success: false, error: 'INTERNAL_ERROR' });
+  }
+});
+
+router.post('/notification-prefs', requireAuth, async (req, res) => {
+  const body = req.body || {};
+  const patch = {};
+  for (const key of ['dailyIdeas', 'reminders']) {
+    if (body[key] === undefined) continue;
+    if (typeof body[key] !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'INVALID_INPUT', message: `${key} must be true or false` });
+    }
+    patch[key] = body[key];
+  }
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ success: false, error: 'INVALID_INPUT', message: 'Nothing to update' });
+  }
+  try {
+    const db = getDb();
+    if (!db) return res.status(503).json({ success: false, error: 'UNAVAILABLE' });
+    const ref = db.collection('users').doc(req.uid);
+    await ref.set({ notificationPrefs: { ...patch, updatedAt: new Date() } }, { merge: true });
+    const snap = await ref.get();
+    return res.json({ success: true, prefs: notificationPolicy.prefsOf(snap.data()) });
+  } catch (e) {
+    console.error('[account] notification-prefs save failed:', e.message);
     return res.status(500).json({ success: false, error: 'INTERNAL_ERROR' });
   }
 });
