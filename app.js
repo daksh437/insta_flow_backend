@@ -18,6 +18,7 @@ const removedFeaturesRoutes = require('./routes/removedFeatures');
 const { generateDailyDrop } = require('./services/dailyDropGenerator');
 const marketingPush = require('./services/marketingPush');
 const { retryPendingVerifications } = require('./services/purchaseGrant');
+const { sweepUnacknowledged } = require('./services/playAck');
 const { sendDueTrialReminders } = require('./services/trialReminder');
 const { checkPlayAccess } = require('./utils/playVerify');
 const { requireAdmin } = require('./middleware/adminAuth');
@@ -103,7 +104,7 @@ app.get('/health/play', requireAdmin, async (_req, res) => {
 // Deploy verification marker — bump this string on each deploy to confirm
 // Render actually shipped the latest commit.
 app.get('/version', (_req, res) => {
-  res.json({ success: true, build: '2026-10-07-notification-policy' });
+  res.json({ success: true, build: '2026-10-11-purchase-diagnostics' });
 });
 
 // eslint-disable-next-line no-unused-vars
@@ -188,6 +189,9 @@ function startServer() {
   // Purchases whose Play verification hit an outage are retried here (no
   // credits are granted until Google Play confirms them).
   cron.schedule('*/10 * * * *', () => {
+    sweepUnacknowledged().catch((err) => {
+      console.error('[playAck] sweep failed:', err?.message || err);
+    });
     retryPendingVerifications().catch((err) => {
       console.error('[credits] pending verification retry failed:', err?.message || err);
     });

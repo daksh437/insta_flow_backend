@@ -18,6 +18,7 @@ const { getDb } = require('../utils/firestoreAdmin');
 const { getPublisherApi, PACKAGE_NAME } = require('../utils/playVerify');
 const creditService = require('./creditService');
 const entitlement = require('./entitlement');
+const playAck = require('./playAck');
 const { PLAN_CREDITS, TRIAL_OFFER_ID, TRIAL_CREDITS } = require('../config/credits');
 
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
@@ -170,6 +171,12 @@ async function syncSubscription({ purchaseToken, productId, uid: uidHint }) {
     }, { merge: true });
   }
   await scheduleTrialReminder(uid, { isTrial: isTrial && active, autoRenewing, expiryMillis, orderId });
+  // Safety net for payments that completed while the app was closed (UPI):
+  // acknowledged by the cron if the app hasn't within 15 minutes.
+  if (paid) {
+    await playAck.noteIfUnacknowledged({ data, purchaseToken, productId: line.productId, uid })
+      .catch((e) => console.warn('[subscriptionSync] ack note failed:', e.message));
+  }
 
   return {
     status: 'synced', uid, paid, active, state, isTrial, orderId, granted, amount,
